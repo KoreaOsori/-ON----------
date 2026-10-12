@@ -1,0 +1,54 @@
+# ---------- 비밀값 / 환경변수 ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------- Frontend (Next.js) ----------
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+
+# ---------- Backend (Python) ----------
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---------- Terraform ----------
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+terraform.tfvars
+*.auto.tfvars
+backend.hcl
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# 프로바이더 버전 고정을 위해 .terraform.lock.hcl 은 커밋한다
+
+# ---------- OS / IDE ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+
+# ---------- Claude Code 로컬 상태 ----------
+.claude/settings.local.json
+.claude/*.lock

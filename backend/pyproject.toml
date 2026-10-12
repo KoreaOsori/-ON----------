@@ -1,0 +1,41 @@
+[project]
+name = "yakon-backend"
+version = "0.1.0"
+description = "약온(약 정보 서비스) FastAPI 백엔드"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.120",
+    "uvicorn[standard]>=0.35",
+    "pydantic-settings>=2.10",
+    "sqlalchemy[asyncio]>=2.0.40",
+    "asyncpg>=0.30",
+    "alembic>=1.16",
+    "redis>=6.0",
+    "boto3>=1.40",
+    "anthropic[bedrock]>=0.70",
+    "httpx>=0.28",
+    "pyjwt>=2.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.1",
+    "ruff>=0.12",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # 줄 길이는 ruff format 이 관리 (한글 문자열은 분리하지 않음)
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

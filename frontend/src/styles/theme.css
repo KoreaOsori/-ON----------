@@ -1,0 +1,15 @@
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --font-sans: 'Noto Sans KR', sans-serif;
+}
+:root {
+  --background: #ffffff;
+  --foreground: #1f2937;
+  --border: #e5e7eb;
+  --primary: #2563eb;
+  --secondary: #16a37f;
+}

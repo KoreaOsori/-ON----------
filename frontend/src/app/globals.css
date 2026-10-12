@@ -1,0 +1,10 @@
+@import '../styles/fonts.css';
+@import 'tailwindcss';
+@import '../styles/theme.css';
+
+@layer base {
+  body { font-family: 'Noto Sans KR', sans-serif; color: #1f2937; background: #fff; }
+  button, a, input, select { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled), a { cursor: pointer; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
+}
