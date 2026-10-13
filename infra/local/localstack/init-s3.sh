@@ -10,7 +10,7 @@ awslocal s3api create-bucket \
 
 awslocal s3api put-bucket-cors --bucket "$BUCKET" --cors-configuration '{
   "CORSRules": [{
-    "AllowedOrigins": ["http://localhost:3000"],
+    "AllowedOrigins": ["http://localhost:3321", "http://localhost:3000"],
     "AllowedMethods": ["PUT", "GET"],
     "AllowedHeaders": ["*"],
     "MaxAgeSeconds": 3000

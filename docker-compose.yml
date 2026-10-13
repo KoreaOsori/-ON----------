@@ -1,7 +1,5 @@
 # 약온 로컬 개발 환경
-#   docker compose up -d                 # DB · Redis · S3(LocalStack) · 백엔드
-#   docker compose --profile full up -d  # + 프론트엔드(프로덕션 빌드) 컨테이너
-# 프론트는 보통 로컬에서 `pnpm dev` 로 실행하는 것을 권장한다.
+#   docker compose up -d   # DB · Redis · S3(LocalStack) · 백엔드 · 프론트엔드(next dev, :3321)
 name: yakon
 
 services:
@@ -72,14 +70,20 @@ services:
       localstack:
         condition: service_healthy
 
+  # 로컬 프론트 소스를 마운트해 next dev 로 실행 (http://localhost:3321)
   frontend:
-    profiles: ["full"]
     build:
       context: ./frontend
-      args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      target: dev
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000  # 브라우저가 호출하는 주소
+      NEXT_WATCH_POLL_MS: "1000"  # Windows 바인드 마운트는 파일 변경 이벤트가 전달되지 않아 폴링 사용 (next.config.ts)
     ports:
-      - "3000:3000"
+      - "${FRONTEND_HOST_PORT:-3321}:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  # 컨테이너(Linux)용 node_modules 유지
+      - /app/.next
     depends_on:
       - backend
 

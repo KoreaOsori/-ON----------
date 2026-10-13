@@ -52,10 +52,9 @@ cp backend/.env.example backend/.env          # JWT_SECRET_KEY 는 임의의 긴
 cp frontend/.env.example frontend/.env.local
 ```
 
-### 2. 인프라 + 백엔드 (Docker Compose)
+### 2. 전체 실행 (Docker Compose)
 ```bash
-docker compose up -d                  # postgres · redis · localstack(S3) · backend
-docker compose --profile full up -d   # + frontend 컨테이너(프로덕션 빌드)
+docker compose up -d --build   # postgres · redis · localstack(S3) · backend · frontend
 ```
 
 | 서비스 | 호스트 주소 |
@@ -64,14 +63,18 @@ docker compose --profile full up -d   # + frontend 컨테이너(프로덕션 빌
 | Redis | `localhost:6379` |
 | S3 (LocalStack) | `http://localhost:4566`, 버킷 `yakon-local-uploads` |
 | Backend API | http://localhost:8000/api/v1 — 문서: http://localhost:8000/api/v1/docs |
+| Frontend | http://localhost:3321 (`FRONTEND_HOST_PORT` 로 변경 가능) |
 
-백엔드 컨테이너는 시작 시 `alembic upgrade head` 를 실행하고, `backend/app` 을 마운트해 코드 변경 시 자동으로 재시작합니다.
+- 백엔드 컨테이너는 시작 시 `alembic upgrade head` 를 실행하고, `backend/app` 을 마운트해 코드 변경 시 자동으로 재시작합니다.
+- 프론트 컨테이너는 `frontend/` 소스를 마운트해 `next dev` 로 실행합니다. Windows 바인드 마운트에서는 Turbopack 이 파일 변경을 감지하지 못해 webpack + 폴링(1초)을 사용하며, 저장 후 몇 초 안에 반영됩니다.
+- `package.json` 의존성을 바꾼 뒤에는 `docker compose up -d --build -V frontend` 로 다시 빌드합니다. `-V` 를 붙여야 이전 `node_modules` 볼륨이 교체됩니다.
 
-### 3. 프론트엔드
+### 3. 프론트엔드를 컨테이너 없이 실행할 때
 ```bash
+docker compose stop frontend
 cd frontend
 pnpm install
-pnpm dev        # http://localhost:3000
+pnpm dev        # http://localhost:3000 (Turbopack)
 ```
 
 ### 백엔드를 컨테이너 없이 실행할 때

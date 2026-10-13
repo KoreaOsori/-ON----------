@@ -9,6 +9,14 @@ FROM base AS deps
 COPY package.json pnpm-lock.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
+# 개발용: 소스는 docker compose 에서 볼륨 마운트, next dev 핫 리로드
+# Turbopack 은 Windows 바인드 마운트에서 변경 감지가 안 돼 webpack + 폴링(NEXT_WATCH_POLL_MS) 사용
+FROM base AS dev
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+EXPOSE 3000
+CMD ["pnpm", "dev", "--webpack", "--hostname", "0.0.0.0", "--port", "3000"]
+
 FROM base AS builder
 # NEXT_PUBLIC_* 값은 빌드 시점에 번들에 포함된다
 ARG NEXT_PUBLIC_API_BASE_URL=""
