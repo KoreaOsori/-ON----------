@@ -55,5 +55,6 @@ Thumbs.db
 
 
 s3/*
+!s3/.gitkeep
 trash
 docs
