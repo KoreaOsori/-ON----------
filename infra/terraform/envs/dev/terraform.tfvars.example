@@ -1,11 +1,4 @@
-# 복사해서 terraform.tfvars 로 사용 (terraform.tfvars 는 git 에 커밋되지 않음)
-region    = "ap-northeast-2"
-image_tag = "latest"
-
-# 도메인/HTTPS 연결 시
-# certificate_arn = "arn:aws:acm:ap-northeast-2:123456789012:certificate/xxxx"
-# public_origin   = "https://dev.yakon.example"
-
-# Bedrock 콘솔에서 모델 접근 권한을 확인한 뒤 활성화
-bedrock_enabled = false
-ocr_provider    = "mock" # 한국어 처방전은 "claude" 권장 (Textract 는 한국어 미지원)
+# 복사해서 terraform.tfvars 로 사용 (terraform.tfvars 는 git 에 커밋되지 않음). 기본값을 바꿀 때만 필요하다.
+region             = "us-east-1"
+ec2_instance_type  = "t3.medium"
+rds_instance_class = "db.t3.small"
