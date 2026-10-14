@@ -1,5 +1,7 @@
-"""Silver 테이블 명세 (docs/silver_table_spec.md 의 코드 버전).
+"""원본 오퍼레이션별 정리 명세 (docs/silver_table_spec.md 의 코드 버전).
 
+여기 Table 은 API 오퍼레이션 하나를 정리한 결과다. 대부분은 build.py 가 drug_product 로 합치는 재료로만 쓰고,
+병용금기 2개는 dur_contraindication 하나로 합치고, 건강기능식품은 그대로 silver 테이블이 된다 (OUTPUT_TABLES).
 컬럼 순서·이름·타입·필수 여부를 여기서 고정한다. 바꾸면 SPEC_VERSION 을 올리고 명세 문서도 같이 고친다.
 rule_key 정체성 컬럼은 바꾸면 모든 키가 바뀌므로 RAG팀에 미리 알린다.
 """
@@ -7,7 +9,7 @@ rule_key 정체성 컬럼은 바꾸면 모든 키가 바뀌므로 RAG팀에 미�
 import re
 from dataclasses import dataclass, field
 
-SPEC_VERSION = "0.1"
+SPEC_VERSION = "0.2"
 
 
 @dataclass(frozen=True)
@@ -287,14 +289,21 @@ DUR_ITEM_USJNT = Table(
     same_as=("MIXTURE_DUR_SEQ", "DUR_SEQ"),
 )
 
-# 원본 오퍼레이션 → 테이블 하나로 바로 만드는 것들 (문서 텍스트와 e약은요 문항은 build.py 에서 따로 만든다)
-TABLES = [
-    PERMIT_ITEM, PERMIT_DETAIL, PERMIT_INGREDIENT, EASY_DRUG, PILL_IDENTIFICATION, DUR_ITEM_MASTER,
-    *DUR_INGR_TABLES, DUR_INGR_USJNT, *DUR_ITEM_CAUTION_TABLES, DUR_ITEM_EFCY_DPLCT, DUR_ITEM_SEOBANGJEONG,
-    DUR_ITEM_USJNT,
-]
+# ---------------------------------------------------------------- 건강기능식품 (식품안전나라)
 
-# 파생 테이블: 이름 → 원천 테이블
-DOC_TABLES = ("doc_article_text", "doc_article", "doc_paragraph_text", "doc_paragraph")
-EASY_TEXT_TABLE = "easy_drug_text"
-ALL_TABLE_NAMES = [t.name for t in TABLES] + list(DOC_TABLES) + [EASY_TEXT_TABLE]
+HEALTH_FOOD_PRODUCT = Table(
+    "health_food_product", "C003",
+    [
+        R("PRDLST_REPORT_NO"), R("PRDLST_NM"), S("BSSH_NM"), S("LCNS_NO"), S("PRMS_DT", "permit_date", parse="date"),
+        S("PRDT_SHAP_CD_NM"), S("SHAP"), S("DISPOS"), S("PRIMARY_FNCLTY"), S("NTK_MTHD"),
+        S("IFTKN_ATNT_MATR_CN"), S("CSTDY_MTHD"), S("POG_DAYCNT"), S("STDR_STND"), S("RAWMTRL_NM"),
+        S("CRET_DTM", "create_date", parse="date"), S("LAST_UPDT_DTM", "last_update_date", parse="date"),
+    ],
+    ("prdlst_report_no",),
+)
+
+# silver 에 그대로 저장되는 테이블
+OUTPUT_TABLES = [HEALTH_FOOD_PRODUCT]
+DRUG_PRODUCT_TABLE = "drug_product"
+CONTRAINDICATION_TABLE = "dur_contraindication"  # 성분 병용금기 + 품목 병용금기 (level 컬럼으로 구분)
+ALL_TABLE_NAMES = [DRUG_PRODUCT_TABLE, CONTRAINDICATION_TABLE] + [t.name for t in OUTPUT_TABLES]

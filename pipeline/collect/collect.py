@@ -1,4 +1,4 @@
-"""식약처 공공 API를 페이지 단위로 받아 Bronze에 원본 그대로 저장한다.
+"""식약처 공공 API(공공데이터포털, 식품안전나라)를 페이지 단위로 받아 Bronze에 원본 그대로 저장한다.
 
 저장 경로: {out}/bronze/{서비스}/{오퍼레이션}/snapshot={날짜}/page_00001.json
 - 이미 받은 페이지는 건너뛴다 (이어받기)
@@ -19,24 +19,48 @@ from urllib.request import urlopen
 
 from dotenv import load_dotenv
 
-from operations import OPERATIONS
+from operations import FOOD_SAFETY_OPERATIONS, OPERATIONS
 
 BASE_URL = "https://apis.data.go.kr/1471000"
+FOOD_SAFETY_URL = "https://openapi.foodsafetykorea.go.kr/api"
 DEFAULT_ROWS = 500
+FOOD_SAFETY_ROWS = 1000  # 식품안전나라는 한 번에 최대 1,000건
+ALL_OPERATIONS = {**OPERATIONS, **FOOD_SAFETY_OPERATIONS}
 MAX_RETRIES = 3
 TIMEOUT_SECONDS = 120
 DEFAULT_OUT = Path(__file__).resolve().parents[2] / "s3"
 
 
-def get_service_key():
+def is_food_safety(operation):
+    return operation in FOOD_SAFETY_OPERATIONS
+
+
+def get_service_key(operation):
     load_dotenv()
-    key = os.environ.get("E_Drug_API")
+    name = "FOOD_SAFETY_API" if is_food_safety(operation) else "E_Drug_API"
+    key = os.environ.get(name)
     if not key:
-        raise SystemExit("E_Drug_API 환경변수가 비어 있습니다. .env를 확인하세요.")
+        raise SystemExit(f"{name} 환경변수가 비어 있습니다. .env를 확인하세요.")
     return key
 
 
+def fetch_food_safety_page(operation, page_no, rows, key):
+    start, end = (page_no - 1) * rows + 1, page_no * rows
+    url = f"{FOOD_SAFETY_URL}/{key}/{operation}/json/{start}/{end}"
+    try:
+        with urlopen(url, timeout=TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(str(exc).replace(key, "***")) from None
+    result = (data.get(operation) or {}).get("RESULT") or {}
+    if result.get("CODE") != "INFO-000":
+        raise RuntimeError(f"API 오류 응답: {result}")
+    return data
+
+
 def fetch_page(service, operation, page_no, rows, key):
+    if is_food_safety(operation):
+        return fetch_food_safety_page(operation, page_no, rows, key)
     query = urlencode({"serviceKey": key, "pageNo": page_no, "numOfRows": rows, "type": "json"})
     url = f"{BASE_URL}/{service}/{operation}?{query}"
     try:
@@ -49,6 +73,18 @@ def fetch_page(service, operation, page_no, rows, key):
     if header.get("resultCode") != "00" or "body" not in data:
         raise RuntimeError(f"API 오류 응답: {header}")
     return data
+
+
+def total_count_of(response, operation):
+    if is_food_safety(operation):
+        return int(response[operation]["total_count"])
+    return int(response["body"]["totalCount"])
+
+
+def count_items_of(response, operation):
+    if is_food_safety(operation):
+        return len(response[operation].get("row") or [])
+    return count_items(response["body"])
 
 
 def count_items(body):
@@ -80,7 +116,7 @@ def fetch_with_retry(service, operation, page_no, rows, key):
 
 
 def collect_operation(operation, snapshot, out_root, rows, key):
-    service = OPERATIONS[operation]
+    service = ALL_OPERATIONS[operation]
     out_dir = Path(out_root) / "bronze" / service / operation / f"snapshot={snapshot}"
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "_manifest.json"
@@ -109,7 +145,7 @@ def collect_operation(operation, snapshot, out_root, rows, key):
         if first is None:
             raise SystemExit(f"[{operation}] 1쪽 수집 실패: {error}")
         save_page(1, first)
-    total_count = int(first["body"]["totalCount"])
+    total_count = total_count_of(first, operation)
     pages = math.ceil(total_count / rows)
     print(f"[{operation}] totalCount={total_count} pages={pages}")
 
@@ -124,7 +160,7 @@ def collect_operation(operation, snapshot, out_root, rows, key):
             print(f"[{operation}] {page_no}쪽 실패: {error}")
             continue
         save_page(page_no, response)
-        current_total = int(response["body"]["totalCount"])
+        current_total = total_count_of(response, operation)
         if current_total != total_count:
             total_count_changes.append({"page": page_no, "total_count": current_total})
             print(f"[{operation}] 경고: {page_no}쪽에서 totalCount가 {total_count} → {current_total}로 바뀜")
@@ -137,8 +173,8 @@ def collect_operation(operation, snapshot, out_root, rows, key):
     items_total = 0
     short_pages = []
     for page_no in present:
-        body = json.loads(page_path(page_no).read_text(encoding="utf-8"))["response"]["body"]
-        n = count_items(body)
+        response = json.loads(page_path(page_no).read_text(encoding="utf-8"))["response"]
+        n = count_items_of(response, operation)
         items_total += n
         if page_no < pages and n != rows:
             short_pages.append(page_no)
@@ -168,20 +204,21 @@ def collect_operation(operation, snapshot, out_root, rows, key):
 def main():
     parser = argparse.ArgumentParser(description="식약처 API Bronze 수집")
     parser.add_argument("operations", nargs="*", help="오퍼레이션 이름 (여러 개 가능)")
-    parser.add_argument("--all", action="store_true", help="등록된 21개 오퍼레이션 전부")
-    parser.add_argument("--rows", type=int, default=DEFAULT_ROWS)
+    parser.add_argument("--all", action="store_true", help="등록된 오퍼레이션 전부")
+    parser.add_argument("--rows", type=int,
+                        help=f"한 번에 받는 건수 (기본: 공공데이터포털 {DEFAULT_ROWS}, 식품안전나라 {FOOD_SAFETY_ROWS})")
     parser.add_argument("--snapshot", default=date.today().isoformat())
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     args = parser.parse_args()
 
-    targets = list(OPERATIONS) if args.all else args.operations
-    unknown = [name for name in targets if name not in OPERATIONS]
+    targets = list(ALL_OPERATIONS) if args.all else args.operations
+    unknown = [name for name in targets if name not in ALL_OPERATIONS]
     if not targets or unknown:
-        raise SystemExit(f"오퍼레이션을 지정하세요. 알 수 없는 이름: {unknown}\n사용 가능: {list(OPERATIONS)}")
+        raise SystemExit(f"오퍼레이션을 지정하세요. 알 수 없는 이름: {unknown}\n사용 가능: {list(ALL_OPERATIONS)}")
 
-    key = get_service_key()
     for operation in targets:
-        collect_operation(operation, args.snapshot, args.out, args.rows, key)
+        rows = args.rows or (FOOD_SAFETY_ROWS if is_food_safety(operation) else DEFAULT_ROWS)
+        collect_operation(operation, args.snapshot, args.out, rows, get_service_key(operation))
 
 
 if __name__ == "__main__":

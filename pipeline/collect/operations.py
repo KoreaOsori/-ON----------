@@ -28,3 +28,9 @@ OPERATIONS = {
     "getDrugPrdtPrmsnDtlInq08": "DrugPrdtPrmsnInfoService08",
     "getDrugPrdtMcpnDtlInq08": "DrugPrdtPrmsnInfoService08",
 }
+
+# 식품안전나라 (openapi.foodsafetykorea.go.kr) — 인증키와 호출 방식이 공공데이터포털과 다르다
+FOOD_SAFETY_OPERATIONS = {
+    # 건강기능식품 품목제조신고(원재료)
+    "C003": "FoodSafetyKorea",
+}
