@@ -24,7 +24,7 @@ module "data_bucket" {
 module "secrets" {
   source = "../../modules/secrets"
   name   = "${var.project}/${var.environment}"
-  keys   = ["E_Drug_API", "FOOD_SAFETY_API"]
+  keys   = ["E_Drug_API", "FOOD_SAFETY_API", "JWT_SECRET_KEY"]
 }
 
 module "rds" {

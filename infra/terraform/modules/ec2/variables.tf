@@ -17,9 +17,9 @@ variable "security_group_id" {
 }
 
 variable "root_volume_size" {
-  description = "GiB. OS, 코드, 패키지, 파이프라인 작업 파일"
+  description = "GiB. OS, Docker 이미지, 코드, 파이프라인 작업 파일 (bronze 는 S3 업로드 후 지울 것). 부족하면 늘리면 됨"
   type        = number
-  default     = 30
+  default     = 20
 }
 
 variable "data_bucket_arn" {
