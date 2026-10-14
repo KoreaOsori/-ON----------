@@ -2,7 +2,7 @@ import hashlib
 
 from chunking import normalize, pack_articles, split_text
 
-BUILDER_VERSION = "product-documents-v2"
+BUILDER_VERSION = "product-documents-v2.1"
 DRUG_DOCS = {"doc_efficacy": "benefits", "doc_dosage": "usage",
              "doc_precautions": "precautions", "doc_pn": "additional"}
 HEALTH_FIELDS = {"rawmtrl_nm": "ingredients", "primary_fnclty": "benefits",
@@ -39,7 +39,11 @@ def rule_metadata(rule):
             for k in INTERNAL_KEYS if rule.get(k) is not None}
 
 
-def dur_blocks(row, max_chars, overlap):
+class DurConditionError(ValueError):
+    pass
+
+
+def dur_blocks(row, max_chars, overlap, on_reject=None):
     """Each alternative is isolated. Conditions repeat on every continuation chunk."""
     for field, label in DUR_LABELS.items():
         rules = row.get(field) or []
@@ -62,16 +66,22 @@ def dur_blocks(row, max_chars, overlap):
                         descriptions.append(f"{scope}:\n{body}")
                 body = "\n".join(descriptions)
                 budget = max_chars - len(context) - 1
-                if budget < max(100, overlap * 2 + 1):
-                    raise ValueError(f"DUR 조건이 청크 한도를 초과합니다: {field}/{i}/{j}")
-                parts = split_text(body, budget, overlap) if body else [""]
                 ref = f"{field}/{i}" + (f"/ingredient_rules/{j}" if parent.get("ingredient_rules") else "")
                 metadata = {"parent": rule_metadata(parent), "ingredient_rule": rule_metadata(child)}
+                # split_text requires overlap < floor(budget / 2), so 301/150 is invalid.
+                if (body and budget < max(100, 2 * (overlap + 1))) or len(context) > max_chars:
+                    error = DurConditionError(f"DUR 조건 초과: {ref}, 남은 본문 예산={budget}, 최소={max(100, 2 * (overlap + 1))}")
+                    if on_reject is None:
+                        raise error
+                    on_reject({"source_ref": ref, "error_type": type(error).__name__, "reason": str(error),
+                               "context": context, "body": body, "metadata": metadata})
+                    continue
+                parts = split_text(body, budget, overlap) if body else [""]
                 for part in parts:
                     yield "precautions", [ref], context + ("\n" + part if part else ""), metadata
 
 
-def blocks(row, kind, max_chars, overlap, min_chars):
+def blocks(row, kind, max_chars, overlap, min_chars, on_reject=None):
     if kind == "health_food":
         yield "overview", ["overview"], fields_text(row, [("prdt_shap_cd_nm", "제형"), ("dispos", "성상")]), {}
         for field, section in HEALTH_FIELDS.items():
@@ -92,7 +102,7 @@ def blocks(row, kind, max_chars, overlap, min_chars):
                 articles.append((f"{field}/{index}", text))
         for refs, text in pack_articles(articles, max_chars, overlap, min_chars):
             yield section, refs, text, {}
-    yield from dur_blocks(row, max_chars, overlap)
+    yield from dur_blocks(row, max_chars, overlap, on_reject)
     for field, section in {"efcy": "benefits", "use_method": "usage", "atpn_warn": "precautions",
                            "atpn": "precautions", "intrc": "interactions", "se": "precautions",
                            "deposit_method": "storage"}.items():
@@ -102,7 +112,7 @@ def blocks(row, kind, max_chars, overlap, min_chars):
         yield "storage", ["storage_method"], part, {}
 
 
-def build_documents(row, kind, source, max_chars=1800, overlap=150, min_chars=900):
+def build_documents(row, kind, source, max_chars=1800, overlap=150, min_chars=900, on_reject=None):
     if kind not in ("drug", "health_food"):
         raise ValueError("지원하지 않는 제품 유형")
     key, name_key, maker_key = (("item_seq", "item_name", "entp_name") if kind == "drug"
@@ -113,7 +123,7 @@ def build_documents(row, kind, source, max_chars=1800, overlap=150, min_chars=90
     product_key = f"{kind}:{product_id}"
     label = "의약품" if kind == "drug" else "건강기능식품"
     version = f"{BUILDER_VERSION}:{max_chars}:{overlap}:{min_chars}"
-    for index, (section, refs, body, metadata) in enumerate(blocks(row, kind, max_chars, overlap, min_chars)):
+    for index, (section, refs, body, metadata) in enumerate(blocks(row, kind, max_chars, overlap, min_chars, on_reject)):
         if section == "overview":
             body = f"제품명: {name}\n업체명: {maker}\n{body}".strip()
         content = f"제품 종류: {label}\n정보 유형: {section}\n{body}"
