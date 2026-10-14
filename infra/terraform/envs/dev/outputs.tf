@@ -1,35 +1,35 @@
 output "service_url" {
-  value = local.origin
+  description = "웹사이트 주소 (HTTP)"
+  value       = "http://${module.ec2.public_ip}"
 }
 
-output "alb_dns_name" {
-  value = module.alb.dns_name
+output "ec2_instance_id" {
+  value = module.ec2.instance_id
 }
 
-output "ecr_repository_urls" {
-  value = module.ecr.repository_urls
+output "ec2_connect" {
+  description = "EC2 접속 명령 (SSM Session Manager)"
+  value       = "aws ssm start-session --target ${module.ec2.instance_id} --region ${var.region}"
 }
 
-output "ecs_cluster_name" {
-  value = module.ecs.cluster_name
-}
-
-output "ecs_services" {
-  value = {
-    frontend = module.ecs.frontend_service_name
-    backend  = module.ecs.backend_service_name
-  }
-}
-
-output "uploads_bucket" {
-  value = module.uploads.bucket_name
-}
-
-output "app_secret_arn" {
-  description = "OAuth·공공데이터 키 등을 이 시크릿에 채워 넣으세요"
-  value       = module.secrets.app_secret_arn
+output "data_bucket" {
+  value = module.data_bucket.bucket_name
 }
 
 output "rds_endpoint" {
   value = module.rds.address
+}
+
+output "rds_db_name" {
+  value = module.rds.db_name
+}
+
+output "rds_master_secret_arn" {
+  description = "DB 마스터 계정 (username, password)"
+  value       = module.rds.master_user_secret_arn
+}
+
+output "app_secret_name" {
+  description = "API 키를 이 시크릿에 채워 넣으세요"
+  value       = module.secrets.app_secret_name
 }

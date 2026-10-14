@@ -17,22 +17,29 @@ variable "engine_major_version" {
 
 variable "instance_class" {
   type    = string
-  default = "db.t4g.micro"
+  default = "db.t3.small"
 }
 
 variable "db_name" {
   type    = string
-  default = "yakon"
+  default = "pill"
 }
 
 variable "username" {
   type    = string
-  default = "yakon"
+  default = "pill_admin"
 }
 
 variable "allocated_storage" {
-  type    = number
-  default = 20
+  description = "GiB. RDS PostgreSQL gp3 최소 20"
+  type        = number
+  default     = 20
+}
+
+variable "max_allocated_storage" {
+  description = "부족하면 이 크기까지 자동 확장 (늘어난 만큼만 과금)"
+  type        = number
+  default     = 50
 }
 
 variable "multi_az" {
@@ -46,6 +53,7 @@ variable "backup_retention_days" {
 }
 
 variable "deletion_protection" {
-  type    = bool
-  default = false
+  description = "true 면 삭제 방지. 프로젝트 종료 후 지울 때는 false 로 바꿔 apply 한 뒤 destroy"
+  type        = bool
+  default     = true
 }

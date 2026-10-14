@@ -1,26 +1,26 @@
-# 처방전·알약 사진 업로드 버킷 (비공개, 암호화, 일정 기간 후 자동 삭제)
-resource "aws_s3_bucket" "uploads" {
+# 데이터 버킷: bronze/ silver/ gold/ (비공개, 암호화, 버전 관리)
+resource "aws_s3_bucket" "data" {
   bucket        = var.bucket_name
   force_destroy = var.force_destroy
 }
 
-resource "aws_s3_bucket_public_access_block" "uploads" {
-  bucket                  = aws_s3_bucket.uploads.id
+resource "aws_s3_bucket_public_access_block" "data" {
+  bucket                  = aws_s3_bucket.data.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_ownership_controls" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
+resource "aws_s3_bucket_ownership_controls" "data" {
+  bucket = aws_s3_bucket.data.id
   rule {
     object_ownership = "BucketOwnerEnforced"
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
+  bucket = aws_s3_bucket.data.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -28,36 +28,34 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   }
 }
 
-# 민감정보(처방전) 최소 보관: 업로드 원본은 N일 후 삭제
-resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
+# 실수로 지우거나 덮어써도 이전 버전으로 복구할 수 있게 한다
+resource "aws_s3_bucket_versioning" "data" {
+  bucket = aws_s3_bucket.data.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# 덮어써서 생긴 이전 버전은 일정 기간 뒤 삭제 (버전이 계속 쌓이는 비용 방지)
+resource "aws_s3_bucket_lifecycle_configuration" "data" {
+  bucket = aws_s3_bucket.data.id
   rule {
-    id     = "expire-uploads"
+    id     = "expire-noncurrent-versions"
     status = "Enabled"
     filter {}
-    expiration {
-      days = var.expiration_days
+    noncurrent_version_expiration {
+      noncurrent_days = var.noncurrent_version_days
     }
     abort_incomplete_multipart_upload {
       days_after_initiation = 1
     }
   }
-}
-
-# 브라우저가 presigned URL 로 직접 PUT 업로드
-resource "aws_s3_bucket_cors_configuration" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
-  cors_rule {
-    allowed_origins = var.cors_allowed_origins
-    allowed_methods = ["PUT", "GET"]
-    allowed_headers = ["*"]
-    max_age_seconds = 3000
-  }
+  depends_on = [aws_s3_bucket_versioning.data]
 }
 
 # HTTPS 외 접근 차단
-resource "aws_s3_bucket_policy" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
+resource "aws_s3_bucket_policy" "data" {
+  bucket = aws_s3_bucket.data.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -65,9 +63,9 @@ resource "aws_s3_bucket_policy" "uploads" {
       Effect    = "Deny"
       Principal = "*"
       Action    = "s3:*"
-      Resource  = [aws_s3_bucket.uploads.arn, "${aws_s3_bucket.uploads.arn}/*"]
+      Resource  = [aws_s3_bucket.data.arn, "${aws_s3_bucket.data.arn}/*"]
       Condition = { Bool = { "aws:SecureTransport" = "false" } }
     }]
   })
-  depends_on = [aws_s3_bucket_public_access_block.uploads]
+  depends_on = [aws_s3_bucket_public_access_block.data]
 }

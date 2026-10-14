@@ -1,97 +1,39 @@
-# 보안 그룹: 인터넷 → ALB → (frontend | backend) → (RDS | Redis)
-resource "aws_security_group" "alb" {
-  name        = "${var.name}-alb"
-  description = "ALB - public HTTP/HTTPS"
+# 보안 그룹: 인터넷 → EC2(웹 80/443) → RDS(5432)
+# EC2 접속은 SSM Session Manager 로 하므로 SSH(22) 는 열지 않는다.
+resource "aws_security_group" "ec2" {
+  name        = "${var.name}-ec2"
+  description = "EC2 - web, backend, pipeline"
   vpc_id      = var.vpc_id
-  tags        = { Name = "${var.name}-alb" }
+  tags        = { Name = "${var.name}-ec2" }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  security_group_id = aws_security_group.alb.id
+resource "aws_vpc_security_group_ingress_rule" "ec2_web" {
+  for_each          = toset(["80", "443"])
+  security_group_id = aws_security_group.ec2.id
   cidr_ipv4         = "0.0.0.0/0"
-  from_port         = 80
-  to_port           = 80
+  from_port         = tonumber(each.value)
+  to_port           = tonumber(each.value)
   ip_protocol       = "tcp"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_https" {
-  security_group_id = aws_security_group.alb.id
+# 공공데이터 API 수집, S3, Bedrock, 패키지 설치 등
+resource "aws_vpc_security_group_egress_rule" "ec2_all" {
+  security_group_id = aws_security_group.ec2.id
   cidr_ipv4         = "0.0.0.0/0"
-  from_port         = 443
-  to_port           = 443
-  ip_protocol       = "tcp"
-}
-
-resource "aws_security_group" "frontend" {
-  name        = "${var.name}-frontend"
-  description = "Next.js ECS tasks"
-  vpc_id      = var.vpc_id
-  tags        = { Name = "${var.name}-frontend" }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "frontend_from_alb" {
-  security_group_id            = aws_security_group.frontend.id
-  referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = 3000
-  to_port                      = 3000
-  ip_protocol                  = "tcp"
-}
-
-resource "aws_security_group" "backend" {
-  name        = "${var.name}-backend"
-  description = "FastAPI ECS tasks"
-  vpc_id      = var.vpc_id
-  tags        = { Name = "${var.name}-backend" }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "backend_from_alb" {
-  security_group_id            = aws_security_group.backend.id
-  referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = 8000
-  to_port                      = 8000
-  ip_protocol                  = "tcp"
+  ip_protocol       = "-1"
 }
 
 resource "aws_security_group" "database" {
   name        = "${var.name}-database"
-  description = "RDS PostgreSQL - backend only"
+  description = "RDS PostgreSQL - EC2 only"
   vpc_id      = var.vpc_id
   tags        = { Name = "${var.name}-database" }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "database_from_backend" {
+resource "aws_vpc_security_group_ingress_rule" "database_from_ec2" {
   security_group_id            = aws_security_group.database.id
-  referenced_security_group_id = aws_security_group.backend.id
+  referenced_security_group_id = aws_security_group.ec2.id
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
-}
-
-resource "aws_security_group" "redis" {
-  name        = "${var.name}-redis"
-  description = "ElastiCache Redis - backend only"
-  vpc_id      = var.vpc_id
-  tags        = { Name = "${var.name}-redis" }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "redis_from_backend" {
-  security_group_id            = aws_security_group.redis.id
-  referenced_security_group_id = aws_security_group.backend.id
-  from_port                    = 6379
-  to_port                      = 6379
-  ip_protocol                  = "tcp"
-}
-
-# 모든 보안 그룹의 아웃바운드 허용 (ECR 이미지 풀, Bedrock, 공공데이터 API 호출 등)
-resource "aws_vpc_security_group_egress_rule" "all" {
-  for_each = {
-    alb      = aws_security_group.alb.id
-    frontend = aws_security_group.frontend.id
-    backend  = aws_security_group.backend.id
-    database = aws_security_group.database.id
-    redis    = aws_security_group.redis.id
-  }
-  security_group_id = each.value
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
 }

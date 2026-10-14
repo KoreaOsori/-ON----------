@@ -13,7 +13,7 @@ terraform {
 provider "aws" {
   region = var.region
   default_tags {
-    tags = { Project = "yakon", ManagedBy = "terraform", Stack = "bootstrap" }
+    tags = { Project = var.project, ManagedBy = "terraform", Stack = "bootstrap" }
   }
 }
 
@@ -52,7 +52,7 @@ resource "aws_s3_bucket_public_access_block" "state" {
 
 variable "project" {
   type    = string
-  default = "yakon"
+  default = "pill-check"
 }
 
 variable "region" {
