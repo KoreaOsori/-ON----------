@@ -34,7 +34,7 @@ services:
     image: localstack/localstack:4.9
     environment:
       SERVICES: s3
-      AWS_DEFAULT_REGION: ap-northeast-2
+      AWS_DEFAULT_REGION: us-east-1
     ports:
       - "4566:4566"
     volumes:
