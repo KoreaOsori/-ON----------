@@ -6,7 +6,7 @@ BUCKET=yakon-local-uploads
 
 awslocal s3api create-bucket \
   --bucket "$BUCKET" \
-  --create-bucket-configuration LocationConstraint=ap-northeast-2 || true
+  --create-bucket-configuration LocationConstraint=us-east-1 || true
 
 awslocal s3api put-bucket-cors --bucket "$BUCKET" --cors-configuration '{
   "CORSRules": [{

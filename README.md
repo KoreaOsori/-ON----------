@@ -140,7 +140,7 @@ terraform apply
 
 ### 3. 이미지 빌드 · ECR 푸시
 ```bash
-REGION=ap-northeast-2
+REGION=us-east-1
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGISTRY=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com
 TAG=latest   # 운영에서는 git SHA 권장 (terraform 변수 image_tag 와 일치시킬 것)
@@ -162,7 +162,7 @@ aws ecs update-service --cluster yakon-dev-cluster --service yakon-dev-frontend 
 ## 알아둘 점
 
 - **처방전 OCR**: AWS Textract 는 한국어를 지원하지 않습니다. 한국어 처방전에는 `OCR_PROVIDER=claude`(Bedrock Claude 이미지 인식)를 권장합니다.
-- **Bedrock 리전**: 서울(ap-northeast-2)은 Claude in Bedrock 의 **Global 엔드포인트만** 지원하므로, 요청이 다른 리전에서 처리될 수 있습니다. 건강정보(민감정보)를 다루므로 개인정보 처리방침에 국외 이전/처리 고지가 필요한지 검토하세요.
+- **Bedrock 리전**: 서울(us-east-1)은 Claude in Bedrock 의 **Global 엔드포인트만** 지원하므로, 요청이 다른 리전에서 처리될 수 있습니다. 건강정보(민감정보)를 다루므로 개인정보 처리방침에 국외 이전/처리 고지가 필요한지 검토하세요.
 - **Structured outputs**: Bedrock(Mantle) 엔드포인트는 `output_config.format` 을 지원하지 않아, OCR 결과는 프롬프트로 JSON 을 요청한 뒤 방어적으로 파싱합니다.
 - **모델 접근 권한**: Claude Opus 5.5 는 Bedrock 콘솔에서 계정별 접근 조건을 확인해야 합니다. IAM 액션은 `bedrock-mantle:CreateInference` 입니다.
 - **비회원 건강정보 문구**: 백엔드와 연동하면 임시 건강정보가 요청 본문으로 서버에 전송됩니다(저장은 안 함). `GuestProfileModal` 의 "서버에 전송하지 않아요" 문구를 연동 시 수정하세요.

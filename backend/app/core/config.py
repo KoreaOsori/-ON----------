@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # AWS 공통 (ECS에서는 Task Role 자격증명을 사용하므로 키를 넣지 않는다)
-    aws_region: str = "ap-northeast-2"
+    aws_region: str = "us-east-1"
     aws_endpoint_url: str | None = None  # 로컬 LocalStack: http://localstack:4566
 
     # S3 업로드
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # Amazon Bedrock (Claude)
     bedrock_enabled: bool = False
-    bedrock_region: str = "ap-northeast-2"
+    bedrock_region: str = "us-east-1"
     bedrock_model_id: str = "anthropic.claude-opus-5-5"
     bedrock_fallback_model_id: str | None = "anthropic.claude-opus-4-8"
     bedrock_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
