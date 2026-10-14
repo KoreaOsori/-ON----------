@@ -26,3 +26,21 @@ def split_text(text, max_chars=1800, overlap=150):
         if end == len(text):
             break
         start = max(start + 1, end - overlap)
+
+
+def pack_articles(articles, max_chars=1800, overlap=150, min_chars=900):
+    """Merge adjacent short articles within one source field, retaining references."""
+    if not 0 < min_chars <= max_chars:
+        raise ValueError("min_chars는 1 이상 max_chars 이하여야 합니다.")
+    refs, buffer = [], ""
+    for ref, text in articles:
+        for part in split_text(text, max_chars, overlap):
+            candidate = buffer + "\n\n" + part if buffer else part
+            if buffer and (len(buffer) >= min_chars or len(candidate) > max_chars):
+                yield refs, buffer
+                refs, buffer = [], ""
+            buffer = buffer + "\n\n" + part if buffer else part
+            if ref not in refs:
+                refs.append(ref)
+    if buffer:
+        yield refs, buffer

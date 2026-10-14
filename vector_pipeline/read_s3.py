@@ -19,7 +19,9 @@ def parquet_source(uri):
     parsed = urlsplit(uri)
     if not parsed.netloc or not parsed.path.strip("/") or parsed.query:
         raise ValueError("S3 경로는 s3://bucket/exact/key.parquet 형식이어야 합니다.")
-    client = boto3.client("s3", region_name=os.getenv("AWS_REGION", "ap-northeast-2"),
+    if not os.getenv("AWS_REGION"):
+        raise ValueError("S3를 읽으려면 AWS_REGION을 명시하세요.")
+    client = boto3.client("s3", region_name=os.environ["AWS_REGION"],
                           config=Config(retries={"mode": "standard", "max_attempts": 5}))
     key = parsed.path.lstrip("/")
     head = client.head_object(Bucket=parsed.netloc, Key=key)

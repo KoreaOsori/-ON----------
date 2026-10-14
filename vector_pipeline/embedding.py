@@ -9,7 +9,7 @@ class BedrockEmbedder:
         self.config = config
         self.client = boto3.client("bedrock-runtime", region_name=config.region,
                                    config=Config(retries={"mode": "adaptive", "max_attempts": 8},
-                                                 read_timeout=120))
+                                                 read_timeout=120, max_pool_connections=32))
 
     def embed(self, text):
         response = self.client.invoke_model(
