@@ -1,0 +1,10 @@
+[project]
+name = "pill-pipeline"
+version = "0.1.0"
+description = "약 보조 에이전트 데이터 파이프라인"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg[binary]>=3.3.6",
+    "pyarrow>=26.0.0",
+    "python-dotenv",
+]
