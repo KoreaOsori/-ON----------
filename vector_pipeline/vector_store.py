@@ -15,9 +15,9 @@ LINK_FIELDS = ("chunk_id", "content_hash", "product_type", "source_product_id", 
 
 def connect():
     import psycopg
-    if not all(os.getenv(x) for x in ("PGHOST", "PGDATABASE", "PGUSER")):
-        raise ValueError("PGHOST, PGDATABASE, PGUSER 설정이 필요합니다.")
-    return psycopg.connect(sslmode=os.getenv("PGSSLMODE", "verify-full"), connect_timeout=15, autocommit=True)
+    from aws_runtime import database_options
+    return psycopg.connect(**database_options(), sslmode=os.getenv("PGSSLMODE", "verify-full"),
+                           connect_timeout=15, autocommit=True)
 
 
 def check_config(conn, config):

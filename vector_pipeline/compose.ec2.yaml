@@ -1,0 +1,4 @@
+# Linux EC2 only. Host networking allows IMDSv2 with the existing hop limit.
+services:
+  pipeline:
+    network_mode: host

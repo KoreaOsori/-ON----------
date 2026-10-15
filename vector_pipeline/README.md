@@ -1,6 +1,32 @@
 # 의약품·건강기능식품 통합 벡터 파이프라인 v2.1
 
-이 폴더만으로 실버 Parquet을 검색 문서로 가공하고, 임베딩을 생성·보존한 뒤 향후 PostgreSQL RDS에 적재합니다. 골드·API·EC2/RDS/IAM 생성 코드는 포함하지 않습니다. 인프라는 별도로 준비합니다.
+이 폴더만으로 실버 Parquet을 검색 문서로 가공하고, 임베딩을 생성·보존한 뒤 PostgreSQL RDS에 적재합니다. 기존 `infra/terraform`의 EC2·RDS·S3·Secrets Manager 구성을 사용하며 다른 폴더를 변경하지 않습니다.
+
+## 기존 인프라 연결 (EC2)
+
+저장소 설정은 us-east-1, EC2 역할 인증, 프라이빗 RDS 데이터베이스 `pill`, 버전 관리되는 데이터 버킷입니다. 이는 코드 확인 결과이며 실제 배포 상태·S3 객체·연결 성공을 확인한 것은 아닙니다. `pipeline/silver/build.py`는 로컬 `s3/silver/`에 파일을 생성합니다. 확인한 수집 진입점에는 S3 업로드 코드가 없으므로 별도 업로드 단계에서 Parquet과 메타데이터를 먼저 올리고 **`silver/_latest.json`을 마지막에** 올려야 합니다. 공개한 snapshot 경로는 덮어쓰지 않아야 합니다.
+
+1. EC2에서 `vector_pipeline/.env.example`을 `.env`로 복사합니다.
+2. Terraform 출력 `data_bucket` → `DATA_BUCKET`, `rds_endpoint` → `PGHOST`, `rds_db_name` → `PGDATABASE`, `rds_master_secret_arn` → `RDS_SECRET_ARN`을 설정합니다. 실제 배포 리전으로 `AWS_REGION`과 `BEDROCK_REGION`을 확인합니다.
+3. RDS CA 번들을 `vector_pipeline/certs/global-bundle.pem`에 준비합니다. `output/`은 컨테이너 UID 10001이 쓸 수 있어야 합니다.
+4. 다음 명령은 `vector_pipeline/`에서 실행합니다. EC2용 override는 Linux host 네트워크를 사용하여 기존 IMDSv2 hop limit에서도 역할 인증에 접근합니다. 포트를 열거나 서비스를 상시 실행하지 않습니다.
+
+```sh
+docker compose -f compose.yaml -f compose.ec2.yaml build
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline prepare-silver --output /app/output/silver-run-001
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline validate --input /app/output/silver-run-001
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline embed --input /app/output/silver-run-001 --cache /app/output/embedding-cache.sqlite
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline init-db
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline ingest --input /app/output/silver-run-001 --cache /app/output/embedding-cache.sqlite
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline create-index
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline ingest --input /app/output/silver-run-001 --cache /app/output/embedding-cache.sqlite --publish
+```
+
+각 명령이 성공한 뒤 다음 단계로 진행하세요. `prepare-silver`는 완료 포인터를 한 번 읽어 두 제품 테이블의 날짜를 고정하고 Parquet 행의 snapshot도 확인합니다. `--snapshot YYYY-MM-DD`는 현재 포인터가 예상 날짜인지 확인하는 옵션입니다. 과거 스냅샷 재처리는 기존 `prepare --drug ... --health-food ...`를 사용합니다. 재실행할 때 완성된 bundle은 재생성하지 않고 embed/ingest부터 재개합니다.
+
+`RDS_SECRET_ARN`이 있으면 연결마다 username/password를 읽어 비밀번호 회전에 대응하고 파일에 저장하지 않습니다. 호스트·DB 이름은 환경변수로 지정합니다. 기존 배포의 `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`도 지원하며 대응하는 `PG*` 설정이 우선합니다. Secret 지정 시 인증정보는 Secret이 우선합니다.
+
+인프라 주석의 `rag`와 달리 이 파이프라인은 기존 **`product_search` 스키마를 유지**합니다. `gold` 및 백엔드 테이블을 변경하지 않으며 스키마 이름 자동 변경도 하지 않습니다. RDS 실제 사양·확장 권한·Titan 접근 권한·검색 지연시간은 EC2에서 별도 확인해야 합니다.
 
 ```text
 로컬/S3 Parquet
@@ -102,7 +128,7 @@ S3를 직접 읽는 경우:
 docker compose run --rm pipeline prepare --drug s3://BUCKET/silver/drug_product/snapshot=2026-10-13/data.parquet --health-food s3://BUCKET/silver/health_food_product/snapshot=2026-10-13/data.parquet --output /app/output/from-s3-v2
 ```
 
-예정 실행 위치는 **EC2 Docker**입니다. 기존 ECS 태스크 역할을 사용한다고 가정하지 않습니다. EC2 인스턴스 역할에는 지정 Silver 객체의 `s3:GetObject`, 버전 객체의 `s3:GetObjectVersion`, 사용 모델의 `bedrock:InvokeModel` 권한이 필요합니다. KMS 암호화 시 복호화 권한도 필요합니다. 컨테이너의 IMDSv2 자격증명 접근 및 S3/Bedrock 네트워크 경로는 인프라 준비 단계에서 확인하세요. 이 폴더는 IAM·보안 그룹을 변경하지 않습니다.
+실행 위치는 **EC2 Docker**입니다. 기존 EC2 역할의 `s3:GetObject`, `bedrock:InvokeModel`, `secretsmanager:GetSecretValue`를 사용합니다. S3 현재 객체를 ETag 조건으로 읽고 응답의 VersionId를 기록하므로 `s3:GetObjectVersion` 추가 권한은 필요하지 않습니다. HEAD 이후 내용이 바뀌면 다운로드를 중단합니다. 이 폴더는 IAM·보안 그룹을 변경하지 않습니다.
 
 ## RDS 준비 후 적재
 
