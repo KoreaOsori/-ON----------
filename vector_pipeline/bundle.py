@@ -72,6 +72,8 @@ def prepare(args):
                             seen.add(product_id)
                             snapshot = str(row.get("snapshot"))
                             date.fromisoformat(snapshot)
+                            if getattr(args, "expected_snapshot", None) and snapshot != args.expected_snapshot:
+                                raise ValueError("Parquet snapshot이 Silver 완료 포인터와 다릅니다.")
                             snapshots.add(snapshot)
                             if len(snapshots) != 1:
                                 raise ValueError("두 소스의 snapshot이 같아야 합니다.")

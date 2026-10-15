@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 
 from bundle import prepare, validate_bundle
 
@@ -15,6 +16,15 @@ def main():
     prep.add_argument("--min-chars", type=int, default=900)
     prep.add_argument("--overlap", type=int, default=150)
     prep.add_argument("--limit", type=int, default=0)
+    silver = sub.add_parser("prepare-silver", help="S3 Silver 완료 포인터로 두 제품 테이블 선택 → prepare")
+    silver.add_argument("--bucket", default=os.getenv("DATA_BUCKET"))
+    silver.add_argument("--prefix", default=os.getenv("SILVER_PREFIX", "silver"))
+    silver.add_argument("--snapshot", help="현재 완료 포인터 날짜를 고정하여 변경 시 중단")
+    silver.add_argument("--output", required=True)
+    silver.add_argument("--max-chars", type=int, default=1800)
+    silver.add_argument("--min-chars", type=int, default=900)
+    silver.add_argument("--overlap", type=int, default=150)
+    silver.add_argument("--limit", type=int, default=0)
     check = sub.add_parser("validate")
     check.add_argument("--input", required=True)
     sub.add_parser("init-db", help="RDS 준비 후 명시적 초기화. v1 DB 자동 변경 없음")
@@ -46,7 +56,13 @@ def main():
         else:
             command.add_argument("--publish", action="store_true", help="전체 bundle 검증 후 활성 스냅샷 전환")
     args = parser.parse_args()
-    if args.command == "prepare":
+    if args.command == "prepare-silver":
+        from aws_runtime import silver_sources
+        sources = silver_sources(args.bucket, args.prefix, args.snapshot)
+        args.drug, args.health_food = sources["drug_product"], sources["health_food_product"]
+        args.expected_snapshot = args.drug.rsplit("snapshot=", 1)[1].split("/", 1)[0]
+        result = prepare(args)
+    elif args.command == "prepare":
         result = prepare(args)
     elif args.command == "validate":
         _, result = validate_bundle(args.input)
