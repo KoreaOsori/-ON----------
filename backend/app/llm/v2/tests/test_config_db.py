@@ -174,3 +174,14 @@ def test_safe_error_name_uses_class_and_sqlstate_only():
 def test_contra_db_path_from_env():
     assert V2Settings.from_env({}).contra_db_path == ""
     assert V2Settings.from_env({"LLM_V2_CONTRA_DB": "/x/contra.sqlite"}).contra_db_path == "/x/contra.sqlite"
+
+
+def test_api_settings_from_env():
+    defaults = V2Settings.from_env({})
+    assert (defaults.api_key, defaults.api_max_concurrency, defaults.api_queue_seconds) == ("", 4, 5.0)
+    custom = V2Settings.from_env(
+        {"LLM_V2_API_KEY": "s3cret-v2-key", "LLM_V2_API_MAX_CONCURRENCY": "0", "LLM_V2_API_QUEUE_SECONDS": "-3"}
+    )
+    assert custom.api_key == "s3cret-v2-key"
+    assert custom.api_max_concurrency == 1 and custom.api_queue_seconds == 0.0  # 하한으로 보정
+    assert "s3cret-v2-key" not in repr(custom)  # API 키는 repr 에 나오지 않는다

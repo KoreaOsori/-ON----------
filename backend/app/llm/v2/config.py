@@ -99,6 +99,12 @@ class V2Settings:
     # 병용금기 인덱스(SQLite, contra_index 로 만든 파일) 경로. 비우면 v2/dev_data/contraindication.sqlite 가 있을 때만 켠다.
     contra_db_path: str = ""
 
+    # --- HTTP API (api.py) ---
+    # 비우면 키 없이 열린다(localhost 전용으로만 쓸 것). 값이 있으면 X-API-Key 헤더가 일치해야 한다. AWS 키와 무관하다.
+    api_key: str = field(default="", repr=False)
+    api_max_concurrency: int = 4  # 동시에 처리할 질문 수(DB 풀·Bedrock 호출 보호)
+    api_queue_seconds: float = 5.0  # 자리가 날 때까지 기다리는 최대 시간. 넘기면 503
+
     @property
     def embedding_version(self) -> str:
         """vector_pipeline.EmbeddingConfig.version 과 같은 문자열 (DB pipeline_config 와 대조)."""
@@ -163,4 +169,7 @@ class V2Settings:
             max_distance=max_distance,
             allow_global_search=(env.get("LLM_V2_ALLOW_GLOBAL_SEARCH", "").lower() in ("1", "true", "yes")),
             contra_db_path=env.get("LLM_V2_CONTRA_DB") or "",
+            api_key=env.get("LLM_V2_API_KEY") or "",
+            api_max_concurrency=max(1, _int(env, "LLM_V2_API_MAX_CONCURRENCY", 4)),
+            api_queue_seconds=max(0.0, _float(env, "LLM_V2_API_QUEUE_SECONDS", 5.0)),
         )
