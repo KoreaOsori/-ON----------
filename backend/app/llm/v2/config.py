@@ -7,6 +7,7 @@
 """
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Mapping
 
 
@@ -20,6 +21,14 @@ SCHEMA_VERSION = 2
 
 # 리전은 us-east-1 로 고정한다(환경변수로 바꾸지 않는다). 임베딩·Claude·Secrets Manager 모두 이 리전을 쓴다.
 REGION = "us-east-1"
+
+# DB 기본값은 v1(backend/app/llm/v1/database.py)의 고정 RDS 설정과 같다. EC2 에서는 환경변수 없이 이 값으로 연결한다.
+# PGHOST(또는 DB_HOST)가 있으면 이 기본값은 쓰지 않고 환경변수만 쓴다(로컬 개발 DB 용도).
+DEFAULT_DB_HOST = "pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com"
+DEFAULT_DB_NAME = "pill"
+DEFAULT_DB_SECRET_ID = "rds!db-71cf9992-e13e-4601-88da-425ac219f336"  # Secrets Manager 시크릿 이름(비밀값 아님)
+# RDS 호스트일 때 PGSSLROOTCERT 가 없으면 v1 이 저장소에 두는 AWS 공식 RDS CA 번들을 읽기만 한다(v1 파일은 수정하지 않는다).
+DEFAULT_DB_CA_FILE = str(Path(__file__).resolve().parent.parent / "v1" / "certs" / "us-east-1-bundle.pem")
 
 # 비교 대상 Claude 모델. backend/app/llm/v1/config.py 의 기본값(us. 추론 프로파일 ID)과 같은 값이다.
 # 이 값은 v1 쪽 설정을 그대로 가져온 것이며 v2 에서 실제 호출로 확인하지 않았다.
@@ -61,6 +70,8 @@ class V2Settings:
     region: str = REGION
     embedding_model_id: str = EMBEDDING_MODEL_ID
     embedding_dimensions: int = 1024
+    # AWS 자격증명 정책: auto(EC2 위에서는 인스턴스 역할만 허용, 그 밖에는 기본 체인) | ec2_role(항상 엄격) | default_chain(항상 완화)
+    auth_mode: str = "auto"
 
     # --- DB (읽기 전용 연결) ---
     db_host: str | None = None
@@ -130,6 +141,17 @@ class V2Settings:
         if provider not in ("bedrock", "mantle"):
             raise ConfigError("LLM_V2_PROVIDER 는 bedrock 또는 mantle 이어야 합니다.")
 
+        auth_mode = (env.get("LLM_V2_AUTH_MODE") or "auto").lower()
+        if auth_mode not in ("auto", "ec2_role", "default_chain"):
+            raise ConfigError("LLM_V2_AUTH_MODE 는 auto, ec2_role, default_chain 중 하나여야 합니다.")
+
+        # PGHOST 가 없으면 v1 과 같은 고정 RDS 설정(호스트·DB·시크릿·CA)을 쓰고, 있으면 환경변수만 쓴다.
+        env_host = _first(env, "PGHOST", "DB_HOST")
+        db_host = env_host or DEFAULT_DB_HOST
+        db_name = _first(env, "PGDATABASE", "DB_NAME") or (None if env_host else DEFAULT_DB_NAME)
+        secret_id = env.get("RDS_SECRET_ARN") or (None if env_host else DEFAULT_DB_SECRET_ID)
+        ssl_root_cert = env.get("PGSSLROOTCERT") or (DEFAULT_DB_CA_FILE if db_host.endswith(".rds.amazonaws.com") else None)
+
         ssl_mode = env.get("PGSSLMODE") or "verify-full"
         if ssl_mode not in ("verify-full", "require", "disable"):
             raise ConfigError("PGSSLMODE 는 verify-full, require, disable 중 하나여야 합니다.")
@@ -146,14 +168,15 @@ class V2Settings:
             region=REGION,
             embedding_model_id=model,
             embedding_dimensions=dimensions,
-            db_host=_first(env, "PGHOST", "DB_HOST"),
+            auth_mode=auth_mode,
+            db_host=db_host,
             db_port=int(_first(env, "PGPORT", "DB_PORT") or 5432),
-            db_name=_first(env, "PGDATABASE", "DB_NAME"),
+            db_name=db_name,
             db_user=_first(env, "PGUSER", "DB_USERNAME"),
             db_password=_first(env, "PGPASSWORD", "DB_PASSWORD"),
-            rds_secret_arn=env.get("RDS_SECRET_ARN") or None,
+            rds_secret_arn=secret_id,
             db_ssl_mode=ssl_mode,
-            db_ssl_root_cert=env.get("PGSSLROOTCERT") or None,
+            db_ssl_root_cert=ssl_root_cert,
             db_statement_timeout_ms=_int(env, "LLM_V2_DB_STATEMENT_TIMEOUT_MS", 15000),
             db_pool_size=_int(env, "LLM_V2_DB_POOL_SIZE", 3),
             llm_provider=provider,

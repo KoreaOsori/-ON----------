@@ -22,6 +22,7 @@ langchain/langgraph 없이 anthropic SDK의 `tools` 기능으로 루프를 직�
 | `names.py` | 제품명 입력 변형(전각/공백/괄호 제거)과 표시용 줄임(`(수출명:…)` 제거) | — |
 | `embedder.py` | 질문 임베딩(Titan V2 · 1024 · normalize), `asyncio.to_thread` | Bedrock 임베딩 호출 |
 | `db.py` | 읽기 전용 연결, 연결마다 시크릿 조회, 엔진/Reader | `db.py` |
+| `aws_auth.py` | AWS 자격증명 정책: EC2에서는 인스턴스 역할만 허용, 로컬은 기본 체인 (`LLM_V2_AUTH_MODE`) | — |
 | `llm_client.py` | Claude 클라이언트(bedrock / mantle) | `llm.py` |
 | `prompts.py`, `safety.py` | 시스템 프롬프트·고정 문구, 응급/위기 표현 감지 | `prompt.py` |
 | `config.py` | 환경변수 설정(`V2Settings`) | `config.py` |
@@ -150,18 +151,42 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변�
 - `LLM_V2_API_KEY`를 설정하면 `X-API-Key`가 일치해야 합니다(상수 시간 비교, ASCII 문자열 권장). 설정하지 않으면 인증 없이 열리므로 **localhost로만** 띄우고(시작 때 경고 로그), 외부에 열 때는 키와 HTTPS 프록시·보안그룹으로 접근을 제한하세요. 이 키는 AWS 키와 무관합니다.
 - 오류 응답에는 내부 메시지를 담지 않고, 로그에는 질문·프로필·비밀값을 남기지 않습니다.
 - 동시에 처리하는 질문은 `LLM_V2_API_MAX_CONCURRENCY`(기본 4)개입니다. 나머지는 `LLM_V2_API_QUEUE_SECONDS`(기본 5초)까지 기다리고, 넘으면 503입니다(DB 연결 풀과 Bedrock 호출 보호).
-- EC2에서 쓰려면 DB(`PGHOST` 등)·병용금기 파일(`LLM_V2_CONTRA_DB`)·Bedrock 권한이 필요합니다. 아래 환경변수 표와 v1의 `iam/` 정책 템플릿을 참고하세요.
+- EC2에서는 **환경변수 없이** v1과 같은 RDS 설정(호스트·DB·시크릿·CA)으로 연결하고, 인스턴스 역할 자격증명이 아니면 시작을 막습니다(아래 "AWS 자격증명과 DB 연결"). 병용금기 파일(`LLM_V2_CONTRA_DB`)과 Bedrock·Secrets Manager 권한은 따로 필요합니다. v1의 `iam/` 정책 템플릿을 참고하세요.
 - 백엔드는 이 서버를 HTTP로 호출하거나(권장), `from app.llm.v2.agent import answer`로 직접 호출합니다. 라우터만 다른 앱에 붙이면 시작 때 설정되는 `app.state`가 없어 동작하지 않습니다.
+
+## AWS 자격증명과 DB 연결
+
+**자격증명(`LLM_V2_AUTH_MODE`)** — v1(`aws_auth.py`)과 같은 검사입니다. 정적 키나 공유 프로필이 먼저 잡혀 운영 서버가 역할이 아닌 자격증명으로 Bedrock·Secrets Manager를 호출하는 일을 막습니다.
+
+| 값 | 동작 |
+|---|---|
+| `auto` (기본) | EC2 위에서 실행 중이면 엄격, 아니면 완화. 로컬 개발은 설정 없이 그대로 동작 |
+| `ec2_role` | 항상 엄격: 자격증명이 EC2 인스턴스 역할(`iam-role`)이 아니면 시작 실패 |
+| `default_chain` | 항상 완화: boto3 기본 자격증명 체인(로컬 프로필·SSO 등) |
+
+- EC2 감지는 리눅스 DMI 정보(`Amazon EC2`)로 하며 네트워크 호출은 없습니다. 감지에 실패하면 완화로 동작하므로(fail-open) **운영 서버에는 `LLM_V2_AUTH_MODE=ec2_role`을 명시**하는 편이 안전합니다(특히 컨테이너).
+- 엄격 모드에서는 서버 환경에 `AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, `AWS_BEARER_TOKEN_BEDROCK` 등을 넣지 마세요. IMDS는 켜 두고, EC2 안의 Docker라면 컨테이너가 IMDS에 닿도록 hop limit을 2 이상으로 설정해야 합니다.
+- 검사는 `build_agent`(= HTTP API 시작, `answer()` 첫 호출)에서만 합니다. 평가 스크립트(`retrieval_eval` 등)는 영향받지 않습니다.
+- 오류 메시지에는 자격증명 값이 아니라 방식 이름(`env`, `iam-role` 등)만 나옵니다.
+
+**DB 연결** — `PGHOST`(또는 `DB_HOST`)가 **없으면** v1(`database.py`)과 같은 고정 RDS 설정을 씁니다: 호스트 `pill-check-dev-postgres…rds.amazonaws.com`, DB `pill`, 포트 5432, Secrets Manager 시크릿 `rds!db-71cf9992-…`(연결마다 새로 읽음), TLS `verify-full` + v1 저장소의 RDS CA 번들(`v1/certs/us-east-1-bundle.pem`, 읽기만 하며 수정하지 않음). 그래서 EC2에서는 DB 환경변수가 필요 없습니다.
+
+- `PGHOST`가 **있으면** 고정 설정을 쓰지 않고 환경변수만 씁니다(아래 "로컬 개발 DB"의 평가용 로컬 DB). 일부만 주면 나머지는 비어 오류로 드러납니다.
+- 고정 설정 위에서도 `PGDATABASE`, `RDS_SECRET_ARN`, `PGSSLROOTCERT`, `PGSSLMODE`로 항목별로 바꿀 수 있습니다.
+- `PGHOST`를 RDS 호스트(`*.rds.amazonaws.com`)로 직접 주고 `PGSSLROOTCERT`를 생략하면 같은 CA 번들을 씁니다. 그 밖의 호스트에는 적용하지 않습니다.
+- 주의: 로컬에서 `PGHOST`를 설정하지 않고 실행하면 위 고정 RDS에 연결을 시도합니다(VPC 밖이면 실패, 읽기 전용 연결).
+- v1 파일을 참조하므로 v1 폴더(`certs/`)가 배포에 포함돼야 합니다.
 
 ## 환경변수
 
 | 이름 | 설명 | 기본값 |
 |---|---|---|
 | (리전) | **us-east-1 고정**. 임베딩·Claude·Secrets Manager 모두 이 리전을 쓰고, 환경변수로 바꿀 수 없다(`config.REGION`) | us-east-1 |
-| `PGHOST`, `PGPORT`, `PGDATABASE` (`DB_HOST` 등도 인식) | DB 위치 | 포트 5432 |
-| `RDS_SECRET_ARN` | 있으면 연결마다 여기서 사용자/비밀번호를 읽는다 | — |
+| `PGHOST`, `PGPORT`, `PGDATABASE` (`DB_HOST` 등도 인식) | DB 위치. **`PGHOST`를 주면 v1 고정 RDS 설정 대신 환경변수만 사용** | v1 고정 RDS / 5432 / `pill` |
+| `RDS_SECRET_ARN` | 연결마다 여기서 사용자/비밀번호를 읽는다(시크릿 이름도 가능) | v1 고정 시크릿(`PGHOST`가 없을 때) |
 | `PGUSER`, `PGPASSWORD` | 시크릿을 쓰지 않을 때(로컬 개발) | — |
-| `PGSSLMODE`, `PGSSLROOTCERT` | `verify-full`(기본) / `require` / `disable`, RDS CA 번들 경로 | verify-full |
+| `PGSSLMODE`, `PGSSLROOTCERT` | `verify-full`(기본) / `require` / `disable`, RDS CA 번들 경로 | verify-full / v1 CA 번들(RDS 호스트일 때) |
+| `LLM_V2_AUTH_MODE` | AWS 자격증명 정책 `auto` / `ec2_role` / `default_chain` (위 "AWS 자격증명과 DB 연결") | auto |
 | `LLM_V2_HAIKU_MODEL_ID`, `LLM_V2_SONNET_MODEL_ID` | 비교·기본 모델. 기본값은 v1 설정과 같은 추론 프로파일 ID이며 v2에서 실제 호출로는 미검증 | `us.anthropic.claude-haiku-5-5`, `us.anthropic.claude-sonnet-5-5` |
 | `LLM_V2_DEFAULT_MODEL` | `answer()`가 쓰는 모델 (`haiku` / `sonnet`) | haiku |
 | `LLM_V2_MODEL_ID` | 위 둘 대신 쓸 임의 모델 ID (예: `mantle`은 `us.` 없는 ID가 필요할 수 있음) | — |
@@ -279,7 +304,8 @@ uv run pytest app/llm/v2/tests
 ## 확인된 것 / 확인되지 않은 것
 
 확인됨(작성 환경에서 실행):
-- 위 테스트 156개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
+- 위 테스트 171개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
+- 자격증명 정책(`aws_auth.py`)은 가짜 세션으로 엄격·완화·EC2 감지를, 설정 기본값은 `PGHOST` 유무에 따른 전환을 시험했다(정책 검사를 지우거나 항상 완화로 바꾸면 해당 테스트가 실패한다). **실제 EC2의 `iam-role` 판정과 DMI 감지는 이 환경에서 확인하지 못했다.**
 - HTTP API(`api.py`)는 가짜 에이전트로 요청 검증·인증·상태 코드·동시 요청 제한·오류 비노출을 시험했다. 단, **`build_agent`가 실제 DB·Bedrock으로 앱을 띄우는 경로는 작성 환경에 SQLAlchemy가 없어 시험하지 못했다**(에이전트 자체는 평가 스크립트에서 실제로 동작을 확인).
 - 검색 SQL을 실제 PostgreSQL 16에서 `vector_pipeline/sql/init.sql` 스키마로 실행했다: 이름 단계(exact/prefix/contains), `%`·`_` 이스케이프, 악의적 입력 무해, 제품 범위 한정, 공유 본문의 `source_count`, 읽기 전용 트랜잭션의 쓰기 거부, 괄호 이름 처리(괄호 포함/제외 입력, 전각 괄호, 공백, 근사 일치, 후보 여럿 → 되묻기, `product_key` 지정). 제품명 변형 평가(`name_eval`)의 집계 로직도 같은 DB로 시험했다(3개 제품, 변형 6종). 병용금기 도구는 실제 `data.parquet`에서 만든 인덱스로, 같은 PostgreSQL에 적재한 실제 제품명·`item_seq`와 함께 시험했다(실제 규칙 쌍 9개 모두 확인, 규칙 없는 대조군 2쌍은 규칙 없음, 이름이 갈리는 입력은 되묻기). 단, **pgvector는 없어서** `vector` 타입과 `<=>`는 같은 모양의 대체물로 시험했다.
 

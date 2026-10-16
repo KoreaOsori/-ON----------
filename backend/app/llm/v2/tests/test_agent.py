@@ -333,3 +333,40 @@ def test_build_contra_tool_follows_explicit_path_and_default_location():
             agent_module._build_contra_tool(make_settings(contra_db_path=str(tmp / "missing.sqlite")), object())
     finally:
         agent_module.DEFAULT_CONTRA_DB = original
+
+
+def test_build_agent_enforces_credential_policy_before_building_anything():
+    from app.llm.v2.aws_auth import CredentialPolicyError
+
+    calls = []
+
+    def strict(settings):
+        calls.append("auth")
+        raise CredentialPolicyError("EC2 인스턴스 역할 자격증명이 필요합니다.")
+
+    original_auth, original_engine = agent_module.ensure_credentials, agent_module.build_engine
+    agent_module.ensure_credentials = strict
+    agent_module.build_engine = lambda settings: calls.append("engine")  # 도달하면 안 된다
+    try:
+        with raises(CredentialPolicyError) as caught:
+            agent_module.build_agent(make_settings())
+    finally:
+        agent_module.ensure_credentials, agent_module.build_engine = original_auth, original_engine
+    assert calls == ["auth"] and "역할" in str(caught.value)
+
+
+async def test_answer_entrypoint_reports_error_when_credential_policy_fails():
+    from app.llm.v2.aws_auth import CredentialPolicyError
+
+    def strict(settings):
+        raise CredentialPolicyError("EC2 인스턴스 역할 자격증명이 필요합니다.")
+
+    original = agent_module.ensure_credentials
+    agent_module._agent = None
+    agent_module.ensure_credentials = strict
+    try:
+        result = await answer("타이레놀 복용법", None)
+    finally:
+        agent_module.ensure_credentials = original
+        agent_module._agent = None
+    assert result.stop_reason == "error" and result.answer == ERROR_ANSWER  # 서버가 정책을 어기면 답하지 않는다

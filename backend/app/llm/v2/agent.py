@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.llm.v2.aws_auth import ensure_credentials
 from app.llm.v2.config import V2Settings
 from app.llm.v2.db import build_engine, reader_factory_for, safe_error_name
 from app.llm.v2.contra_store import ContraStore
@@ -294,6 +295,7 @@ _agent_lock = asyncio.Lock()
 
 def build_agent(settings: V2Settings | None = None) -> DrugInfoAgent:
     settings = settings or V2Settings.from_env()
+    ensure_credentials(settings)  # EC2 에서는 인스턴스 역할 자격증명이 아니면 시작을 막는다(로컬은 통과)
     engine = build_engine(settings)
     open_reader = reader_factory_for(engine)
     tool = DrugSearchTool(settings, open_reader, QueryEmbedder(settings))
