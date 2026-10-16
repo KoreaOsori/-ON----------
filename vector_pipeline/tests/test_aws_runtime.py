@@ -12,16 +12,34 @@ from aws_runtime import database_options, silver_sources
 class RuntimeTests(unittest.TestCase):
     def pointer(self, health="2026-10-15"):
         s3 = Mock()
-        s3.get_object.return_value = {"Body": io.BytesIO(json.dumps({
-            "snapshot": "2026-10-15", "tables": {"drug_product": "2026-10-15",
-                                                  "health_food_product": health}}).encode())}
+        s3.get_paginator.return_value.paginate.side_effect = lambda **kw: [{"Contents": [
+            {"Key": kw["Prefix"] + "snapshot=" + (health if "health_food" in kw["Prefix"] else "2026-10-15") + "/data.parquet", "Size": 100}]}]
         return s3
 
     def test_completed_pointer_resolves_both_tables(self):
         s3 = self.pointer()
         sources = silver_sources("data-bucket", s3=s3)
         self.assertEqual(sources["drug_product"], "s3://data-bucket/silver/drug_product/snapshot=2026-10-15/data.parquet")
-        self.assertTrue(s3.get_object.return_value["Body"].closed)
+        s3.get_object.assert_not_called()
+
+    def test_latest_common_date_across_pages(self):
+        s3 = Mock()
+        def pages(**kw):
+            dates = ["2026-10-14", "2026-10-15"]
+            if "drug_product" in kw["Prefix"]:
+                dates.append("2026-10-16")
+            return [{"Contents": [{"Key": kw["Prefix"] + d + "/data.parquet", "Size": 100}]} for d in dates]
+        s3.get_paginator.return_value.paginate.side_effect = pages
+        sources = silver_sources("data-bucket", s3=s3)
+        self.assertTrue(all("/2026-10-15/" in v for v in sources.values()))
+
+    def test_empty_and_invalid_objects_not_selected(self):
+        s3 = Mock()
+        s3.get_paginator.return_value.paginate.side_effect = lambda **kw: [{"Contents": [
+            {"Key": kw["Prefix"] + "2026-10-16/data.parquet", "Size": 0},
+            {"Key": kw["Prefix"] + "latest/data.parquet", "Size": 100}]}]
+        with self.assertRaises(ValueError):
+            silver_sources("data-bucket", s3=s3)
 
     def test_mixed_snapshot_is_rejected(self):
         with self.assertRaises(ValueError):

@@ -2,6 +2,10 @@
 [aws]
 region = "us-east-1"
 
+[silver]
+bucket = "pill-check-data-827913617635"
+prefix = "silver"
+
 [database]
 host = "pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com"
 port = 5432
