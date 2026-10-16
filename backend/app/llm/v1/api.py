@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from .aws_auth import RoleCredentialsError
 from .bedrock import Bedrock
 from .config import Settings
 from .repository import DataUnavailable, Repository
@@ -45,6 +46,8 @@ async def ask(body: AskRequest, request: Request):
                 await conn.execute(text("SET LOCAL statement_timeout = '15s'"))
                 return await Service(Repository(conn, settings), request.app.state.llm_bedrock, settings).ask(body)
     except DataUnavailable as error:
+        raise HTTPException(503, str(error)) from None
+    except RoleCredentialsError as error:
         raise HTTPException(503, str(error)) from None
     except ClientError as error:
         code = error.response.get("Error", {}).get("Code", "unknown")

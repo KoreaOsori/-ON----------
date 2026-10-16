@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     )
     database_url: str = "postgresql+asyncpg://yakon:yakon@localhost:5555/yakon"
     region: str = "us-east-1"
+    auth_mode: Literal["ec2_role", "default_chain"] = "ec2_role"
     sonnet_model_id: str = "us.anthropic.claude-sonnet-5-5"
     haiku_model_id: str = "us.anthropic.claude-haiku-5-5"
     default_model: Literal["sonnet", "haiku"] = "haiku"
