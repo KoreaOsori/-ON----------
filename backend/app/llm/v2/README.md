@@ -14,6 +14,7 @@ langchain/langgraph 없이 anthropic SDK의 `tools` 기능으로 루프를 직�
 | 파일 | 역할 | 강의 대응 |
 |---|---|---|
 | `agent.py` | 도구 호출 루프, 외부 진입점 `answer(question, profile_context, product_key)` | `graph.py` |
+| `api.py` | HTTP API(FastAPI): `POST /llm/v2/ask`, `GET /llm/v2/models`, `GET /llm/v2/health`. API 키 인증·동시 요청 제한 | — |
 | `harness.py` | `Limits`(라운드/호출/시간), `Budget`, `ALLOWED_TOOLS` | `harness.py` |
 | `tools.py` | `search_drug_info` 도구 정의·실행·`[출처 \| 제품명 \| 섹션]` 포매터 | `tools/rag_tools.py` |
 | `search.py` | 제품명 식별(이름 변형·`product_key`) + 제품 범위 exact 벡터 검색 (`CAST(:q AS vector)`) | `retrieval.py` |
@@ -86,6 +87,72 @@ app\llm\v2\dev_data\pipeline-venv\Scripts\python -m app.llm.v2.contra_index --pa
 - **운영 반영 시 결정 필요**: 지금은 로컬 파일입니다. 운영(EC2/RDS)에서는 이 인덱스를 배포물에 포함할지, RDS 테이블로 옮길지(그러면 `vector_pipeline` 쪽 적재가 필요) 팀에서 정해야 합니다.
 - **확인**: `uv run python -m app.llm.v2.evaluation.contra_eval --limit 100` — DB에 적재된 의약품 중 실제 병용금기 쌍(양성)과 규칙 없는 쌍(대조군)을 도구로 확인해, 양성은 key로 100% 규칙 있음·대조군은 100% 규칙 없음인지 봅니다(Bedrock 불필요).
 
+## HTTP API (FastAPI)
+
+에이전트를 서비스로 띄웁니다. 기존 `main.py`는 건드리지 않았고, 독립 앱으로 실행합니다(v1은 8011, v2는 8012).
+
+```powershell
+cd backend
+uv run python -m uvicorn app.llm.v2.api:app --host 127.0.0.1 --port 8012
+```
+
+Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변수로 설정을 읽고 에이전트를 만듭니다(설정 오류나, `LLM_V2_CONTRA_DB`를 지정했는데 파일이 없으면 시작이 실패합니다).
+
+| 엔드포인트 | 설명 |
+|---|---|
+| `POST /llm/v2/ask` | 질문 → 답변. 아래 요청·응답 참고 |
+| `GET /llm/v2/models` | 사용 모델·켜진 도구·거리 기준 확인(인증 필요) |
+| `GET /llm/v2/health` | 프로세스 생존 확인(인증 없음, DB·Bedrock은 확인하지 않음) |
+
+요청(`question`만 필수):
+
+```json
+{
+  "question": "라식스주사랑 알보젠겐타마이신황산염주 같이 써도 돼요?",
+  "product_key": "drug:195700010",
+  "profile_context": "30대 임산부"
+}
+```
+
+- `product_key`는 `status`가 `needs_clarification`일 때 사용자가 고른 후보의 값입니다. 서버는 대화 상태를 저장하지 않으므로 같은 질문에 이 값을 붙여 다시 보냅니다.
+- `profile_context`는 모델에 **데이터로만** 전달됩니다(1000자 이하). 질문이 500자(설정값 `max_question_chars`)를 넘으면 422입니다.
+
+응답:
+
+```json
+{
+  "status": "done",
+  "answer": "...(면책 문구 포함)",
+  "grounded": true,
+  "emergency": false,
+  "sources": ["알보젠겐타마이신황산염주 × 라식스주사(푸로세미드) · 병용금기(DUR)"],
+  "candidates": [],
+  "tools_used": ["check_contraindication"],
+  "rounds": 2,
+  "usage": {"input_tokens": 5200, "output_tokens": 420},
+  "latency_ms": 5300,
+  "model_id": "us.anthropic.claude-haiku-5-5"
+}
+```
+
+| `status` | HTTP | 의미 |
+|---|---|---|
+| `done` | 200 | 근거가 있는 답변 |
+| `no_evidence` | 200 | 근거 없음(고정 안내, 모델 문장 폐기) |
+| `needs_clarification` | 200 | 제품 후보가 여럿. `candidates`(`product_key`, `product_name`, `manufacturer`)를 보여 주고 다시 질문 |
+| `crisis` / `refusal` / `budget` / `empty` | 200 | 위기 안내 / 모델 거절 / 한도 초과 / 빈 질문(고정 안내) |
+| (오류) | 503 | 모델·DB 오류, 또는 동시 요청이 많아 대기 시간 초과(`Retry-After` 헤더) |
+| (시간 초과) | 504 | 전체 시간(`LLM_V2_MAX_SECONDS`) 초과 |
+| (검증 실패) | 422 | 빈 질문, 너무 긴 질문, 잘못된 `product_key`, 알 수 없는 필드 |
+| (인증 실패) | 401 | `LLM_V2_API_KEY`가 설정됐는데 `X-API-Key`가 없거나 다름 |
+
+보안·운영:
+- `LLM_V2_API_KEY`를 설정하면 `X-API-Key`가 일치해야 합니다(상수 시간 비교, ASCII 문자열 권장). 설정하지 않으면 인증 없이 열리므로 **localhost로만** 띄우고(시작 때 경고 로그), 외부에 열 때는 키와 HTTPS 프록시·보안그룹으로 접근을 제한하세요. 이 키는 AWS 키와 무관합니다.
+- 오류 응답에는 내부 메시지를 담지 않고, 로그에는 질문·프로필·비밀값을 남기지 않습니다.
+- 동시에 처리하는 질문은 `LLM_V2_API_MAX_CONCURRENCY`(기본 4)개입니다. 나머지는 `LLM_V2_API_QUEUE_SECONDS`(기본 5초)까지 기다리고, 넘으면 503입니다(DB 연결 풀과 Bedrock 호출 보호).
+- EC2에서 쓰려면 DB(`PGHOST` 등)·병용금기 파일(`LLM_V2_CONTRA_DB`)·Bedrock 권한이 필요합니다. 아래 환경변수 표와 v1의 `iam/` 정책 템플릿을 참고하세요.
+- 백엔드는 이 서버를 HTTP로 호출하거나(권장), `from app.llm.v2.agent import answer`로 직접 호출합니다. 라우터만 다른 앱에 붙이면 시작 때 설정되는 `app.state`가 없어 동작하지 않습니다.
+
 ## 환경변수
 
 | 이름 | 설명 | 기본값 |
@@ -102,6 +169,8 @@ app\llm\v2\dev_data\pipeline-venv\Scripts\python -m app.llm.v2.contra_index --pa
 | `LLM_V2_MAX_TOOL_ROUNDS`, `LLM_V2_MAX_TOOL_CALLS`, `LLM_V2_MAX_SECONDS` | 하니스 한도 | 4 / 6 / 60 |
 | `LLM_V2_SEARCH_TOP_K` | 도구 한 번에 가져올 근거 수 | 5 |
 | `LLM_V2_CONTRA_DB` | 병용금기 인덱스(SQLite) 경로. 비우면 `dev_data/contraindication.sqlite`가 있을 때만 병용금기 도구를 켬 | (없음) |
+| `LLM_V2_API_KEY` | HTTP API의 `X-API-Key` 값. 비우면 인증 없이 열림(localhost 전용) | (없음) |
+| `LLM_V2_API_MAX_CONCURRENCY`, `LLM_V2_API_QUEUE_SECONDS` | HTTP API 동시 처리 질문 수 / 자리가 날 때까지 기다리는 시간(초) | 4 / 5 |
 | `LLM_V2_MAX_DISTANCE` | 코사인 거리가 이 값보다 큰 근거는 버림(0~2). 전부 버려지면 "근거 없음" 처리. 기본값은 `retrieval_eval --mode calibrate` 결과로 정함(정답 95% 통과·무관 질문 99% 차단). 데이터·임베딩 모델이 바뀌면 다시 보정 | 0.80 |
 | `LLM_V2_ALLOW_GLOBAL_SEARCH` | `true`면 제품명 없이 전체 exact 검색 허용(느릴 수 있음) | false |
 | `LLM_V2_DB_STATEMENT_TIMEOUT_MS` | 쿼리 최대 시간 | 15000 |
@@ -210,7 +279,8 @@ uv run pytest app/llm/v2/tests
 ## 확인된 것 / 확인되지 않은 것
 
 확인됨(작성 환경에서 실행):
-- 위 테스트 140개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
+- 위 테스트 156개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
+- HTTP API(`api.py`)는 가짜 에이전트로 요청 검증·인증·상태 코드·동시 요청 제한·오류 비노출을 시험했다. 단, **`build_agent`가 실제 DB·Bedrock으로 앱을 띄우는 경로는 작성 환경에 SQLAlchemy가 없어 시험하지 못했다**(에이전트 자체는 평가 스크립트에서 실제로 동작을 확인).
 - 검색 SQL을 실제 PostgreSQL 16에서 `vector_pipeline/sql/init.sql` 스키마로 실행했다: 이름 단계(exact/prefix/contains), `%`·`_` 이스케이프, 악의적 입력 무해, 제품 범위 한정, 공유 본문의 `source_count`, 읽기 전용 트랜잭션의 쓰기 거부, 괄호 이름 처리(괄호 포함/제외 입력, 전각 괄호, 공백, 근사 일치, 후보 여럿 → 되묻기, `product_key` 지정). 제품명 변형 평가(`name_eval`)의 집계 로직도 같은 DB로 시험했다(3개 제품, 변형 6종). 병용금기 도구는 실제 `data.parquet`에서 만든 인덱스로, 같은 PostgreSQL에 적재한 실제 제품명·`item_seq`와 함께 시험했다(실제 규칙 쌍 9개 모두 확인, 규칙 없는 대조군 2쌍은 규칙 없음, 이름이 갈리는 입력은 되묻기). 단, **pgvector는 없어서** `vector` 타입과 `<=>`는 같은 모양의 대체물로 시험했다.
 
 확인 안 됨(첫 실제 실행에서 확인 필요):

@@ -118,6 +118,11 @@ class DrugInfoAgent:
             self._tools[CONTRA_TOOL_NAME] = contra_tool
             self._system = SYSTEM_PROMPT + CONTRA_PROMPT_ADDENDUM
 
+    @property
+    def tool_names(self) -> list[str]:
+        """켜져 있는 도구 이름(병용금기 도구는 인덱스 파일이 있을 때만 포함)."""
+        return list(self._tools)
+
     async def aclose(self) -> None:
         if self._engine is not None:
             await self._engine.dispose()
