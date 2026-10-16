@@ -15,10 +15,13 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from app.llm.v2.config import V2Settings
 from app.llm.v2.db import build_engine, reader_factory_for, safe_error_name
+from app.llm.v2.contra_store import ContraStore
+from app.llm.v2.contra_tool import CONTRA_TOOL_NAME, ContraindicationTool
 from app.llm.v2.embedder import QueryEmbedder
 from app.llm.v2.harness import (
     Budget,
@@ -30,6 +33,7 @@ from app.llm.v2.harness import (
 from app.llm.v2.llm_client import CreateMessage, build_create_message
 from app.llm.v2.prompts import (
     BUDGET_ANSWER,
+    CONTRA_PROMPT_ADDENDUM,
     CRISIS_ANSWER,
     EMERGENCY_NOTICE,
     ERROR_ANSWER,
@@ -42,7 +46,9 @@ from app.llm.v2.prompts import (
     build_user_content,
 )
 from app.llm.v2.safety import is_crisis, is_emergency
-from app.llm.v2.tools import DrugSearchTool, Evidence
+from app.llm.v2.tools import TOOL_NAME, DrugSearchTool, Evidence
+
+DEFAULT_CONTRA_DB = Path(__file__).resolve().parent / "dev_data" / "contraindication.sqlite"
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,8 @@ class AgentAnswer:
     input_tokens: int = 0
     output_tokens: int = 0
     elapsed_seconds: float = 0.0
+    # 도구 호출별 {arguments(제품명·섹션·product_key·질문), result_head(결과 첫머리)}. 원인 분석용이며 로그에는 남기지 않는다.
+    tool_trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -91,11 +99,24 @@ def _normalize_blocks(response: Any) -> list[dict[str, Any]]:
 
 
 class DrugInfoAgent:
-    def __init__(self, create_message: CreateMessage, tool: DrugSearchTool, limits: Limits, engine: Any = None) -> None:
+    def __init__(
+        self,
+        create_message: CreateMessage,
+        tool: DrugSearchTool,
+        limits: Limits,
+        engine: Any = None,
+        contra_tool: ContraindicationTool | None = None,
+    ) -> None:
         self._create = create_message
         self._tool = tool
         self._limits = limits
         self._engine = engine
+        # 이름 → 실행기. 병용금기 도구는 인덱스 파일이 있을 때만 켜지고, 켜졌을 때만 프롬프트가 언급한다.
+        self._tools: dict[str, Any] = {TOOL_NAME: tool}
+        self._system = SYSTEM_PROMPT
+        if contra_tool is not None:
+            self._tools[CONTRA_TOOL_NAME] = contra_tool
+            self._system = SYSTEM_PROMPT + CONTRA_PROMPT_ADDENDUM
 
     async def aclose(self) -> None:
         if self._engine is not None:
@@ -103,7 +124,7 @@ class DrugInfoAgent:
 
     async def _call_model(self, messages: list[dict[str, Any]], budget: Budget) -> Any:
         return await asyncio.wait_for(
-            self._create(system=SYSTEM_PROMPT, tools=[self._tool.spec], messages=list(messages)),
+            self._create(system=self._system, tools=[t.spec for t in self._tools.values()], messages=list(messages)),
             timeout=budget.remaining_seconds(),
         )
 
@@ -115,6 +136,7 @@ class DrugInfoAgent:
         tools_used: list[str],
         candidates: list[dict[str, Any]],
         product_key: str | None,
+        trace: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         def result(text: str, is_error: bool = False) -> dict[str, Any]:
             item = {"type": "tool_result", "tool_use_id": block["id"], "content": text}
@@ -127,17 +149,26 @@ class DrugInfoAgent:
             assert_allowed_tool(name)
         except ToolNotAllowedError:
             logger.warning("허용되지 않은 도구 요청 차단")
-            return result("허용되지 않은 도구입니다. search_drug_info 만 사용할 수 있습니다.", True)
+            return result("허용되지 않은 도구입니다. 제공된 도구만 사용할 수 있습니다.", True)
+        runner = self._tools.get(name)
+        if runner is None:  # 허용 목록에는 있지만 이 에이전트에서는 꺼져 있는 도구
+            return result("지금은 사용할 수 없는 도구입니다.", True)
         if not budget.can_call_tool():
             return result("도구 호출 횟수 한도를 넘었습니다. 지금까지의 결과로 답하세요.", True)
 
         budget.check_time()
         budget.consume_call()
         arguments = block.get("input")
-        if product_key and isinstance(arguments, dict):
+        if product_key and name == TOOL_NAME and isinstance(arguments, dict):
             arguments = {**arguments, "product_key": product_key}  # 호출자가 확정한 제품을 모델 인자보다 우선
-        outcome = await asyncio.wait_for(self._tool.run(arguments), timeout=budget.remaining_seconds())
+        outcome = await asyncio.wait_for(runner.run(arguments), timeout=budget.remaining_seconds())
         tools_used.append(name)
+        if trace is not None:
+            shown = arguments if isinstance(arguments, dict) else {}
+            trace.append({
+                "arguments": {k: shown.get(k) for k in ("product_name", "product_key", "section", "question", "products") if k in shown},
+                "result_head": outcome.text[:80],
+            })
         evidence.extend(outcome.evidence)
         if outcome.candidates:
             candidates[:] = outcome.candidates
@@ -159,6 +190,7 @@ class DrugInfoAgent:
         evidence: list[Evidence] = []
         candidates: list[dict[str, Any]] = []
         tools_used: list[str] = []
+        trace: list[dict[str, Any]] = []
         final_text = ""
         stop = "done"
         tokens_in = tokens_out = 0
@@ -185,7 +217,7 @@ class DrugInfoAgent:
 
                 budget.consume_round()
                 messages.append({"role": "assistant", "content": blocks})
-                results = [await self._run_tool(b, budget, evidence, tools_used, candidates, product_key) for b in tool_uses]
+                results = [await self._run_tool(b, budget, evidence, tools_used, candidates, product_key, trace) for b in tool_uses]
                 if budget.rounds_left <= 0:
                     results.append({"type": "text", "text": FORCED_FINAL_HINT})
                 messages.append({"role": "user", "content": results})
@@ -197,6 +229,7 @@ class DrugInfoAgent:
 
         answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates)
         answer.evidence = list(evidence)
+        answer.tool_trace = trace
         answer.input_tokens, answer.output_tokens = tokens_in, tokens_out
         answer.elapsed_seconds = time.monotonic() - started
         logger.info(
@@ -257,8 +290,20 @@ _agent_lock = asyncio.Lock()
 def build_agent(settings: V2Settings | None = None) -> DrugInfoAgent:
     settings = settings or V2Settings.from_env()
     engine = build_engine(settings)
-    tool = DrugSearchTool(settings, reader_factory_for(engine), QueryEmbedder(settings))
-    return DrugInfoAgent(build_create_message(settings), tool, Limits.from_settings(settings), engine)
+    open_reader = reader_factory_for(engine)
+    tool = DrugSearchTool(settings, open_reader, QueryEmbedder(settings))
+    contra_tool = _build_contra_tool(settings, open_reader)
+    return DrugInfoAgent(build_create_message(settings), tool, Limits.from_settings(settings), engine, contra_tool)
+
+
+def _build_contra_tool(settings: V2Settings, open_reader: Any) -> ContraindicationTool | None:
+    """병용금기 인덱스가 있으면 도구를 켠다. 경로를 명시했는데 없으면 오류(설정 실수), 기본 경로에 없으면 조용히 끈다."""
+    if settings.contra_db_path:
+        return ContraindicationTool(settings, open_reader, ContraStore(settings.contra_db_path))  # 없으면 ContraStoreError
+    if DEFAULT_CONTRA_DB.is_file():
+        return ContraindicationTool(settings, open_reader, ContraStore(DEFAULT_CONTRA_DB))
+    logger.info("병용금기 인덱스가 없어 check_contraindication 을 끕니다.")
+    return None
 
 
 async def _get_agent() -> DrugInfoAgent:

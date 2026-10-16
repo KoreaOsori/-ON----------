@@ -56,7 +56,7 @@ def test_from_env_reads_pipeline_style_names():
 
 
 def test_max_distance_default_and_validation():
-    assert V2Settings.from_env({}).max_distance == 0.65
+    assert V2Settings.from_env({}).max_distance == 0.80
     assert V2Settings.from_env({"LLM_V2_MAX_DISTANCE": "0.5"}).max_distance == 0.5
     for bad in ("-0.1", "2.5", "abc"):
         with raises(ConfigError):
@@ -169,3 +169,8 @@ def test_safe_error_name_uses_class_and_sqlstate_only():
 
     assert safe_error_name(Boom("secret detail")) == "Boom(28P01)"
     assert safe_error_name(ValueError("secret detail")) == "ValueError"
+
+
+def test_contra_db_path_from_env():
+    assert V2Settings.from_env({}).contra_db_path == ""
+    assert V2Settings.from_env({"LLM_V2_CONTRA_DB": "/x/contra.sqlite"}).contra_db_path == "/x/contra.sqlite"

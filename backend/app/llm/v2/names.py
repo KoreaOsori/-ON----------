@@ -11,10 +11,16 @@ import unicodedata
 _GROUP = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
 _EXPORT_TAG = re.compile(r"\s*\((?:수출명|수출용)[^()]*\)")
 MAX_DISPLAY_CHARS = 60
+# 전각 괄호만 반각으로. NFKC 전체 변환은 'Ⅱ'→'II', '㎎'→'mg' 처럼 제품명의 글자까지 바꿔서 따로 둔다.
+_BRACKET_FOLD = str.maketrans({"（": "(", "）": ")", "［": "[", "］": "]"})
 
 
 def collapse_spaces(text: str) -> str:
     return " ".join(text.split())
+
+
+def fold_brackets(text: str) -> str:
+    return text.translate(_BRACKET_FOLD)
 
 
 def strip_parentheticals(text: str) -> str:
@@ -34,15 +40,21 @@ def name_variants(raw: str) -> list[tuple[str, bool]]:
     공백·전각문자 정리는 approximate 가 아니다.
     """
     raw_lower = collapse_spaces(raw).lower()
-    nfkc = collapse_spaces(unicodedata.normalize("NFKC", raw)).lower()  # 전각 괄호 등을 반각으로
-    stripped = strip_parentheticals(nfkc)
+    folded = fold_brackets(raw_lower)  # 괄호만 정리: 'Ⅱ', '㎎' 같은 글자가 이름에 있어도 그대로 둔다
+    nfkc = collapse_spaces(unicodedata.normalize("NFKC", raw)).lower()  # 그 밖의 전각/호환 문자까지 정리
+    stripped_folded = strip_parentheticals(folded)
+    stripped_nfkc = strip_parentheticals(nfkc)
     candidates = [
         (raw_lower, False),
+        (folded, False),
         (nfkc, False),
         (raw_lower.replace(" ", ""), False),
+        (folded.replace(" ", ""), False),
         (nfkc.replace(" ", ""), False),
-        (stripped, True),
-        (stripped.replace(" ", ""), True),
+        (stripped_folded, True),
+        (stripped_nfkc, True),
+        (stripped_folded.replace(" ", ""), True),
+        (stripped_nfkc.replace(" ", ""), True),
     ]
     seen: set[str] = set()
     variants: list[tuple[str, bool]] = []

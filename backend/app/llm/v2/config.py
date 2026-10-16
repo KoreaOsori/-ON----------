@@ -91,10 +91,13 @@ class V2Settings:
     # --- 검색 정책 ---
     search_top_k: int = 5
     # 코사인 거리가 이 값보다 큰 근거는 버린다(관련 없는 문단을 모델에 주지 않기 위해). 0~2.
-    # v1 의 초기값(0.65)과 같다. 실제 평가 데이터(retrieval_eval 의 거리 출력)로 조정해야 한다.
-    max_distance: float = 0.65
+    # 0.80: retrieval_eval --mode calibrate 결과(Titan V2, 샘플 60개)에서 정답 근거 95% 통과, 무관 질문 99% 차단.
+    # v1 의 초기값 0.65 는 정답의 약 68% 를 걸러냈다. 데이터·임베딩 모델이 바뀌면 다시 보정해야 한다.
+    max_distance: float = 0.80
     # 제품명 없이 전체를 exact 스캔하는 검색. 느릴 수 있어 기본은 끈다.
     allow_global_search: bool = False
+    # 병용금기 인덱스(SQLite, contra_index 로 만든 파일) 경로. 비우면 v2/dev_data/contraindication.sqlite 가 있을 때만 켠다.
+    contra_db_path: str = ""
 
     @property
     def embedding_version(self) -> str:
@@ -125,7 +128,7 @@ class V2Settings:
         if ssl_mode not in ("verify-full", "require", "disable"):
             raise ConfigError("PGSSLMODE 는 verify-full, require, disable 중 하나여야 합니다.")
 
-        max_distance = _float(env, "LLM_V2_MAX_DISTANCE", 0.65)
+        max_distance = _float(env, "LLM_V2_MAX_DISTANCE", 0.80)
         if not 0 <= max_distance <= 2:
             raise ConfigError("LLM_V2_MAX_DISTANCE 는 0 이상 2 이하여야 합니다.")
 
@@ -159,4 +162,5 @@ class V2Settings:
             search_top_k=_int(env, "LLM_V2_SEARCH_TOP_K", 5),
             max_distance=max_distance,
             allow_global_search=(env.get("LLM_V2_ALLOW_GLOBAL_SEARCH", "").lower() in ("1", "true", "yes")),
+            contra_db_path=env.get("LLM_V2_CONTRA_DB") or "",
         )

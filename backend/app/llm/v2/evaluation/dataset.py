@@ -36,3 +36,29 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[dict]:
 
 
 CASES = load_cases()
+
+# 약과 무관한 질문(임계값 보정용). 제품 범위 안에서도 가장 가까운 문단이 얼마나 먼지를 잰다.
+# 사람이 보강할 수 있다: --offtopic-file (한 줄에 질문 하나).
+OFFTOPIC_QUESTIONS = [
+    "오늘 서울 날씨가 어때요?",
+    "파이썬으로 리스트를 정렬하는 방법 알려줘",
+    "자동차 보험 갱신은 어떻게 하나요?",
+    "김치찌개 맛있게 끓이는 법",
+    "주식 투자는 어떻게 시작하나요?",
+    "아이폰 배터리를 오래 쓰는 방법",
+    "제주도 2박 3일 여행 코스 추천해 주세요",
+    "영어 단어를 빨리 외우는 방법",
+    "월드컵에서 가장 많이 우승한 나라는?",
+    "종합소득세 신고 기간이 언제예요?",
+]
+
+
+def load_offtopic(path: Path | None) -> list[str]:
+    """path 가 없으면 기본 목록. 있으면 한 줄에 질문 하나(빈 줄·# 주석 제외)."""
+    if path is None:
+        return list(OFFTOPIC_QUESTIONS)
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    questions = [line for line in lines if line and not line.startswith("#")]
+    if not questions:
+        raise ValueError("무관 질문 파일에 질문이 없습니다.")
+    return questions

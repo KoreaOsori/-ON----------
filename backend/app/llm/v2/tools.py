@@ -30,6 +30,8 @@ SECTION_LABELS = {
     "interactions": "상호작용",
     "storage": "보관법",
     "additional": "기타 정보",
+    "contraindication": "병용금기(DUR)",
+    "contraindication_none": "병용금기 자료 조회(해당 규칙 없음)",
 }
 
 MAX_NAME_CHARS = 100
@@ -87,10 +89,12 @@ class Evidence:
     manufacturer: str
     section_type: str
     shared_count: int  # 같은 본문을 공유하는 제품 수
+    display: str = ""  # 비어 있지 않으면 label 에 이 이름을 쓴다(제품 조합 'A × B' 등)
 
     @property
     def label(self) -> str:
-        return f"{short_name(self.product_name)} · {SECTION_LABELS.get(self.section_type, self.section_type)}"
+        name = self.display or short_name(self.product_name)
+        return f"{name} · {SECTION_LABELS.get(self.section_type, self.section_type)}"
 
 
 @dataclass(frozen=True)
@@ -133,7 +137,8 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
         candidates = [{k: p[k] for k in ("product_key", "product_name", "manufacturer")} for p in outcome.products]
         return ToolResult("\n".join(lines), candidates=candidates)
     if not outcome.hits:
-        return ToolResult(f"[검색 결과 없음] '{shown}'에서 질문과 충분히 관련된 정보를 찾지 못했습니다.")
+        dropped = f" (거리 기준으로 제외된 문단 {outcome.filtered}개)" if outcome.filtered else ""
+        return ToolResult(f"[검색 결과 없음] '{shown}'에서 질문과 충분히 관련된 정보를 찾지 못했습니다.{dropped}")
 
     blocks: list[str] = []
     evidence: list[Evidence] = []
@@ -167,12 +172,15 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
     return ToolResult(text, evidence)
 
 
-def _clean_str(value: Any, limit: int) -> str | None:
+def _clean_str(value: Any, limit: int, nfkc: bool = False) -> str | None:
+    """공백 정리. NFKC 는 ID 처럼 ASCII 여야 하는 값에만 쓴다(제품명의 'Ⅱ', '㎎' 같은 글자를 바꾸면 못 찾는다)."""
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError("문자열이어야 합니다.")
-    value = " ".join(unicodedata.normalize("NFKC", value).split())  # 전각 문자 등 정리
+    if nfkc:
+        value = unicodedata.normalize("NFKC", value)
+    value = " ".join(value.split())
     if len(value) > limit:
         raise ValueError(f"{limit}자를 넘을 수 없습니다.")
     return value or None
@@ -198,7 +206,7 @@ class DrugSearchTool:
             product_name = _clean_str(arguments.get("product_name"), MAX_NAME_CHARS)
             question = _clean_str(arguments.get("question"), MAX_QUESTION_CHARS)
             section = _clean_str(arguments.get("section"), 30)
-            product_key = _clean_str(arguments.get("product_key"), 120)
+            product_key = _clean_str(arguments.get("product_key"), 120, nfkc=True)
             if product_key is not None and not PRODUCT_KEY_PATTERN.match(product_key):
                 raise ValueError("product_key 형식이 올바르지 않습니다.")
             if not question:
@@ -211,24 +219,30 @@ class DrugSearchTool:
         # 2) 임베딩은 트랜잭션 밖에서(네트워크 호출 동안 DB 트랜잭션을 열어 두지 않는다).
         #    질문 원문은 로그에 남기지 않는다.
         top_k = max(1, min(self._settings.search_top_k, 20))
+        section_widened = False
         try:
             vector_text = to_vector_text(await self._embedder.embed(question))
             async with self._reader_factory() as reader:
-                outcome = await retrieve(
-                    reader,
-                    self._settings,
-                    vector_text,
-                    product_name=product_name,
-                    product_key=product_key,
-                    section_type=section,
-                    top_k=top_k,
-                    max_distance=self._settings.max_distance,
+                search_args = dict(
+                    product_name=product_name, product_key=product_key, top_k=top_k, max_distance=self._settings.max_distance
                 )
+                outcome = await retrieve(reader, self._settings, vector_text, section_type=section, **search_args)
+                if section and outcome.status == "ok" and not outcome.hits:
+                    # 모델이 고른 정보 유형(section)에 관련 문단이 없다 → 한 번만 모든 유형으로 넓혀 찾는다.
+                    # (같은 임계값을 쓰므로 무관한 문단이 들어오지는 않는다. 임베딩은 다시 부르지 않는다.)
+                    outcome = await retrieve(reader, self._settings, vector_text, section_type=None, **search_args)
+                    section_widened = True
         except Exception as exc:  # noqa: BLE001 - 상세 메시지는 남기지 않는다.
             logger.error("search_drug_info 실패: %s", safe_error_name(exc))
             return ToolResult("[검색 오류] 지금은 정보를 조회할 수 없습니다.", is_error=True)
 
         result = format_outcome(outcome, product_name)
+        if section_widened and result.evidence:
+            note = (
+                f"[참고] 요청한 정보 유형('{SECTION_LABELS.get(section, section)}')에서는 관련 문단이 없어 "
+                "모든 정보 유형에서 찾았습니다. 아래 출처의 항목을 밝혀 답하세요."
+            )
+            result = ToolResult(f"{note}\n\n{result.text}", result.evidence, result.is_error, result.candidates)
         logger.info(
             "search_drug_info status=%s hits=%d filtered=%d mode=%s",
             outcome.status, len(outcome.hits), outcome.filtered, outcome.match_mode,

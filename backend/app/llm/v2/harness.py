@@ -8,9 +8,10 @@ import time
 from dataclasses import dataclass
 
 from app.llm.v2.config import V2Settings
+from app.llm.v2.contra_tool import CONTRA_TOOL_NAME
 from app.llm.v2.tools import TOOL_NAME
 
-ALLOWED_TOOLS = frozenset({TOOL_NAME})
+ALLOWED_TOOLS = frozenset({TOOL_NAME, CONTRA_TOOL_NAME})
 
 
 class HarnessError(Exception):

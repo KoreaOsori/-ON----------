@@ -96,6 +96,7 @@ async def compare(
                 "seconds": round(answer.elapsed_seconds, 2),
                 "input_tokens": answer.input_tokens,
                 "output_tokens": answer.output_tokens,
+                "tool_trace": answer.tool_trace,
                 **verdict,
             }
             if verbose:

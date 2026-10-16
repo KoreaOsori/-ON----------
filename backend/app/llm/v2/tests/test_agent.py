@@ -15,7 +15,7 @@ from app.llm.v2.prompts import (
     TIMEOUT_ANSWER,
 )
 from app.llm.v2.safety import is_crisis, is_emergency
-from app.llm.v2.tests.helpers import ScriptedModel, raises, response, text_block, tool_use_block
+from app.llm.v2.tests.helpers import ScriptedModel, make_settings, raises, response, text_block, tool_use_block
 from app.llm.v2.tools import TOOL_NAME, Evidence, ToolResult, build_tool_spec
 
 FOUND = ToolResult(
@@ -195,7 +195,7 @@ def test_safety_patterns():
 
 
 def test_whitelist():
-    assert ALLOWED_TOOLS == {TOOL_NAME}
+    assert ALLOWED_TOOLS == {TOOL_NAME, "check_contraindication"}
     assert_allowed_tool(TOOL_NAME)
     with raises(ToolNotAllowedError):
         assert_allowed_tool("bash")
@@ -247,3 +247,89 @@ async def test_caller_selected_product_key_overrides_model_arguments():
     result = await make_agent(model, tool).run("대한포도당주사액 용법", None, product_key="drug:2")
     assert tool.calls[0]["product_key"] == "drug:2" and result.grounded
     assert "[선택한 제품 ID]\ndrug:2" in model.calls[0]["messages"][0]["content"]
+
+
+async def test_tool_trace_records_arguments_and_result_head():
+    model = ScriptedModel(
+        response(tool_use_block("t1", TOOL_NAME, product_name="타이레놀", question="복용법", extra="무시")),
+        response(text_block("1회 1~2정이에요.")),
+    )
+    agent = make_agent(model, FakeTool(FOUND))
+    result = await agent.run("타이레놀 복용법")
+    assert len(result.tool_trace) == 1
+    entry = result.tool_trace[0]
+    assert entry["arguments"] == {"product_name": "타이레놀", "question": "복용법"}  # 알려진 키만 기록
+    assert entry["result_head"].startswith("[출처 | 타이레놀") and len(entry["result_head"]) <= 80
+
+
+# --------------------------------------------------------------------------- 병용금기 도구
+
+CONTRA_FOUND = ToolResult(
+    "[출처 | 와파린정 × 아스피린 | 병용금기(DUR)]\n금기 내용: 출혈 위험 증가",
+    [Evidence("와파린정 × 아스피린", "", "contraindication", 1, display="와파린정 × 아스피린")],
+)
+
+
+class FakeContraTool(FakeTool):
+    @property
+    def spec(self):
+        from app.llm.v2.contra_tool import build_contra_spec
+
+        return build_contra_spec()
+
+
+def contra_call(tool_id="c1", **args):
+    from app.llm.v2.contra_tool import CONTRA_TOOL_NAME
+
+    return tool_use_block(tool_id, CONTRA_TOOL_NAME, **(args or {"products": ["와파린정", "아스피린"]}))
+
+
+async def test_contra_tool_is_offered_with_prompt_addendum_and_grounds_the_answer():
+    from app.llm.v2.contra_tool import CONTRA_TOOL_NAME
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM, SYSTEM_PROMPT
+
+    model = ScriptedModel(response(contra_call()), response(text_block("등록된 자료에서 병용금기로 확인돼요.")))
+    contra = FakeContraTool(CONTRA_FOUND)
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), contra_tool=contra)
+    result = await agent.run("와파린이랑 아스피린 같이 먹어도 돼요?", product_key="drug:1")
+    assert [t["name"] for t in model.calls[0]["tools"]] == [TOOL_NAME, CONTRA_TOOL_NAME]
+    assert model.calls[0]["system"] == SYSTEM_PROMPT + CONTRA_PROMPT_ADDENDUM
+    assert result.grounded and result.sources == ["와파린정 × 아스피린 · 병용금기(DUR)"] and result.tools_used == [CONTRA_TOOL_NAME]
+    assert contra.calls == [{"products": ["와파린정", "아스피린"]}]  # 호출자가 정한 product_key 는 검색 도구에만 주입된다
+    assert result.answer.endswith(SAFETY_FOOTER)
+
+
+async def test_contra_tool_is_off_when_not_configured():
+    from app.llm.v2.contra_tool import CONTRA_TOOL_NAME
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(response(contra_call()), response(text_block("괜찮아요.")))
+    result = await make_agent(model, FakeTool(FOUND)).run("와파린이랑 아스피린 같이 먹어도 돼요?")
+    assert [t["name"] for t in model.calls[0]["tools"]] == [TOOL_NAME] and model.calls[0]["system"] == SYSTEM_PROMPT
+    assert "check_contraindication" not in SYSTEM_PROMPT
+    tool_result = model.calls[1]["messages"][2]["content"][0]
+    assert tool_result["is_error"] and "사용할 수 없는 도구" in tool_result["content"]
+    assert result.answer == NO_EVIDENCE_ANSWER and not result.grounded and CONTRA_TOOL_NAME not in result.tools_used
+
+
+def test_build_contra_tool_follows_explicit_path_and_default_location():
+    import tempfile
+    from pathlib import Path
+
+    from app.llm.v2.contra_index import build_index
+    from app.llm.v2.contra_store import ContraStoreError
+
+    tmp = Path(tempfile.mkdtemp())
+    settings = make_settings()
+    original = agent_module.DEFAULT_CONTRA_DB
+    try:
+        agent_module.DEFAULT_CONTRA_DB = tmp / "none.sqlite"
+        assert agent_module._build_contra_tool(settings, object()) is None  # 기본 위치에 파일이 없으면 조용히 끈다
+        index = tmp / "contra.sqlite"
+        build_index([], index)
+        agent_module.DEFAULT_CONTRA_DB = index
+        assert agent_module._build_contra_tool(settings, object()) is not None  # 기본 위치에 있으면 켠다
+        with raises(ContraStoreError):  # 경로를 명시했는데 없으면 설정 실수 → 오류
+            agent_module._build_contra_tool(make_settings(contra_db_path=str(tmp / "missing.sqlite")), object())
+    finally:
+        agent_module.DEFAULT_CONTRA_DB = original

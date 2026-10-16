@@ -15,6 +15,15 @@ def test_fullwidth_parentheses_and_spaces_are_not_approximate():
     assert variants["대한포도당주사액"] is True
 
 
+def test_bracket_fold_comes_before_nfkc_so_special_characters_survive():
+    variants = [text for text, _ in name_variants("제이스고려로얄샷Ⅱ（전량수출용）")]
+    assert variants[0] == "제이스고려로얄샷ⅱ（전량수출용）"
+    assert variants[1] == "제이스고려로얄샷ⅱ(전량수출용)"       # 괄호만 반각 (Ⅱ 유지)
+    assert "제이스고려로얄샷ii(전량수출용)" in variants[2:]     # NFKC 변형은 그 뒤
+    assert variants.index("제이스고려로얄샷ⅱ(전량수출용)") < variants.index("제이스고려로얄샷ii(전량수출용)")
+    assert dict(name_variants("아스피린5㎎정"))["아스피린5㎎정"] is False
+
+
 def test_only_parenthetical_has_no_stripped_variant():
     assert name_variants("(5%)") == [("(5%)", False)]
     assert name_variants("   ") == []
