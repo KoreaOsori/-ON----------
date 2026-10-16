@@ -11,8 +11,9 @@ resource "aws_db_parameter_group" "this" {
 
   # TLS 접속 강제
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot" # AWS 에 저장된 값과 맞춰 plan 에 매번 변경이 뜨지 않게 함
   }
 }
 
@@ -44,4 +45,15 @@ resource "aws_db_instance" "this" {
   final_snapshot_identifier  = var.deletion_protection ? "${var.name}-postgres-final" : null
 
   performance_insights_enabled = false
+}
+
+# RDS 가 만든 마스터 비밀번호 시크릿의 자동 교체 주기 (RDS 기본값 7일)
+# 시연용 프로젝트라 교체 때마다 접속이 끊기지 않도록 길게 둔다. rotate_immediately=false 라 적용해도 비밀번호는 바뀌지 않는다
+resource "aws_secretsmanager_secret_rotation" "master_password" {
+  secret_id          = aws_db_instance.this.master_user_secret[0].secret_arn
+  rotate_immediately = false
+
+  rotation_rules {
+    automatically_after_days = var.master_password_rotation_days
+  }
 }
