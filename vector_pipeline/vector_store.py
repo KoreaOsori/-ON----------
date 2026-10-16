@@ -16,8 +16,7 @@ LINK_FIELDS = ("chunk_id", "content_hash", "product_type", "source_product_id", 
 def connect():
     import psycopg
     from aws_runtime import database_options
-    return psycopg.connect(**database_options(), sslmode=os.getenv("PGSSLMODE", "verify-full"),
-                           connect_timeout=15, autocommit=True)
+    return psycopg.connect(**database_options(), connect_timeout=15, autocommit=True)
 
 
 def check_config(conn, config):

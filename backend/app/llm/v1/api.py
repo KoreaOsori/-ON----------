@@ -7,10 +7,11 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.security import APIKeyHeader
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import create_async_engine
 
+from .aws_auth import RoleCredentialsError
 from .bedrock import Bedrock
 from .config import Settings
+from .database import DatabaseConnectionError, create_database_engine
 from .repository import DataUnavailable, Repository
 from .schemas import AskRequest, AskResponse
 from .service import Service
@@ -44,7 +45,9 @@ async def ask(body: AskRequest, request: Request):
                 await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
                 await conn.execute(text("SET LOCAL statement_timeout = '15s'"))
                 return await Service(Repository(conn, settings), request.app.state.llm_bedrock, settings).ask(body)
-    except DataUnavailable as error:
+    except (DataUnavailable, DatabaseConnectionError) as error:
+        raise HTTPException(503, str(error)) from None
+    except RoleCredentialsError as error:
         raise HTTPException(503, str(error)) from None
     except ClientError as error:
         code = error.response.get("Error", {}).get("Code", "unknown")
@@ -60,7 +63,7 @@ async def ask(body: AskRequest, request: Request):
 async def lifespan(app: FastAPI):
     settings = Settings()
     app.state.llm_settings = settings
-    app.state.llm_engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+    app.state.llm_engine = create_database_engine(settings)
     app.state.llm_bedrock = Bedrock(settings)
     try:
         yield

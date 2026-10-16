@@ -4,15 +4,15 @@ import asyncio
 from pathlib import Path
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from .config import Settings
+from .database import create_database_engine
 from .schemas import SafetyBundle
 
 
 async def load(path: Path):
     bundle = SafetyBundle.model_validate_json(path.read_text(encoding="utf-8-sig"))
-    engine = create_async_engine(Settings().database_url)
+    engine = create_database_engine(Settings())
     try:
         async with engine.begin() as conn:
             # SQL here is bundled developer-owned DDL, never user-supplied SQL.

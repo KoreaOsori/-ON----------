@@ -2,11 +2,12 @@
 import json
 import os
 from datetime import date
+from config import settings
 
 
 def client(service):
     import boto3
-    region = os.getenv("AWS_REGION")
+    region = settings()["aws"]["region"]
     if not region:
         raise ValueError("AWS_REGION 설정이 필요합니다.")
     return boto3.client(service, region_name=region)
@@ -35,19 +36,15 @@ def silver_sources(bucket, prefix="silver", snapshot=None, s3=None):
 
 
 def database_options(secret_client=None):
-    options = {}
-    for pg, alias, key in (("PGHOST", "DB_HOST", "host"), ("PGPORT", "DB_PORT", "port"),
-                           ("PGDATABASE", "DB_NAME", "dbname"), ("PGUSER", "DB_USERNAME", "user"),
-                           ("PGPASSWORD", "DB_PASSWORD", "password")):
-        value = os.getenv(pg) or os.getenv(alias)
-        if value:
-            options[key] = value
-    secret_id = os.getenv("RDS_SECRET_ARN")
+    db = settings()["database"]
+    options = {"host": db["host"], "port": db["port"], "dbname": db["name"],
+               "sslmode": db["sslmode"], "sslrootcert": db["sslrootcert"]}
+    secret_id = db["secret_id"]
     if secret_id:
         response = (secret_client or client("secretsmanager")).get_secret_value(SecretId=secret_id)
         secret = json.loads(response["SecretString"])
         # Resolve on each connection so RDS password rotations are respected.
         options.update(user=secret["username"], password=secret["password"])
     if not all(options.get(k) for k in ("host", "dbname", "user")):
-        raise ValueError("DB host/name/user 설정이 필요합니다. PG* 또는 DB_* 및 RDS_SECRET_ARN을 확인하세요.")
+        raise ValueError("settings.toml DB 설정 및 시크릿의 username/password를 확인하세요.")
     return options

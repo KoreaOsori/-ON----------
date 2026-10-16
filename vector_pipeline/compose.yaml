@@ -1,10 +1,10 @@
 services:
   pipeline:
     build: .
-    env_file: .env
     init: true
     restart: "no"
     volumes:
+      - ./settings.toml:/app/settings.toml:ro
       - ./output:/app/output
       - ./input:/input:ro
       - ./certs:/certs:ro
