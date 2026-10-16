@@ -1,0 +1,5 @@
+# 로컬 개발 산출물(적재용 bundle, 임베딩 캐시, 생성된 평가 케이스)은 저장소에 올리지 않는다.
+data/
+dev_data/
+evaluation/generated/
+__pycache__/

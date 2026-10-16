@@ -1,0 +1,26 @@
+"""질문 단계의 안전 점검 (모델 호출 전에 코드로 판단).
+
+기존 chat/service.py 의 EMERGENCY_PATTERN 은 '심각' 처럼 범위가 넓어서, v2 는 의미가 분명한 표현 위주로 따로 둔다.
+어디까지나 보조 장치다. 놓치는 표현이 있을 수 있어 시스템 프롬프트의 규칙 6 도 함께 쓴다.
+"""
+import re
+
+EMERGENCY_PATTERN = re.compile(
+    r"응급|호흡\s*곤란|숨\s*(이|을)?\s*(안|못)\s*(쉬|쉴|쉬어)|숨쉬기\s*(힘|어렵)|숨이\s*차|의식\s*(이)?\s*(없|잃|저하|흐려|혼미)|"
+    r"쇼크|아나필락|경련|발작|가슴\s*(이)?\s*(아파|조여|답답)|(입술|얼굴|목|혀).{0,6}(붓|부어|부은)|"
+    r"피를?\s*토|토혈|혈변|심한\s*알레르기"
+)
+
+# 자해·고의 과다복용을 시사하는 표현
+CRISIS_PATTERN = re.compile(
+    r"자살|자해|죽고\s*싶|목숨을?\s*끊|극단적\s*선택|(약|알약).{0,10}(전부|다|한꺼번에|몽땅).{0,6}(먹|삼키|털어)|"
+    r"(전부|한꺼번에|몽땅).{0,10}(먹|삼키|털어).{0,10}(죽|죽을)"
+)
+
+
+def is_emergency(question: str) -> bool:
+    return bool(EMERGENCY_PATTERN.search(question))
+
+
+def is_crisis(question: str) -> bool:
+    return bool(CRISIS_PATTERN.search(question))

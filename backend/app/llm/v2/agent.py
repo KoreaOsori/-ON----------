@@ -1,0 +1,296 @@
+"""도구 호출 에이전트 루프 + 외부 진입점 answer() (강의의 graph.py 에 해당).
+
+langchain/langgraph 없이 anthropic SDK 의 tools 기능을 직접 돌린다.
+
+    질문 → [모델 호출 → (tool_use 가 있으면) 도구 실행 → tool_result 를 붙여 다시 호출] 반복 → 최종 답변
+
+규칙(코드로 강제)
+- 한도: 도구 라운드 수 / 도구 호출 횟수 / 전체 시간 (harness.Limits)
+- 허용 목록 밖의 도구 이름은 실행하지 않고 오류 결과를 돌려준다
+- 근거 없음 → 모델이 뭐라고 답했든 "확인할 수 없어요" 고정 문구로 대체 (추측 답변 차단)
+- 근거 있음 → 답변 끝에 면책 문구를 코드가 붙인다. sources 는 모델이 아니라 실제 검색 결과에서 만든다
+- 로그에는 질문/답변 본문/도구 인자를 남기지 않는다(건강 정보). 건수와 상태만 남긴다.
+"""
+import asyncio
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.llm.v2.config import V2Settings
+from app.llm.v2.db import build_engine, reader_factory_for, safe_error_name
+from app.llm.v2.embedder import QueryEmbedder
+from app.llm.v2.harness import (
+    Budget,
+    BudgetExceededError,
+    Limits,
+    ToolNotAllowedError,
+    assert_allowed_tool,
+)
+from app.llm.v2.llm_client import CreateMessage, build_create_message
+from app.llm.v2.prompts import (
+    BUDGET_ANSWER,
+    CRISIS_ANSWER,
+    EMERGENCY_NOTICE,
+    ERROR_ANSWER,
+    FORCED_FINAL_HINT,
+    NO_EVIDENCE_ANSWER,
+    SAFETY_FOOTER,
+    SYSTEM_PROMPT,
+    TIMEOUT_ANSWER,
+    build_clarification_answer,
+    build_user_content,
+)
+from app.llm.v2.safety import is_crisis, is_emergency
+from app.llm.v2.tools import DrugSearchTool, Evidence
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentAnswer:
+    answer: str
+    sources: list[str] = field(default_factory=list)  # "제품명 · 섹션" (실제 검색 결과 기반)
+    tools_used: list[str] = field(default_factory=list)
+    rounds: int = 0
+    grounded: bool = False  # 검색 근거가 있었는가
+    stop_reason: str = "done"  # done|no_evidence|needs_clarification|budget|timeout|error|refusal|crisis|empty
+    emergency: bool = False
+    # needs_clarification 일 때 사용자에게 보여 줄 제품 후보. 사용자가 고르면 그 product_key 를 answer(product_key=...)로 넘긴다.
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+    # --- 모델 비교/평가용 계측 (사용자 응답에는 쓰지 않는다) ---
+    evidence: list[Evidence] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    elapsed_seconds: float = 0.0
+
+
+def _get(obj: Any, key: str) -> Any:
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
+def _usage(response: Any) -> tuple[int, int]:
+    usage = _get(response, "usage")
+    if usage is None:
+        return 0, 0
+    return int(_get(usage, "input_tokens") or 0), int(_get(usage, "output_tokens") or 0)
+
+
+def _normalize_blocks(response: Any) -> list[dict[str, Any]]:
+    """SDK 응답 블록(객체) → 다음 요청에 되돌려 보낼 수 있는 dict. text/tool_use 만 사용한다."""
+    blocks: list[dict[str, Any]] = []
+    for block in _get(response, "content") or []:
+        kind = _get(block, "type")
+        if kind == "text":
+            blocks.append({"type": "text", "text": _get(block, "text") or ""})
+        elif kind == "tool_use":
+            blocks.append(
+                {"type": "tool_use", "id": _get(block, "id"), "name": _get(block, "name"), "input": _get(block, "input") or {}}
+            )
+    return blocks
+
+
+class DrugInfoAgent:
+    def __init__(self, create_message: CreateMessage, tool: DrugSearchTool, limits: Limits, engine: Any = None) -> None:
+        self._create = create_message
+        self._tool = tool
+        self._limits = limits
+        self._engine = engine
+
+    async def aclose(self) -> None:
+        if self._engine is not None:
+            await self._engine.dispose()
+
+    async def _call_model(self, messages: list[dict[str, Any]], budget: Budget) -> Any:
+        return await asyncio.wait_for(
+            self._create(system=SYSTEM_PROMPT, tools=[self._tool.spec], messages=list(messages)),
+            timeout=budget.remaining_seconds(),
+        )
+
+    async def _run_tool(
+        self,
+        block: dict[str, Any],
+        budget: Budget,
+        evidence: list[Evidence],
+        tools_used: list[str],
+        candidates: list[dict[str, Any]],
+        product_key: str | None,
+    ) -> dict[str, Any]:
+        def result(text: str, is_error: bool = False) -> dict[str, Any]:
+            item = {"type": "tool_result", "tool_use_id": block["id"], "content": text}
+            if is_error:
+                item["is_error"] = True
+            return item
+
+        name = str(block.get("name") or "")
+        try:
+            assert_allowed_tool(name)
+        except ToolNotAllowedError:
+            logger.warning("허용되지 않은 도구 요청 차단")
+            return result("허용되지 않은 도구입니다. search_drug_info 만 사용할 수 있습니다.", True)
+        if not budget.can_call_tool():
+            return result("도구 호출 횟수 한도를 넘었습니다. 지금까지의 결과로 답하세요.", True)
+
+        budget.check_time()
+        budget.consume_call()
+        arguments = block.get("input")
+        if product_key and isinstance(arguments, dict):
+            arguments = {**arguments, "product_key": product_key}  # 호출자가 확정한 제품을 모델 인자보다 우선
+        outcome = await asyncio.wait_for(self._tool.run(arguments), timeout=budget.remaining_seconds())
+        tools_used.append(name)
+        evidence.extend(outcome.evidence)
+        if outcome.candidates:
+            candidates[:] = outcome.candidates
+        return result(outcome.text, outcome.is_error)
+
+    async def run(
+        self, question: str, profile_context: str | None = None, product_key: str | None = None
+    ) -> AgentAnswer:
+        started = time.monotonic()
+        question = (question or "").strip()[: self._limits.max_question_chars]
+        if not question:
+            return AgentAnswer("질문을 입력해 주세요.", stop_reason="empty")
+        if is_crisis(question):
+            return AgentAnswer(CRISIS_ANSWER, stop_reason="crisis", emergency=True)
+
+        emergency = is_emergency(question)
+        budget = Budget(self._limits)
+        messages: list[dict[str, Any]] = [{"role": "user", "content": build_user_content(question, profile_context, product_key)}]
+        evidence: list[Evidence] = []
+        candidates: list[dict[str, Any]] = []
+        tools_used: list[str] = []
+        final_text = ""
+        stop = "done"
+        tokens_in = tokens_out = 0
+
+        try:
+            while True:
+                budget.check_time()
+                forced_final = budget.rounds_left <= 0  # 도구 라운드를 다 썼다 → 이번 호출은 최종 답변이어야 한다
+                response = await self._call_model(messages, budget)
+                used_in, used_out = _usage(response)
+                tokens_in, tokens_out = tokens_in + used_in, tokens_out + used_out
+
+                if _get(response, "stop_reason") == "refusal":
+                    stop = "refusal"
+                    break
+                blocks = _normalize_blocks(response)
+                tool_uses = [b for b in blocks if b["type"] == "tool_use"]
+                if not tool_uses:
+                    final_text = "".join(b["text"] for b in blocks if b["type"] == "text")
+                    break
+                if forced_final:
+                    stop = "budget"  # 한도를 다 썼는데도 도구를 또 부르려 한다
+                    break
+
+                budget.consume_round()
+                messages.append({"role": "assistant", "content": blocks})
+                results = [await self._run_tool(b, budget, evidence, tools_used, candidates, product_key) for b in tool_uses]
+                if budget.rounds_left <= 0:
+                    results.append({"type": "text", "text": FORCED_FINAL_HINT})
+                messages.append({"role": "user", "content": results})
+        except (asyncio.TimeoutError, BudgetExceededError):
+            stop = "timeout"
+        except Exception as exc:  # noqa: BLE001 - 상세 메시지는 남기지 않는다.
+            logger.error("agent 실패: %s", safe_error_name(exc))
+            stop = "error"
+
+        answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates)
+        answer.evidence = list(evidence)
+        answer.input_tokens, answer.output_tokens = tokens_in, tokens_out
+        answer.elapsed_seconds = time.monotonic() - started
+        logger.info(
+            "agent stop=%s rounds=%d calls=%d evidence=%d elapsed=%.1fs",
+            answer.stop_reason, budget.rounds, budget.calls, len(evidence), time.monotonic() - started,
+        )
+        return answer
+
+    @staticmethod
+    def _assemble(
+        stop: str,
+        final_text: str,
+        evidence: list[Evidence],
+        tools_used: list[str],
+        rounds: int,
+        emergency: bool,
+        candidates: list[dict[str, Any]] | None = None,
+    ) -> AgentAnswer:
+        candidates = candidates or []
+        sources = list(dict.fromkeys(e.label for e in evidence))
+        grounded = False
+        if stop == "timeout":
+            text = TIMEOUT_ANSWER
+        elif stop == "budget":
+            text = BUDGET_ANSWER
+        elif stop in ("error", "refusal"):
+            text = ERROR_ANSWER
+        elif not evidence and candidates:
+            # 제품 후보가 여럿 → 되묻기. 모델 문장 대신 코드가 후보 목록으로 만든다(모델 지식이 섞이지 않게).
+            text, stop = build_clarification_answer(candidates), "needs_clarification"
+        elif not evidence:
+            # 근거가 하나도 없으면 모델의 문장은 쓰지 않는다.
+            text, stop = NO_EVIDENCE_ANSWER, "no_evidence"
+        elif not final_text.strip():
+            text, stop = ERROR_ANSWER, "error"
+        else:
+            text, grounded = f"{final_text.strip()}\n\n{SAFETY_FOOTER}", True
+        if emergency:
+            text = f"{EMERGENCY_NOTICE}\n\n{text}"
+        return AgentAnswer(
+            answer=text,
+            sources=sources if grounded else [],
+            tools_used=tools_used,
+            rounds=rounds,
+            grounded=grounded,
+            stop_reason=stop,
+            emergency=emergency,
+            candidates=candidates if stop == "needs_clarification" else [],
+        )
+
+
+# --------------------------------------------------------------------------- 외부 진입점
+
+_agent: DrugInfoAgent | None = None
+_agent_lock = asyncio.Lock()
+
+
+def build_agent(settings: V2Settings | None = None) -> DrugInfoAgent:
+    settings = settings or V2Settings.from_env()
+    engine = build_engine(settings)
+    tool = DrugSearchTool(settings, reader_factory_for(engine), QueryEmbedder(settings))
+    return DrugInfoAgent(build_create_message(settings), tool, Limits.from_settings(settings), engine)
+
+
+async def _get_agent() -> DrugInfoAgent:
+    global _agent
+    async with _agent_lock:
+        if _agent is None:
+            _agent = build_agent()
+        return _agent
+
+
+async def answer(
+    question: str, profile_context: str | None = None, product_key: str | None = None
+) -> AgentAnswer:
+    """채팅 라우터가 부를 단일 진입점. 예외를 밖으로 던지지 않고 항상 AgentAnswer 를 돌려준다.
+
+    사용 예(나중에 라우터에서 한 줄):  result = await llm_v2.agent.answer(question, profile_context)
+    stop_reason 이 "needs_clarification" 이면 result.candidates 를 사용자에게 보여 주고, 사용자가 고른 제품의
+    product_key 를 넣어 같은 질문으로 다시 호출한다: answer(question, profile_context, product_key="drug:...").
+    """
+    try:
+        agent = await _get_agent()
+        return await agent.run(question, profile_context, product_key)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 설정 누락 등. 상세 메시지(비밀 가능성)는 남기지 않는다.
+        logger.error("answer 실패: %s", safe_error_name(exc))
+        return AgentAnswer(ERROR_ANSWER, stop_reason="error")
+
+
+async def aclose() -> None:
+    """앱 종료 시 DB 엔진 정리(선택)."""
+    global _agent
+    if _agent is not None:
+        await _agent.aclose()
+        _agent = None
