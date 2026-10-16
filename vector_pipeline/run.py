@@ -3,6 +3,7 @@ import json
 import os
 
 from bundle import prepare, validate_bundle
+from config import settings
 
 
 def main():
@@ -16,15 +17,21 @@ def main():
     prep.add_argument("--min-chars", type=int, default=900)
     prep.add_argument("--overlap", type=int, default=150)
     prep.add_argument("--limit", type=int, default=0)
-    silver = sub.add_parser("prepare-silver", help="S3 Silver 완료 포인터로 두 제품 테이블 선택 → prepare")
-    silver.add_argument("--bucket", default=os.getenv("DATA_BUCKET"))
-    silver.add_argument("--prefix", default=os.getenv("SILVER_PREFIX", "silver"))
-    silver.add_argument("--snapshot", help="현재 완료 포인터 날짜를 고정하여 변경 시 중단")
+    silver = sub.add_parser("prepare-silver", help="두 제품이 모두 있는 최신 날짜 → prepare")
+    silver.add_argument("--bucket", default=settings()["silver"]["bucket"])
+    silver.add_argument("--prefix", default=settings()["silver"]["prefix"])
+    silver.add_argument("--snapshot", help="특정 공통 날짜 지정 (YYYY-MM-DD)")
     silver.add_argument("--output", required=True)
     silver.add_argument("--max-chars", type=int, default=1800)
     silver.add_argument("--min-chars", type=int, default=900)
     silver.add_argument("--overlap", type=int, default=150)
     silver.add_argument("--limit", type=int, default=0)
+    sync = sub.add_parser("sync-silver", help="최신 공통 날짜 prepare → embed → ingest → 공개")
+    sync.add_argument("--output", default="output/sync")
+    sync.add_argument("--cache", default="output/embedding-cache.sqlite")
+    sync.add_argument("--workers", type=int, default=4)
+    sync.add_argument("--batch-size", type=int, default=128)
+    sync.add_argument("--retry-failed", action="store_true")
     check = sub.add_parser("validate")
     check.add_argument("--input", required=True)
     sub.add_parser("init-db", help="RDS 준비 후 명시적 초기화. v1 DB 자동 변경 없음")
@@ -57,11 +64,14 @@ def main():
         else:
             command.add_argument("--publish", action="store_true", help="전체 bundle 검증 후 활성 스냅샷 전환")
     args = parser.parse_args()
-    if args.command == "prepare-silver":
+    if args.command == "sync-silver":
+        from sync_silver import sync_silver
+        result = sync_silver(args)
+    elif args.command == "prepare-silver":
         from aws_runtime import silver_sources
         sources = silver_sources(args.bucket, args.prefix, args.snapshot)
         args.drug, args.health_food = sources["drug_product"], sources["health_food_product"]
-        args.expected_snapshot = args.drug.rsplit("snapshot=", 1)[1].split("/", 1)[0]
+        args.expected_snapshot = args.drug.split("/")[-2].removeprefix("snapshot=")
         result = prepare(args)
     elif args.command == "prepare":
         result = prepare(args)
@@ -104,7 +114,7 @@ def main():
                 from vector_store import ingest
                 result = ingest(root, manifest, config, args.cache, args.batch_size, args.publish)
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    if args.command == "embed" and not result["complete"]:
+    if args.command in ("embed", "sync-silver") and not result.get("complete", True):
         raise SystemExit(2)
 
 

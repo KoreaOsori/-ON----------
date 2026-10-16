@@ -20,19 +20,32 @@ def silver_sources(bucket, prefix="silver", snapshot=None, s3=None):
     if not prefix or any(p in (".", "..") for p in prefix.split("/")):
         raise ValueError("잘못된 Silver prefix입니다.")
     s3 = s3 or client("s3")
-    # Even a date-selected run must be covered by the successful build pointer.
-    response = s3.get_object(Bucket=bucket, Key=f"{prefix}/_latest.json")
-    try:
-        pointer = json.loads(response["Body"].read())
-    finally:
-        response["Body"].close()
-    selected = snapshot or pointer["snapshot"]
-    if date.fromisoformat(selected).isoformat() != selected:
-        raise ValueError("snapshot은 YYYY-MM-DD 형식이어야 합니다.")
     tables = ("drug_product", "health_food_product")
-    if selected != pointer["snapshot"] or any(pointer.get("tables", {}).get(t) != selected for t in tables):
-        raise ValueError("Silver 완료 포인터와 두 제품 테이블의 snapshot이 일치해야 합니다.")
-    return {t: f"s3://{bucket}/{prefix}/{t}/snapshot={selected}/data.parquet" for t in tables}
+    available = {}
+    for table in tables:
+        base = f"{prefix}/{table}/"
+        found = {}
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=base):
+            for obj in page.get("Contents", []):
+                relative = obj["Key"][len(base):].split("/")
+                if len(relative) != 2 or relative[1] != "data.parquet" or obj.get("Size", 0) <= 0:
+                    continue
+                value = relative[0].removeprefix("snapshot=")
+                try:
+                    valid = date.fromisoformat(value).isoformat() == value
+                except ValueError:
+                    valid = False
+                if not valid:
+                    continue
+                if value in found:
+                    raise ValueError(f"같은 날짜의 경로가 중복됩니다: {table}/{value}")
+                found[value] = obj["Key"]
+        available[table] = found
+    common = set(available[tables[0]]) & set(available[tables[1]])
+    if not common or (snapshot and snapshot not in common):
+        raise ValueError("두 제품의 data.parquet이 모두 있는 날짜가 없습니다.")
+    selected = snapshot or max(common)
+    return {t: f"s3://{bucket}/{available[t][selected]}" for t in tables}
 
 
 def database_options(secret_client=None):
