@@ -1,0 +1,31 @@
+# v2 로컬 개발용 pgvector DB (프로젝트 루트의 docker-compose.yml 과 별개).
+# 루트 compose 의 postgres:17-alpine 에는 pgvector 확장이 없어서 vector 타입을 쓰는 검색을 시험할 수 없다.
+#
+# 실행(프로젝트 루트에서):
+#   PowerShell: $env:LLM_V2_DEV_DB_PASSWORD = "로컬에서만 쓸 임의 값"
+#   docker compose -f backend/app/llm/v2/docker-compose.dev-db.yml up -d
+#
+# 비밀번호를 파일에 적지 않는다(환경변수로만). 로컬 127.0.0.1 에만 열고, 데이터는 named volume 에 둔다.
+# 지울 때: docker compose -f backend/app/llm/v2/docker-compose.dev-db.yml down -v   (볼륨까지 삭제)
+name: pill-llm-v2
+
+services:
+  pgvector:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: pill
+      POSTGRES_USER: ${LLM_V2_DEV_DB_USER:-pill_dev}
+      POSTGRES_PASSWORD: ${LLM_V2_DEV_DB_PASSWORD:?LLM_V2_DEV_DB_PASSWORD 환경변수에 로컬 전용 비밀번호를 지정하세요}
+    ports:
+      - "127.0.0.1:${LLM_V2_DEV_DB_PORT:-5433}:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: "no"
+
+volumes:
+  pgvector_data:
