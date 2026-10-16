@@ -28,6 +28,7 @@ def main():
     check = sub.add_parser("validate")
     check.add_argument("--input", required=True)
     sub.add_parser("init-db", help="RDS 준비 후 명시적 초기화. v1 DB 자동 변경 없음")
+    sub.add_parser("check-db", help="읽기 전용 DB 연결 검사; 테이블 생성 없음")
     sub.add_parser("create-index", help="대량 적재 후 명시적으로 HNSW 생성")
     rollback = sub.add_parser("rollback", help="보존된 완료 run으로 명시적 롤백, 이력 기록")
     rollback.add_argument("--run-id", required=True)
@@ -64,6 +65,11 @@ def main():
         result = prepare(args)
     elif args.command == "prepare":
         result = prepare(args)
+    elif args.command == "check-db":
+        from vector_store import connect
+        with connect() as conn:
+            row = conn.execute("SELECT current_database(), current_user").fetchone()
+        result = {"connected": True, "database": row[0], "user": row[1]}
     elif args.command == "validate":
         _, result = validate_bundle(args.input)
     else:
