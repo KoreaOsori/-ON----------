@@ -199,3 +199,10 @@ async def test_evaluate_pairs_counts_by_key_and_by_name():
     assert "기대(none)" in format_report(report) and "negative 에서 found" in format_report(report)
     broken = await evaluate_pairs([("1", "3")], [], names, run_tool)  # 키로는 규칙 없음(none) → 양성인데 놓침
     assert broken["problems"] and broken["problems"][0].startswith("[positive/key→none]")
+
+
+def test_contra_prompt_forbids_unsourced_stop_or_continue_advice():
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM
+
+    assert "이미 함께 쓰고 있다고 해도 중단하라거나 계속하라는 말은 하지 않고" in CONTRA_PROMPT_ADDENDUM
+    assert "안전하다, 괜찮다, 문제없다고 말하지 않고" in CONTRA_PROMPT_ADDENDUM
