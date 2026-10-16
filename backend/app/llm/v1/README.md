@@ -68,7 +68,31 @@ Python이 각 의약품 쌍의 성분 집합을 양방향으로 비교한다. �
 
 ## IAM 및 모델
 
-EC2 instance profile을 boto3 기본 credential chain으로 사용한다. 코드에 AWS 키를 저장하지 않는다. Claude inference profile 및 대상 foundation-model 리소스, Titan embedding 모델에 `bedrock:InvokeModel` 권한이 필요하다. 교차 리전 프로필 사용 시 대상 리전 권한과 조직 SCP도 확인한다. API는 Converse, 임베딩은 InvokeModel을 사용한다. 프로필 ID/ARN은 환경변수로 교체 가능하며 임의 모델을 HTTP 입력으로 받지는 않는다.
+기본 `LLM_V1_AUTH_MODE=ec2_role`은 boto3가 얻은 자격증명의 출처가 EC2 instance profile(`iam-role`)인지 확인한다. 다른 환경변수 키/공유 프로필 등이 먼저 선택되면 명시적으로 실패한다. 자격증명 갱신은 SDK에 맡기고 SigV4로 서명한다. 코드에 AWS 키를 저장하지 않는다. 로컬 프로필·SSO 테스트에만 `LLM_V1_AUTH_MODE=default_chain`을 사용한다. 이 모드도 SigV4이며 Bedrock bearer API 키 인증은 사용하지 않는다.
+
+전달받은 `BedrockAPIKey-wy45`는 **IAM 사용자 이름**이다. 이 사용자를 EC2에 연결하거나 사용자 이름을 `AWS_PROFILE`, 역할 ARN, 모델 ID에 넣지 않는다. 인프라 담당자는 Bedrock 권한을 가진 **EC2용 IAM 역할 및 instance profile**을 생성하여 EC2에 연결해야 한다. 사용자의 권한은 역할에 자동 상속되지 않는다. 역할 이름은 코드 설정에 필요하지 않으며 실제 연결된 역할을 SDK가 발견한다. 콘솔 URL의 `us-east-1`을 초기 Bedrock 리전으로 사용하되, IAM 사용자는 리전 전용 리소스가 아니므로 실제 Bedrock 사용 리전은 인프라 구성과 맞춰야 한다.
+
+인프라 전달용 파일(이 코드가 AWS에 자동 적용하지 않음):
+
+- `iam/ec2-trust-policy.json`: 역할의 EC2 신뢰 정책.
+- `iam/bedrock-invoke-policy.template.json`: 역할의 Bedrock 호출 권한 예시. `<AWS_ACCOUNT_ID>`를 실제 계정 ID로 교체해야 한다. 기본 us-east-1/US 프로필용이며 리전·프로필을 바꾸면 정책 ARN도 변경한다. `us-*`는 US 교차 리전 대상 모델을 허용하며, 인프라 정책에 따라 확인된 대상 리전을 개별 나열해 더 좁힐 수 있다.
+
+Claude inference profile 및 대상 foundation-model 리소스, Titan embedding 모델에 `bedrock:InvokeModel` 권한이 필요하다. 교차 리전 프로필 사용 시 대상 리전 권한과 조직 SCP도 확인한다. 모델 최초 활성화/Marketplace 구독이 필요하면 배포 관리자 계정에서 준비한다. 런타임 역할에 사용자 관리 권한을 줄 필요는 없다. API는 Converse, 임베딩은 InvokeModel을 사용한다. 프로필 ID/ARN은 환경변수로 교체 가능하며 임의 모델을 HTTP 입력으로 받지는 않는다.
+
+EC2 프로세스에 정적 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, 불필요한 `AWS_PROFILE` 또는 `AWS_BEARER_TOKEN_BEDROCK`을 주입하지 않는다. IMDS는 활성화하고 IMDSv2 사용을 권장한다. EC2 내부 Docker에서 실행하면 컨테이너도 IMDS에 도달하도록 인프라에서 네트워크/hop limit을 구성해야 한다. SDK가 Bedrock/STS HTTPS 엔드포인트에 접근할 네트워크 경로도 필요하다.
+
+EC2의 backend 디렉터리에서 다음 명령으로 DB 없이 인증·추론을 확인한다:
+
+```bash
+# 역할 출처 확인 및 STS 호출자 ARN 출력. Bedrock 권한 검증은 아직 아님.
+python -m app.llm.v1.check_bedrock
+# 실제 유료 호출: Titan 임베딩 1회, Haiku 1회, Sonnet 1회
+python -m app.llm.v1.check_bedrock --invoke
+```
+
+첫 명령의 `caller_arn`이 기대하는 `arn:aws:sts::...:assumed-role/실제역할이름/...`인지 확인한다. 두 번째 명령이 성공해야 `inference_verified=true`다. 실패 시 종료 코드는 1이며 비밀 키는 출력하지 않는다. `LLM_V1_API_KEY`는 Swagger/자체 HTTP API 접근용이며 AWS 인증 키와 무관하다.
+
+역할/인증 참고: [EC2 역할 연결](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-ec2.html), [Boto3 자격증명](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html).
 
 AWS 공식 문서에서 확인한 모델 ID를 기본 설정으로 사용한다(2026-10-16). 지역별 지원은 계정에서 재확인한다:
 

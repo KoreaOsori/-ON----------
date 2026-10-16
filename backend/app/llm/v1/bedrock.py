@@ -3,9 +3,7 @@ import json
 import math
 from functools import cached_property
 
-import boto3
-from botocore.config import Config
-
+from .aws_auth import client_config, session_for
 from .config import Settings
 
 
@@ -15,10 +13,7 @@ class Bedrock:
 
     @cached_property
     def client(self):
-        # Default credential chain: EC2 instance profile, no static keys in code.
-        return boto3.client("bedrock-runtime", region_name=self.settings.region,
-                            config=Config(connect_timeout=5, read_timeout=90,
-                                          retries={"mode": "standard", "max_attempts": 2}))
+        return session_for(self.settings).client("bedrock-runtime", config=client_config())
 
     async def embed(self, query: str) -> list[float]:
         def invoke():
