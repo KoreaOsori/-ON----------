@@ -53,6 +53,19 @@ Thumbs.db
 .claude/settings.local.json
 .claude/*.lock
 
+
+# ---------- kkm -----------
+s3/*
+!s3/.gitkeep
+trash
+docs
+memo.md
+=======
+# ---------- codx analysis ----------
+.analysis_deps
+analysis
+
+
 data/
 
 docker-compose.yml

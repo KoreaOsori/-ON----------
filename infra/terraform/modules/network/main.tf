@@ -1,4 +1,5 @@
-# VPC: 퍼블릭(ALB, NAT) / 프라이빗(ECS, RDS, Redis) 서브넷을 AZ 별로 구성
+# VPC: 퍼블릭(EC2) / 프라이빗(RDS) 서브넷을 AZ 별로 구성
+# NAT Gateway 는 쓰지 않는다 (비용). EC2 는 퍼블릭 서브넷에서 인터넷을 직접 쓰고, RDS 는 인터넷이 필요 없다.
 data "aws_availability_zones" "available" {
   state = "available"
 }
@@ -28,6 +29,7 @@ resource "aws_subnet" "public" {
   tags                    = { Name = "${var.name}-public-${local.azs[count.index]}" }
 }
 
+# RDS 서브넷 그룹은 인스턴스가 1대여도 서로 다른 AZ 의 서브넷 2개 이상이 필요하다
 resource "aws_subnet" "private" {
   count             = var.az_count
   vpc_id            = aws_vpc.this.id
@@ -51,39 +53,14 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# dev 비용 절감을 위해 NAT Gateway 1개만 사용 (운영 환경은 AZ 별 NAT 권장)
-resource "aws_eip" "nat" {
-  domain = "vpc"
-  tags   = { Name = "${var.name}-nat-eip" }
-}
-
-resource "aws_nat_gateway" "this" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
-  tags          = { Name = "${var.name}-nat" }
-  depends_on    = [aws_internet_gateway.this]
-}
-
+# 프라이빗 서브넷은 VPC 내부 통신만 (인터넷 경로 없음)
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.this.id
-  }
-  tags = { Name = "${var.name}-private-rt" }
+  tags   = { Name = "${var.name}-private-rt" }
 }
 
 resource "aws_route_table_association" "private" {
   count          = var.az_count
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private.id
-}
-
-# S3 트래픽은 NAT 를 거치지 않도록 Gateway Endpoint 사용 (비용 절감)
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = aws_vpc.this.id
-  service_name      = "com.amazonaws.${var.region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = [aws_route_table.private.id]
-  tags              = { Name = "${var.name}-s3-endpoint" }
 }

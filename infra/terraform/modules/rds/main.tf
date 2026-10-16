@@ -1,4 +1,5 @@
 # PostgreSQL: 프라이빗 서브넷, 스토리지 암호화, 마스터 비밀번호는 RDS 가 Secrets Manager 에서 관리
+# 인스턴스 1대 안에 데이터베이스 1개, 스키마 gold(정형) / rag(pgvector) 로 나눠 쓴다 (스키마·확장은 직접 생성)
 resource "aws_db_subnet_group" "this" {
   name       = "${var.name}-db"
   subnet_ids = var.subnet_ids
@@ -26,7 +27,7 @@ resource "aws_db_instance" "this" {
   manage_master_user_password = true
 
   allocated_storage     = var.allocated_storage
-  max_allocated_storage = var.allocated_storage * 5
+  max_allocated_storage = var.max_allocated_storage
   storage_type          = "gp3"
   storage_encrypted     = true
 
@@ -42,5 +43,5 @@ resource "aws_db_instance" "this" {
   skip_final_snapshot        = !var.deletion_protection
   final_snapshot_identifier  = var.deletion_protection ? "${var.name}-postgres-final" : null
 
-  performance_insights_enabled = true
+  performance_insights_enabled = false
 }
