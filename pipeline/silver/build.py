@@ -12,6 +12,9 @@ silver 테이블 3개:
 출력: {root}/silver/{table}/snapshot={날짜}/data.parquet, _meta.json
       {root}/silver/{table}/snapshot={날짜}/_rejects.json   (변환 실패 값이 있을 때만)
       {root}/silver/_latest.json  ← 전체 빌드가 모두 검증을 통과했을 때만 마지막에 갱신
+      {root}/silver/.build_tmp_*/   ← drug_product 허가 문서 임시 파일 (빌드가 끝나면 삭제, 남은 것은 다음 실행 때 삭제)
+
+메모리: 전체 최대 약 1.5~1.7GB (2026-10-18 로컬 측정). 큰 테이블을 한 번에 펼치지 않도록 행 해시·열 단위 처리·묶음 단위 조립을 쓴다.
 """
 
 import argparse
@@ -241,12 +244,16 @@ def sorted_lists(column):
 # ---------------------------------------------------------------- 원본 오퍼레이션 정리
 
 def row_digests(t, names):
-    """행마다 지정한 컬럼 값들의 해시 (16바이트). 큰 테이블을 조각 단위로 처리한다."""
+    """행마다 지정한 컬럼 값들의 해시 (16바이트). 큰 테이블을 조각 단위로 처리한다.
+
+    값마다 길이를 앞에 붙여 이어서, 값 안에 어떤 문자가 있어도 서로 다른 행이 같은 문자열이 되지 않는다 (null 은 '-').
+    """
     digests = []
     for batch in t.select(names).to_batches(max_chunksize=50_000):
         columns = [column.to_pylist() for column in batch.columns]
-        digests += [hashlib.blake2b("\x1e".join("\x00" if v is None else str(v) for v in row).encode("utf-8"),
-                                    digest_size=16).digest() for row in zip(*columns)]
+        for row in zip(*columns):
+            text = "".join("-" if v is None else f"{len(str(v))}:{v}" for v in row)
+            digests.append(hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest())
     return digests
 
 

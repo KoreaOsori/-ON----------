@@ -1,9 +1,12 @@
-# EC2 배포용: nginx(80) → 프론트엔드(Next.js) / 백엔드(FastAPI, /api) + Redis
+# EC2 배포용: nginx(80) → 프론트엔드(Next.js) / 백엔드(FastAPI, /api) + 데이터 파이프라인(필요할 때만 실행)
 # DB 는 RDS, 파일 저장은 S3 (컨테이너로 띄우지 않음). AWS 권한은 EC2 IAM 역할을 쓰므로 키를 넣지 않는다.
+# Redis 는 쓰지 않는다 (2026-10-18 팀 결정). RAG·LLM 팀 서비스는 실행 방식이 정해지면 추가한다.
 #
 #   cd deploy/ec2
 #   cp .env.example .env   # 값 채우기 (Secrets Manager 참고)
-#   docker compose up -d --build
+#   docker compose up -d --build                                                   # 웹 서비스
+#   docker compose run --rm data-pipeline                                          # 데이터 파이프라인 (오늘 날짜)
+#   docker compose run --rm data-pipeline --snapshot 2026-10-13 --skip-collect     # 받아 둔 bronze 로 silver·gold 만
 name: pill-check
 
 services:
@@ -31,19 +34,19 @@ services:
       context: ../../backend
       target: runtime
     env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
-  # 비회원 질문 횟수 제한 등 (EC2 안에서 실행, ElastiCache 미사용)
-  redis:
-    image: redis:7-alpine
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
+  # 데이터 파이프라인: 수집 → bronze 검증 → silver → silver S3 업로드 → gold (pipeline/run_pipeline.py). 항상 띄우지 않는다 (profile)
+  # - API 키(E_Drug_API, FOOD_SAFETY_API)는 .env 에서, gold 의 RDS 접속 정보는 Secrets Manager 에서 EC2 역할로 읽는다
+  # - bronze·silver 는 호스트 폴더에 남긴다. gold 의 "이전 수집 유지"는 이전 silver 스냅샷이 이 폴더에 있어야 동작한다
+  data-pipeline:
+    profiles: ["data"]
+    build:
+      context: ../../pipeline
+    env_file: .env
+    environment:
+      TZ: Asia/Seoul  # 스냅샷 날짜("오늘")를 한국 날짜로. 없으면 UTC 라 한국 시간 0~9시 실행은 전날 날짜가 된다
+    user: "${PIPELINE_UID:-1000}:${PIPELINE_GID:-1000}"  # 호스트 데이터 폴더 소유자 (Amazon Linux ec2-user = 1000)
+    volumes:
+      - ${PIPELINE_DATA_DIR:-../../s3}:/app/s3
+    restart: "no"

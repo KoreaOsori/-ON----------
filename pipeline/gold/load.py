@@ -7,6 +7,10 @@ silver/_latest.json 의 스냅샷을 읽어 트랜잭션 하나 안에서 gold �
   python pipeline/gold/load.py --host localhost             # SSM 터널로 RDS 에 적재 (접속 정보: Secrets Manager)
   python pipeline/gold/load.py                              # EC2 에서 RDS 에 직접 적재
   python pipeline/gold/load.py --dsn postgresql://...       # 다른 DB (로컬 테스트 등)
+  python pipeline/gold/load.py --force                      # 이미 적재한 silver 여도 다시 적재 (코드·스키마를 바꿨을 때)
+
+이미 적재한 silver(_latest.json 의 written_at 이 gold.load_info 와 같음)면 아무것도 하지 않고 끝난다.
+종료 코드: 0 = 적재 또는 건너뜀, 1 = 실패 (기존 gold 유지), 2 = DB 접속 실패 (RDS 가 꺼져 있거나 터널·접속 정보 확인)
 
 RDS 접속 정보는 Secrets Manager `pill-check/dev/app` 의 DB_HOST, DB_PORT, DB_NAME, DB_USERNAME, DB_PASSWORD.
 """
@@ -28,6 +32,7 @@ DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "s3"
 SCHEMA_SQL = Path(__file__).resolve().parent / "schema.sql"
 APP_SECRET = "pill-check/dev/app"
 REGION = "us-east-1"
+CONNECT_TIMEOUT_SECONDS = 15
 BATCH_ROWS = 1000        # silver 를 읽는 단위 (허가 문서가 커서 작게)
 CSV_BATCH_ROWS = 50000   # 열 단위 CSV 로 보내는 단위
 
@@ -80,6 +85,10 @@ DRUG_SOURCE_COLUMNS = [
     "atc_code", "main_item_ingr", "chart", "big_prdt_img_url", "pills", "item_permit_date", "easy_info",
     "doc_efficacy", "doc_dosage", "doc_precautions",
 ]
+RULE_COLUMNS = [  # 성분 규칙에서 쓰는 컬럼
+    "rule_key", "ingr_code", "ingr_names", "mix_type", "ori_codes", "mixture_ingr_code", "mixture_ingr_names",
+    "mixture_mix_type", "mixture_ori_codes", "prohbt_content", "remark", "notification_date",
+]
 ITEM_SOURCE_COLUMNS = [
     "item_seq", "mixture_item_seq", "row_key", "ingr_code", "ingr_names", "mixture_ingr_code",
     "mixture_ingr_names", "prohbt_content", "remark", "notification_date",
@@ -105,11 +114,9 @@ def silver_path(root, table, snapshot):
     return Path(root) / "silver" / table / f"snapshot={snapshot}" / "data.parquet"
 
 
-def iter_batches(path, columns, filter_expression=None):
+def iter_batches(path, columns):
     """silver 를 BATCH_ROWS 행씩 dict 목록으로 읽는다."""
     for batch in pq.ParquetFile(path).iter_batches(batch_size=BATCH_ROWS, columns=columns):
-        if filter_expression is not None:
-            batch = pa.Table.from_batches([batch]).filter(filter_expression)
         yield batch.to_pylist()
 
 
@@ -281,8 +288,13 @@ def product_mcodes(product):
 
 
 def read_valid_rules(root, snapshot):
-    return pq.read_table(silver_path(root, "dur_contraindication", snapshot),
-                         filters=[("level", "=", "성분"), ("is_rule_valid", "=", True)]).to_pylist()
+    """유효한 성분 병용금기 규칙 (파일 순서). 80만 행 파일을 통째로 읽고 거르면 1GB 넘게 써서, 필요한 열만 조각 단위로 거른다."""
+    rules = []
+    for batch in pq.ParquetFile(silver_path(root, "dur_contraindication", snapshot)).iter_batches(
+            batch_size=CSV_BATCH_ROWS, columns=["level", "is_rule_valid", *RULE_COLUMNS]):
+        valid = pc.and_(pc.equal(batch["level"], "성분"), pc.fill_null(batch["is_rule_valid"], False))
+        rules += pa.Table.from_batches([batch]).filter(valid).select(RULE_COLUMNS).to_pylist()
+    return rules
 
 
 def rule_m_to_d(rules):
@@ -517,66 +529,81 @@ def connection_info(host_override):
     }
 
 
-def load(conninfo, root):
-    import psycopg
+def loaded_silver(cur):
+    """gold 에 마지막으로 적재한 silver 의 written_at. gold 가 없거나 예전 구조면 None."""
+    cur.execute("SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'gold' AND table_name = 'load_info' AND column_name = 'silver_written_at'")
+    if cur.fetchone() is None:
+        return None
+    cur.execute("SELECT silver_written_at FROM gold.load_info")
+    row = cur.fetchone()
+    return row[0] if row else None
 
+
+def load(conn, root, force=False):
+    """gold 를 다시 만든다. 이미 적재한 silver 면 None, 적재했으면 테이블별 행 수를 돌려준다."""
     latest = json.loads((Path(root) / "silver" / "_latest.json").read_text(encoding="utf-8"))
     snapshots = latest["tables"]
-    log(f"silver 스냅샷 {snapshots}")
+    log(f"silver 스냅샷 {snapshots} (작성 {latest['written_at']})")
+    with conn.cursor() as cur:
+        previous = loaded_silver(cur)
+    conn.commit()
+    if previous == latest["written_at"] and not force:
+        log("이미 적재한 silver 라 건너뜀 (다시 적재하려면 --force)")
+        return None
     schema_sql, index_sql = SCHEMA_SQL.read_text(encoding="utf-8").split("-- INDEXES")
 
-    connect = psycopg.connect(conninfo) if isinstance(conninfo, str) else psycopg.connect(**conninfo)
-    with connect as conn:
-        with conn.transaction(), conn.cursor() as cur:
-            cur.execute(schema_sql)
-            written = {}
+    with conn.transaction(), conn.cursor() as cur:
+        cur.execute(schema_sql)
+        written = {}
 
-            written["drug"] = copy_rows(cur, "drug", DRUG_COLUMNS, iter_drug_rows(root, snapshots["drug_product"]))
-            log(f"  drug {written['drug']:,}행")
+        written["drug"] = copy_rows(cur, "drug", DRUG_COLUMNS, iter_drug_rows(root, snapshots["drug_product"]))
+        log(f"  drug {written['drug']:,}행")
 
-            sale = pq.read_table(silver_path(root, "drug_product", snapshots["drug_product"]),
-                                 columns=["item_seq", "sale_status"])
-            drug_items = set(sale["item_seq"].to_pylist())
-            sale_items = set(sale.filter(pc.equal(sale["sale_status"], "판매"))["item_seq"].to_pylist())
-            items, carried_over, excluded = item_level_rows(root, snapshots["dur_contraindication"], drug_items, sale_items)
-            item_count = copy_arrow(cur, "drug_contraindication", CONTRAINDICATION_COLUMNS,
-                                    item_contraindication_table(items))
-            carried_rows = sum(v["rows"] for v in carried_over.values())
-            rule_count = copy_rows(cur, "drug_contraindication", CONTRAINDICATION_COLUMNS, iter_rule_contraindication_rows(
-                root, snapshots["dur_contraindication"], snapshots["drug_product"], items))
-            del items
-            written["drug_contraindication"] = item_count + rule_count
-            log(f"  drug_contraindication {item_count + rule_count:,}행 ({ITEM_LEVEL} {item_count:,} "
-                f"(이전 수집에서 유지 {carried_rows:,}), {RULE_LEVEL} {rule_count:,})")
-            for previous, info in carried_over.items():
-                log(f"    이전 수집 {previous} 에서 유지: 제품 {info['products']:,}개, {info['rows']:,}행")
-            if excluded["rows"]:
-                log(f"    drug 에 없는 제품이 낀 품목 DUR 제외: 제품 {len(excluded['item_seqs']):,}개, {excluded['rows']:,}행")
+        sale = pq.read_table(silver_path(root, "drug_product", snapshots["drug_product"]),
+                             columns=["item_seq", "sale_status"])
+        drug_items = set(sale["item_seq"].to_pylist())
+        sale_items = set(sale.filter(pc.equal(sale["sale_status"], "판매"))["item_seq"].to_pylist())
+        items, carried_over, excluded = item_level_rows(root, snapshots["dur_contraindication"], drug_items, sale_items)
+        item_count = copy_arrow(cur, "drug_contraindication", CONTRAINDICATION_COLUMNS,
+                                item_contraindication_table(items))
+        carried_rows = sum(v["rows"] for v in carried_over.values())
+        rule_count = copy_rows(cur, "drug_contraindication", CONTRAINDICATION_COLUMNS, iter_rule_contraindication_rows(
+            root, snapshots["dur_contraindication"], snapshots["drug_product"], items))
+        del items
+        written["drug_contraindication"] = item_count + rule_count
+        log(f"  drug_contraindication {item_count + rule_count:,}행 ({ITEM_LEVEL} {item_count:,} "
+            f"(이전 수집에서 유지 {carried_rows:,}), {RULE_LEVEL} {rule_count:,})")
+        for previous, info in carried_over.items():
+            log(f"    이전 수집 {previous} 에서 유지: 제품 {info['products']:,}개, {info['rows']:,}행")
+        if excluded["rows"]:
+            log(f"    drug 에 없는 제품이 낀 품목 DUR 제외: 제품 {len(excluded['item_seqs']):,}개, {excluded['rows']:,}행")
 
-            written["drug_dur_caution"] = copy_rows(cur, "drug_dur_caution", DUR_CAUTION_COLUMNS,
-                                                    iter_dur_caution_rows(root, snapshots["drug_product"]))
-            log(f"  drug_dur_caution {written['drug_dur_caution']:,}행")
+        written["drug_dur_caution"] = copy_rows(cur, "drug_dur_caution", DUR_CAUTION_COLUMNS,
+                                                iter_dur_caution_rows(root, snapshots["drug_product"]))
+        log(f"  drug_dur_caution {written['drug_dur_caution']:,}행")
 
-            written["drug_ingredient"] = copy_rows(cur, "drug_ingredient", DRUG_INGREDIENT_COLUMNS, iter_drug_ingredient_rows(
-                root, snapshots["dur_contraindication"], snapshots["drug_product"]))
-            log(f"  drug_ingredient {written['drug_ingredient']:,}행")
+        written["drug_ingredient"] = copy_rows(cur, "drug_ingredient", DRUG_INGREDIENT_COLUMNS, iter_drug_ingredient_rows(
+            root, snapshots["dur_contraindication"], snapshots["drug_product"]))
+        log(f"  drug_ingredient {written['drug_ingredient']:,}행")
 
-            written["health_food"] = copy_arrow(cur, "health_food", HEALTH_FOOD_COLUMNS,
-                                                health_food_table(root, snapshots["health_food_product"]))
-            log(f"  health_food {written['health_food']:,}행")
+        written["health_food"] = copy_arrow(cur, "health_food", HEALTH_FOOD_COLUMNS,
+                                            health_food_table(root, snapshots["health_food_product"]))
+        log(f"  health_food {written['health_food']:,}행")
 
-            cur.execute(index_sql)
-            counts = {}
-            for table in TABLES:
-                cur.execute(f"SELECT count(*) FROM gold.{table}")
-                counts[table] = cur.fetchone()[0]
-            problems = [f"{t}: DB {counts[t]:,}행 != 보낸 행 {written[t]:,}" for t in TABLES if counts[t] != written[t]]
-            problems += check_loaded(cur)
-            if problems:
-                raise RuntimeError("적재 후 확인 실패 (모두 되돌림): " + "; ".join(problems))
-            cur.execute("INSERT INTO gold.load_info (silver_snapshot, spec_version, row_counts, carried_over, excluded) "
-                        "VALUES (%s, %s, %s, %s, %s)", (latest["snapshot"], latest["spec_version"], json.dumps(counts),
-                                                        json.dumps(carried_over), json.dumps(excluded)))
+        cur.execute(index_sql)
+        counts = {}
+        for table in TABLES:
+            cur.execute(f"SELECT count(*) FROM gold.{table}")
+            counts[table] = cur.fetchone()[0]
+        problems = [f"{t}: DB {counts[t]:,}행 != 보낸 행 {written[t]:,}" for t in TABLES if counts[t] != written[t]]
+        problems += check_loaded(cur)
+        if problems:
+            raise RuntimeError("적재 후 확인 실패 (모두 되돌림): " + "; ".join(problems))
+        cur.execute("INSERT INTO gold.load_info (silver_snapshot, silver_written_at, spec_version, row_counts, "
+                    "carried_over, excluded) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (latest["snapshot"], latest["written_at"], latest["spec_version"], json.dumps(counts),
+                     json.dumps(carried_over), json.dumps(excluded)))
     return counts
 
 
@@ -585,11 +612,24 @@ def main():
     parser.add_argument("--root", default=str(DEFAULT_ROOT))
     parser.add_argument("--host", help="DB 호스트 덮어쓰기 (SSM 터널이면 localhost)")
     parser.add_argument("--dsn", help="Secrets Manager 대신 이 접속 문자열 사용")
+    parser.add_argument("--force", action="store_true", help="이미 적재한 silver 여도 다시 적재")
     args = parser.parse_args()
 
-    log("적재 시작 (실패하면 기존 gold 유지)")
-    counts = load(args.dsn or connection_info(args.host), args.root)
-    log(f"완료 {counts}")
+    import psycopg
+
+    conninfo = args.dsn or connection_info(args.host)
+    try:
+        # 꺼진 RDS 는 기다려도 응답이 없으므로 빨리 실패한다 (제한이 없으면 4분 넘게 기다림)
+        conn = (psycopg.connect(conninfo, connect_timeout=CONNECT_TIMEOUT_SECONDS) if isinstance(conninfo, str)
+                else psycopg.connect(**conninfo, connect_timeout=CONNECT_TIMEOUT_SECONDS))
+    except psycopg.OperationalError as error:
+        log(f"DB 접속 실패 — RDS 가 꺼져 있거나, SSM 터널(--host localhost)·접속 정보를 확인할 것: {error}")
+        sys.exit(2)
+    with conn:
+        log("적재 시작 (실패하면 기존 gold 유지)")
+        counts = load(conn, args.root, args.force)
+    if counts is not None:
+        log(f"완료 {counts}")
 
 
 if __name__ == "__main__":

@@ -107,6 +107,7 @@ CREATE TABLE gold.health_food (
 -- 적재 기록 (마지막 적재 1행)
 CREATE TABLE gold.load_info (
     silver_snapshot     date NOT NULL,
+    silver_written_at   text NOT NULL,                  -- silver/_latest.json 의 written_at. 같으면 이미 적재한 silver 라 건너뜀
     spec_version        text NOT NULL,
     loaded_at           timestamptz NOT NULL DEFAULT now(),
     row_counts          jsonb NOT NULL,
