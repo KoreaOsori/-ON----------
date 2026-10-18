@@ -7,6 +7,7 @@
 """
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -16,8 +17,6 @@ from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
-
-from dotenv import load_dotenv
 
 from operations import FOOD_SAFETY_OPERATIONS, OPERATIONS
 
@@ -29,18 +28,27 @@ ALL_OPERATIONS = {**OPERATIONS, **FOOD_SAFETY_OPERATIONS}
 MAX_RETRIES = 3
 TIMEOUT_SECONDS = 120
 DEFAULT_OUT = Path(__file__).resolve().parents[2] / "s3"
+APP_SECRET = "pill-check/dev/app"  # API 키는 Secrets Manager 에서 (로컬은 AWS 자격 증명, EC2 는 IAM 역할)
+REGION = "us-east-1"
 
 
 def is_food_safety(operation):
     return operation in FOOD_SAFETY_OPERATIONS
 
 
+@functools.cache
+def read_app_secret():
+    import boto3
+
+    return json.loads(boto3.client("secretsmanager", region_name=REGION)
+                      .get_secret_value(SecretId=APP_SECRET)["SecretString"])
+
+
 def get_service_key(operation):
-    load_dotenv()
     name = "FOOD_SAFETY_API" if is_food_safety(operation) else "E_Drug_API"
-    key = os.environ.get(name)
+    key = read_app_secret().get(name)
     if not key:
-        raise SystemExit(f"{name} 환경변수가 비어 있습니다. .env를 확인하세요.")
+        raise SystemExit(f"Secrets Manager {APP_SECRET} 에 {name} 값이 없습니다.")
     return key
 
 

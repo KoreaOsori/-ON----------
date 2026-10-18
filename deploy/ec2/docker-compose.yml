@@ -37,13 +37,12 @@ services:
     restart: unless-stopped
 
   # 데이터 파이프라인: 수집 → bronze 검증 → silver → silver S3 업로드 → gold (pipeline/run_pipeline.py). 항상 띄우지 않는다 (profile)
-  # - API 키(E_Drug_API, FOOD_SAFETY_API)는 .env 에서, gold 의 RDS 접속 정보는 Secrets Manager 에서 EC2 역할로 읽는다
+  # - API 키와 gold 의 RDS 접속 정보는 Secrets Manager(pill-check/dev/app)에서 EC2 역할로 읽는다 (.env 안 씀)
   # - bronze·silver 는 호스트 폴더에 남긴다. gold 의 "이전 수집 유지"는 이전 silver 스냅샷이 이 폴더에 있어야 동작한다
   data-pipeline:
     profiles: ["data"]
     build:
       context: ../../pipeline
-    env_file: .env
     environment:
       TZ: Asia/Seoul  # 스냅샷 날짜("오늘")를 한국 날짜로. 없으면 UTC 라 한국 시간 0~9시 실행은 전날 날짜가 된다
     user: "${PIPELINE_UID:-1000}:${PIPELINE_GID:-1000}"  # 호스트 데이터 폴더 소유자 (Amazon Linux ec2-user = 1000)
