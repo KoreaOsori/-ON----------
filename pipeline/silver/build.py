@@ -22,7 +22,9 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
@@ -54,6 +56,13 @@ MONTHS = {m: i for i, m in enumerate(
 
 # 허가 상태 → 판매 상태. 여기 없는 상태(취하·폐업·취소 등)의 제품은 drug_product 에 넣지 않는다
 SALE_STATUS = {"정상": "판매", "유효기간만료": "판매중지"}
+
+# drug_product 는 제품을 품목코드 순으로 이 개수씩 묶어 조립·저장한다 (전체를 한 번에 메모리에 올리지 않도록)
+PRODUCT_CHUNK = 2000
+BUILD_TMP_PREFIX = ".build_tmp_"  # 허가 문서 임시 파일 폴더 (silver/ 아래, 디스크). 끝나면 지우고, 남은 것은 다음 실행 때 지운다
+DOC_FIELDS = [("section_idx", pa.int64()), ("section_title", pa.string()), ("article_idx", pa.int64()),
+              ("article_title", pa.string()), ("text", pa.string()), ("content_hash", pa.string())]
+DOC_TYPE_COLUMNS = {"EE": "doc_efficacy", "UD": "doc_dosage", "NB": "doc_precautions", "PN": "doc_pn"}
 
 
 class BuildError(Exception):
@@ -199,9 +208,9 @@ PARSERS = {
 
 def convert(column, col, rejects):
     """고유값마다 한 번씩만 변환한다 (80만 행이어도 고유값은 적다). 실패한 값은 null + rejects."""
-    array = column.combine_chunks() if isinstance(column, pa.ChunkedArray) else column
     if col.parse is None:
-        return array
+        return column  # 복사하지 않는다 (80만 행이면 열마다 수십 MB)
+    array = column.combine_chunks() if isinstance(column, pa.ChunkedArray) else column
     parser = PARSERS[col.parse]
     encoded = pc.dictionary_encode(array)
     converted, failed = [], {}
@@ -231,11 +240,70 @@ def sorted_lists(column):
 
 # ---------------------------------------------------------------- 원본 오퍼레이션 정리
 
-def collapse(t, table):
+def row_digests(t, names):
+    """행마다 지정한 컬럼 값들의 해시 (16바이트). 큰 테이블을 조각 단위로 처리한다."""
+    digests = []
+    for batch in t.select(names).to_batches(max_chunksize=50_000):
+        columns = [column.to_pylist() for column in batch.columns]
+        digests += [hashlib.blake2b("\x1e".join("\x00" if v is None else str(v) for v in row).encode("utf-8"),
+                                    digest_size=16).digest() for row in zip(*columns)]
+    return digests
+
+
+def filter_owned(holder, mask):
+    """holder = [테이블] 을 받아 열마다 걸러낸다. 걸러낸 열을 만들 때마다 원래 열을 놓아줘서 테이블이 두 벌 있지 않게 한다.
+
+    호출하는 쪽은 테이블을 holder 에만 넣고 자기 변수는 비워야 효과가 있다: holder = [t]; t = None; t = filter_owned(holder, m)
+    """
+    t = holder.pop()
+    schema = t.schema
+    columns = list(t.columns)
+    del t
+    kept = []
+    while columns:
+        kept.append(columns.pop(0).filter(mask))
+    return pa.Table.from_arrays(kept, schema=schema)
+
+
+def exact_duplicate_mask(t):
+    """모든 값이 같은 행은 처음 것만 True (원래 순서 유지).
+
+    모든 컬럼을 group_by 키로 쓰면 80만 행 × 43열에서 메모리를 2GB 넘게 써서, 행 해시 하나로 비교한다.
+    """
+    seen, keep = set(), []
+    for digest in row_digests(t, t.column_names):
+        keep.append(digest not in seen)
+        seen.add(digest)
+    return pa.array(keep, pa.bool_())
+
+
+def collapse(holder, table):
     """collapse_key 가 같은 행을 1행으로. collected 컬럼은 목록으로 모으고, 나머지는 값이 하나여야 한다
-    (resolve 에 적힌 컬럼만 예외: 우선값이 있는 행의 값을 쓴다)."""
+    (resolve 에 적힌 컬럼만 예외: 우선값이 있는 행의 값을 쓴다).
+
+    키가 겹치는 행은 소수라(품목 병용금기 80만 행 중 3,514행) 그 행들만 집계하고, 나머지는 그대로 1행씩 옮긴다.
+    전체를 집계하면 컬럼마다 값 종류를 세느라 메모리를 수 GB 쓴다.
+    """
     key = list(table.collapse_key)
     collected = [c.src for c in table.columns if c.parse == "collected"]
+    t = holder[0]
+    digests = row_digests(t, key)  # group_by 처럼 null 도 같은 값으로 본다
+    counts = Counter(digests)
+    is_repeated = pa.array([counts[d] > 1 for d in digests], pa.bool_())
+    del digests, counts
+    merged, collapsed = collapse_rows(t.filter(is_repeated), table, key, collected)
+    t = None
+    single = filter_owned(holder, pc.invert(is_repeated))
+    # 1행짜리 키: collected 컬럼만 목록으로 (집계 결과와 같게 값이 없으면 null)
+    for name in collected:
+        index = single.column_names.index(name)
+        as_list = pa.array([[v] if v is not None else None for v in single[name].to_pylist()], type=pa.list_(pa.string()))
+        single = single.set_column(index, name, as_list)
+    return pa.concat_tables([single, merged]), collapsed
+
+
+def collapse_rows(t, table, key, collected):
+    """collapse 의 집계 부분 (키가 겹치는 행만 받는다)."""
     others = [name for name in t.column_names if name not in key and name not in collected]
     if table.resolve:
         ranks = []
@@ -288,13 +356,13 @@ def validate(out, name, primary_key, required):
     for column in primary_key:
         if out[column].null_count:
             raise BuildError(f"[{name}] PK 컬럼 {column}에 null")
-    distinct = out.select(list(primary_key)).group_by(list(primary_key)).aggregate([]).num_rows
+    distinct = len(set(row_digests(out, list(primary_key))))
     if distinct != out.num_rows:
         raise BuildError(f"[{name}] PK {primary_key} 중복 {out.num_rows - distinct}건")
 
 
-def build_table(table, raw, snapshot):
-    """원본 오퍼레이션 → 정리된 테이블. (결과, 메타, rejects, 합친 뒤 원본 형태 테이블)"""
+def build_table(table, raw, snapshot, keep_prepared=False):
+    """원본 오퍼레이션 → 정리된 테이블. (결과, 메타, rejects, 합친 뒤 원본 형태 테이블 또는 None)"""
     used = {c.src for c in table.columns if c.src}
     used |= set(table.collapse_key) | set(table.rule_key) | set(table.exclude_when_all_null)
     used |= set(table.same_as) | set(table.resolve)
@@ -306,6 +374,7 @@ def build_table(table, raw, snapshot):
     unmapped = sorted(set(raw.column_names) - used - set(table.ignore_source))
 
     t = raw
+    del raw  # 처리 단계마다 새 테이블이 생기므로 이전 단계를 붙잡고 있지 않는다 (원본 80만 행 = 0.7GB)
     source_rows = t.num_rows
     if table.same_as:
         a, b = (t[name] for name in table.same_as)
@@ -314,7 +383,9 @@ def build_table(table, raw, snapshot):
         if differ:
             raise BuildError(f"[{table.name}] {table.same_as[0]} != {table.same_as[1]} 인 행 {differ}건")
 
-    t = t.group_by(t.column_names, use_threads=False).aggregate([])  # 완전 중복 제거
+    keep = exact_duplicate_mask(t)
+    holder, t = [t], None
+    t = filter_owned(holder, keep)
     exact_duplicates = source_rows - t.num_rows
 
     excluded = 0
@@ -323,11 +394,13 @@ def build_table(table, raw, snapshot):
         for name in table.exclude_when_all_null[1:]:
             mask = pc.and_(mask, pc.is_null(t[name]))
         excluded = pc.sum(mask.cast(pa.int64())).as_py() or 0
-        t = t.filter(pc.invert(mask))
+        holder, t = [t], None
+        t = filter_owned(holder, pc.invert(mask))
 
     collapsed = 0
     if table.collapse_key:
-        t, collapsed = collapse(t, table)
+        holder, t = [t], None
+        t, collapsed = collapse(holder, table)
 
     rejects = []
     arrays = {}
@@ -340,7 +413,16 @@ def build_table(table, raw, snapshot):
             arrays[col.name] = convert(t[col.src], col, rejects)
     arrays["snapshot"] = pa.array([date.fromisoformat(snapshot)] * t.num_rows, type=pa.date32())
     schema = pa.schema([(c.name, ARROW_TYPES[c.type]) for c in table.columns] + [("snapshot", pa.date32())])
-    out = pa.table(arrays, schema=schema).sort_by([(k, "ascending") for k in table.primary_key])
+    if not keep_prepared:
+        t = None
+    # 열 단위로 정렬한다: 정렬된 열을 만들 때마다 원래 열을 놓아줘서 정렬 전·후 테이블이 동시에 있지 않게
+    keys = pa.table({name: arrays[name] for name in table.primary_key})
+    order = pc.sort_indices(keys, sort_keys=[(k, "ascending") for k in table.primary_key])
+    del keys
+    for name in list(arrays):
+        arrays[name] = arrays[name].take(order)
+    out = pa.table(arrays, schema=schema)
+    del arrays
 
     validate(out, table.name, table.primary_key, [c.name for c in table.columns if c.required] + ["snapshot"])
     if source_rows != out.num_rows + exact_duplicates + collapsed + excluded:
@@ -357,9 +439,15 @@ def build_table(table, raw, snapshot):
     return out, meta, rejects, t
 
 
-def prepare(root, table, snapshot, skip=()):
-    out, meta, rejects, prepared = build_table(table, load_source(root, table.operation, snapshot, skip), snapshot)
-    return out, meta, rejects, prepared
+def prepare(root, table, snapshot, skip=(), keep_prepared=False):
+    """원본 오퍼레이션 → (결과, 메타, rejects). keep_prepared 면 합친 뒤 원본 형태 테이블도 돌려준다.
+
+    pyarrow 는 다 쓴 메모리를 운영체제에 바로 돌려주지 않아서 (품목 병용금기 처리 뒤 0.85GB) 단계마다 돌려준다.
+    """
+    out, meta, rejects, prepared = build_table(table, load_source(root, table.operation, snapshot, skip), snapshot,
+                                               keep_prepared)
+    pa.default_memory_pool().release_unused()
+    return (out, meta, rejects, prepared) if keep_prepared else (out, meta, rejects)
 
 
 # ---------------------------------------------------------------- 허가 문서
@@ -393,30 +481,56 @@ def parse_doc(xml_text, doc_type):
     return articles, len(list(root.iter("PARAGRAPH"))) - inside
 
 
-def load_documents(root, snapshot, item_seqs, stats, rejects):
-    """판매·판매중지 제품의 허가 문서만 파싱한다. {item_seq: {doc_type: [항목, …]}}"""
-    documents = {}
-    for items in iter_pages(root, PERMIT_DETAIL.operation, snapshot):
-        for item in items:
-            item_seq = clean("ITEM_SEQ", item.get("ITEM_SEQ"))
-            if item_seq not in item_seqs:
-                continue
-            docs = {}
-            for source, doc_type in DOC_SOURCE_COLUMNS.items():
-                xml_text = clean(source, item.get(source))
-                if xml_text is None:
+def write_documents(root, snapshot, chunk_of, tmp_dir, stats, rejects):
+    """판매·판매중지 제품의 허가 문서를 파싱해 제품 묶음별 임시 parquet 에 쓴다 (전체 문서를 메모리에 들고 있지 않도록).
+
+    chunk_of: {item_seq: 묶음 번호}. 같은 제품이 두 번 나오면 나중 것이 이긴다 (read_documents 가 순서대로 덮어씀).
+    """
+    schema = pa.schema([("item_seq", pa.string()), ("doc_type", pa.string()),
+                        ("articles", pa.list_(struct_type(DOC_FIELDS)))])
+    writers, buffers = {}, defaultdict(list)
+
+    def flush(chunk):
+        if chunk not in writers:
+            writers[chunk] = pq.ParquetWriter(tmp_dir / f"documents_{chunk}.parquet", schema)
+        writers[chunk].write_table(pa.Table.from_pylist(buffers.pop(chunk), schema=schema))
+
+    try:
+        for items in iter_pages(root, PERMIT_DETAIL.operation, snapshot):
+            for item in items:
+                item_seq = clean("ITEM_SEQ", item.get("ITEM_SEQ"))
+                if item_seq not in chunk_of:
                     continue
-                try:
-                    articles, outside = parse_doc(xml_text, doc_type)
-                except ET.ParseError:
-                    stats["doc_parse_failures"] += 1
-                    rejects.append({"item_seq": item_seq, "column": source, "raw_value": "XML 파싱 실패"})
-                    continue
-                stats["documents"] += 1
-                stats["doc_articles"] += len(articles)
-                stats["doc_paragraphs_outside_structure"] += outside
-                docs[doc_type] = articles
-            documents[item_seq] = docs
+                for source, doc_type in DOC_SOURCE_COLUMNS.items():
+                    xml_text = clean(source, item.get(source))
+                    if xml_text is None:
+                        continue
+                    try:
+                        articles, outside = parse_doc(xml_text, doc_type)
+                    except ET.ParseError:
+                        stats["doc_parse_failures"] += 1
+                        rejects.append({"item_seq": item_seq, "column": source, "raw_value": "XML 파싱 실패"})
+                        continue
+                    stats["documents"] += 1
+                    stats["doc_articles"] += len(articles)
+                    stats["doc_paragraphs_outside_structure"] += outside
+                    buffers[chunk_of[item_seq]].append({"item_seq": item_seq, "doc_type": doc_type, "articles": articles})
+            for chunk in [c for c, rows in buffers.items() if len(rows) >= 500]:
+                flush(chunk)
+        for chunk in list(buffers):
+            flush(chunk)
+    finally:
+        for writer in writers.values():
+            writer.close()
+
+
+def read_documents(tmp_dir, chunk):
+    """묶음 하나의 허가 문서. {item_seq: {doc_type: [항목, …]}}"""
+    path = tmp_dir / f"documents_{chunk}.parquet"
+    documents = defaultdict(dict)
+    if path.exists():
+        for row in pq.read_table(path).to_pylist():
+            documents[row["item_seq"]][row["doc_type"]] = row["articles"]
     return documents
 
 
@@ -446,6 +560,23 @@ def pick(row, fields):
     return {name: row[name] for name, _ in fields}
 
 
+class ItemValues:
+    """{item_seq: 값} 을 arrow 배열로 압축해 들고 있다가 묶음마다 꺼낸다.
+
+    파이썬 dict 는 같은 데이터를 arrow 보다 몇 배 크게 차지해서 (drug_product 원천 전체 약 1.3GB), 원천마다 만들자마자 압축한다.
+    """
+
+    def __init__(self, values, arrow_type):
+        keys = list(values)
+        self.index = {key: i for i, key in enumerate(keys)}
+        self.values = pa.array([values[key] for key in keys], type=arrow_type)
+
+    def get_many(self, item_seqs):
+        found = [s for s in item_seqs if s in self.index]
+        taken = self.values.take(pa.array([self.index[s] for s in found], pa.int64())).to_pylist()
+        return dict(zip(found, taken))
+
+
 ITEM_LEVEL = {  # 제품 단위 정보라 하위 목록에 넣지 않는 컬럼 (기본 정보에 이미 있음)
     "item_seq", "item_name", "item_eng_name", "item_permit_date", "entp_seq", "entp_name", "chart", "etc_otc_name",
     "etc_otc_code", "class_code", "class_name", "main_ingr", "main_ingr_codes", "edi_code", "bizrno", "type_name",
@@ -465,12 +596,13 @@ CAUTION_INGR = {"dur_item_pwnm": "dur_ingr_pwnm", "dur_item_odsn": "dur_ingr_ods
 RULE_BASE = ["dur_seq", "mix_type", "mix_ingr", "form_name", "notification_date", "prohbt_content", "remark"]
 
 
-def build_drug_product(root, snapshot):
+def build_drug_product(root, snapshot, out_path):
+    """drug_product 를 out_path 에 parquet 로 쓰고 (메타, rejects)를 돌려준다."""
     started = time.time()
     rejects, sources = [], {}
     stats = Counter()
 
-    permit_item, meta, r, _ = prepare(root, PERMIT_ITEM, snapshot)
+    permit_item, meta, r = prepare(root, PERMIT_ITEM, snapshot)
     rejects += r
     sources[PERMIT_ITEM.name] = meta
     sale = {row["item_seq"]: SALE_STATUS[row["cancel_name"]] for row in
@@ -480,33 +612,46 @@ def build_drug_product(root, snapshot):
 
     # 기본 정보: 허가 목록 + 허가 상세 (같은 이름의 컬럼은 허가 목록 값을 쓴다)
     base_item_cols = [c.name for c in PERMIT_ITEM.columns if c.name != "is_active"]
-    permit_detail, meta, r, _ = prepare(root, PERMIT_DETAIL, snapshot, skip=tuple(DOC_SOURCE_COLUMNS))
+    permit_detail, meta, r = prepare(root, PERMIT_DETAIL, snapshot, skip=tuple(DOC_SOURCE_COLUMNS))
     rejects += r
     sources[PERMIT_DETAIL.name] = meta
     detail_cols = [c.name for c in PERMIT_DETAIL.columns if c.name not in base_item_cols and c.name != "is_active"]
     detail = {row["item_seq"]: row for row in permit_detail.select(["item_seq", "cancel_name"] + detail_cols).to_pylist()}
     item_status = dict(zip(permit_item["item_seq"].to_pylist(), permit_item["cancel_name"].to_pylist()))
     status_mismatch = sum(1 for s in item_seqs if s in detail and detail[s]["cancel_name"] != item_status[s])
-    base_fields = columns_of(PERMIT_ITEM, base_item_cols) + columns_of(PERMIT_DETAIL, detail_cols)
+    missing_detail = sum(1 for s in item_seqs if s not in detail)
+    detail_fields = columns_of(PERMIT_DETAIL, detail_cols)
+    base_fields = columns_of(PERMIT_ITEM, base_item_cols) + detail_fields
+    detail = ItemValues({s: pick(row, detail_fields) for s, row in detail.items() if s in item_seqs},
+                        struct_type(detail_fields))
+    base_rows = ItemValues({row["item_seq"]: row for row in permit_item.select(base_item_cols).to_pylist()
+                            if row["item_seq"] in item_seqs}, struct_type(columns_of(PERMIT_ITEM, base_item_cols)))
+    del permit_item, permit_detail, item_status
 
     # 성분
-    ingredient_table, meta, r, _ = prepare(root, PERMIT_INGREDIENT, snapshot)
+    ingredient_table, meta, r = prepare(root, PERMIT_INGREDIENT, snapshot)
     rejects += r
     sources[PERMIT_INGREDIENT.name] = meta
     ingredient_fields = columns_of(PERMIT_INGREDIENT, ["tamt_seq", "mtral_sn", "mtral_code", "mtral_nm", "qnt",
                                                         "qnt_text", "ingd_unit_cd", "cpnt_ctnt_cont"])
     ingredients, stats["ingredient_rows_dropped"] = group_rows(ingredient_table, item_seqs)
+    del ingredient_table
+    ingredients = ItemValues({s: [pick(x, ingredient_fields) for x in sorted(rows, key=lambda x: (x["tamt_seq"], x["mtral_sn"]))]
+                              for s, rows in ingredients.items()}, pa.list_(struct_type(ingredient_fields)))
 
     # 알약
-    pill_table, meta, r, _ = prepare(root, PILL_IDENTIFICATION, snapshot)
+    pill_table, meta, r = prepare(root, PILL_IDENTIFICATION, snapshot)
     rejects += r
     sources[PILL_IDENTIFICATION.name] = meta
     pill_fields = columns_of(PILL_IDENTIFICATION, [c.name for c in PILL_IDENTIFICATION.columns
                                                    if c.name not in ITEM_LEVEL or c.name in ("class_code", "class_name")])
     pills, stats["pill_rows_dropped"] = group_rows(pill_table, item_seqs)
+    del pill_table
+    pills = ItemValues({s: [pick(x, pill_fields) for x in sorted(rows, key=lambda x: x["image_id"])]
+                        for s, rows in pills.items()}, pa.list_(struct_type(pill_fields)))
 
     # e약은요 (7문항은 정리 명세에서 빠져 있어 합친 뒤 원본 형태에서 가져온다)
-    easy_table, meta, r, easy_prepared = prepare(root, EASY_DRUG, snapshot)
+    easy_table, meta, r, easy_prepared = prepare(root, EASY_DRUG, snapshot, keep_prepared=True)
     rejects += r
     sources[EASY_DRUG.name] = meta
     easy_fields = [(field, pa.string()) for field in EASY_TEXT_FIELDS.values()] + columns_of(
@@ -520,9 +665,11 @@ def build_drug_product(root, snapshot):
                                      **pick(row, easy_fields[len(EASY_TEXT_FIELDS):])}
         else:
             stats["easy_rows_dropped"] += 1
+    del easy_table, easy_prepared, easy_text
+    easy = ItemValues(easy, struct_type(easy_fields))
 
     # DUR 품목 마스터
-    master_table, meta, r, _ = prepare(root, DUR_ITEM_MASTER, snapshot)
+    master_table, meta, r = prepare(root, DUR_ITEM_MASTER, snapshot)
     rejects += r
     sources[DUR_ITEM_MASTER.name] = meta
     dur_fields = columns_of(DUR_ITEM_MASTER, ["class_code", "class_name", "type_code", "type_name", "change_date"])
@@ -532,11 +679,13 @@ def build_drug_product(root, snapshot):
             dur_info[row["item_seq"]] = pick(row, dur_fields)
         else:
             stats["dur_master_rows_dropped"] += 1
+    del master_table
+    dur_info = ItemValues(dur_info, struct_type(dur_fields))
 
     # DUR 성분 규칙 (유효한 것만, 연결용)
     ingr_rules = {}
     for table in DUR_INGR_TABLES:
-        out, meta, r, _ = prepare(root, table, snapshot)
+        out, meta, r = prepare(root, table, snapshot)
         rejects += r
         sources[table.name] = meta
         ingr_rules[table.name] = [row for row in out.to_pylist() if row["is_rule_valid"]]
@@ -545,7 +694,7 @@ def build_drug_product(root, snapshot):
     caution_values, caution_types, link_stats = {}, {}, {}
     for table in DUR_ITEM_CAUTION_TABLES:
         column, value_columns = CAUTION_COLUMNS[table.name]
-        out, meta, r, _ = prepare(root, table, snapshot)
+        out, meta, r = prepare(root, table, snapshot)
         rejects += r
         sources[table.name] = meta
         ingr_table = next(t for t in DUR_INGR_TABLES if t.name == CAUTION_INGR[table.name])
@@ -569,10 +718,11 @@ def build_drug_product(root, snapshot):
                                 "ingredient_rules": sorted((pick(x, rule_fields) for x in linked),
                                                            key=lambda x: x["dur_seq"])})
             values[item_seq] = sorted(entries, key=lambda e: (e["ingr_code"], e.get("rule_key") or ""))
-        caution_values[column], caution_types[column], link_stats[column] = values, pa.list_(entry_type), dict(counts)
+        caution_values[column] = ItemValues(values, pa.list_(entry_type))
+        caution_types[column], link_stats[column] = pa.list_(entry_type), dict(counts)
 
     # 효능군중복: 품목 규칙에 성분 규칙 번호(dur_seq)가 있어 바로 연결
-    out, meta, r, _ = prepare(root, DUR_ITEM_EFCY_DPLCT, snapshot)
+    out, meta, r = prepare(root, DUR_ITEM_EFCY_DPLCT, snapshot)
     rejects += r
     sources[DUR_ITEM_EFCY_DPLCT.name] = meta
     efcy_rules = {row["dur_seq"]: row for row in ingr_rules["dur_ingr_efcy_dplct"]}
@@ -594,11 +744,13 @@ def build_drug_product(root, snapshot):
             entries.append({**pick(row, efcy_fields), "link_status": status, "link_method": "규칙 번호",
                             "ingredient_rules": [pick(rule, efcy_rule_fields)] if rule else []})
         values[item_seq] = sorted(entries, key=lambda e: e["dur_seq"])
-    caution_values["dur_efficacy_dup"], caution_types["dur_efficacy_dup"] = values, pa.list_(efcy_type)
+    caution_values["dur_efficacy_dup"] = ItemValues(values, pa.list_(efcy_type))
+    caution_types["dur_efficacy_dup"] = pa.list_(efcy_type)
     link_stats["dur_efficacy_dup"] = dict(counts)
+    del ingr_rules, efcy_rules, grouped, values
 
     # 서방정 분할주의 (제품당 1개)
-    out, meta, r, _ = prepare(root, DUR_ITEM_SEOBANGJEONG, snapshot)
+    out, meta, r = prepare(root, DUR_ITEM_SEOBANGJEONG, snapshot)
     rejects += r
     sources[DUR_ITEM_SEOBANGJEONG.name] = meta
     sr_fields = columns_of(DUR_ITEM_SEOBANGJEONG, ["mix_type", "form_code_name", "prohbt_content", "remark",
@@ -609,14 +761,11 @@ def build_drug_product(root, snapshot):
             sr_split[row["item_seq"]] = pick(row, sr_fields)
         else:
             stats["sr_split_rows_dropped"] += 1
+    del out
+    sr_split = ItemValues(sr_split, struct_type(sr_fields))
+    pa.default_memory_pool().release_unused()
 
-    # 허가 문서
-    documents = load_documents(root, snapshot, item_seqs, stats, rejects)
-    doc_fields = [("section_idx", pa.int64()), ("section_title", pa.string()), ("article_idx", pa.int64()),
-                  ("article_title", pa.string()), ("text", pa.string()), ("content_hash", pa.string())]
-    doc_type_columns = {"EE": "doc_efficacy", "UD": "doc_dosage", "NB": "doc_precautions", "PN": "doc_pn"}
-
-    # 조립: 제품 1개 = 1행
+    # 조립: 제품 1개 = 1행. 품목코드 순으로 PRODUCT_CHUNK 개씩 묶어 행을 만들고 parquet 에 조각(row group)으로 쓴다
     caution_order = ["dur_pregnancy", "dur_elderly", "dur_age", "dur_dosage", "dur_duration", "dur_efficacy_dup"]
     schema = pa.schema(
         [("item_seq", pa.string()), ("sale_status", pa.string())]
@@ -627,41 +776,59 @@ def build_drug_product(root, snapshot):
            ("dur_info", struct_type(dur_fields))]
         + [(name, caution_types[name]) for name in caution_order]
         + [("dur_sr_split", struct_type(sr_fields))]
-        + [(column, pa.list_(struct_type(doc_fields))) for column in doc_type_columns.values()]
+        + [(column, pa.list_(struct_type(DOC_FIELDS))) for column in DOC_TYPE_COLUMNS.values()]
         + [("snapshot", pa.date32())]
     )
-    base_rows = {row["item_seq"]: row for row in permit_item.select(base_item_cols).to_pylist() if row["item_seq"] in item_seqs}
     snapshot_date = date.fromisoformat(snapshot)
-    rows = []
-    for item_seq in sorted(item_seqs):
-        row = {"item_seq": item_seq, "sale_status": sale[item_seq], **base_rows[item_seq]}
-        row.update({name: detail.get(item_seq, {}).get(name) for name in detail_cols})
-        row["ingredients"] = [pick(x, ingredient_fields) for x in
-                              sorted(ingredients.get(item_seq, []), key=lambda x: (x["tamt_seq"], x["mtral_sn"]))] or None
-        row["pills"] = [pick(x, pill_fields) for x in
-                        sorted(pills.get(item_seq, []), key=lambda x: x["image_id"])] or None
-        row["easy_info"] = easy.get(item_seq)
-        row["dur_info"] = dur_info.get(item_seq)
-        in_dur = item_seq in dur_info
-        for name in caution_order:
-            # DUR 대상 제품은 해당 없음 = 빈 목록, DUR 대상이 아닌 제품은 정보 없음 = null
-            row[name] = caution_values[name].get(item_seq, [] if in_dur else None)
-        row["dur_sr_split"] = sr_split.get(item_seq)
-        docs = documents.get(item_seq, {})
-        for doc_type, column in doc_type_columns.items():
-            row[column] = docs.get(doc_type)
-        row["snapshot"] = snapshot_date
-        rows.append(row)
-    out = pa.Table.from_pylist(rows, schema=schema)
-    validate(out, DRUG_PRODUCT_TABLE, ("item_seq",), ["item_seq", "sale_status", "item_name", "snapshot"])
+    ordered = sorted(item_seqs)
+    chunks = [ordered[i:i + PRODUCT_CHUNK] for i in range(0, len(ordered), PRODUCT_CHUNK)]
+    chunk_of = {item_seq: n for n, chunk in enumerate(chunks) for item_seq in chunk}
 
-    missing_detail = sum(1 for s in item_seqs if s not in detail)
+    written = 0
+    with tempfile.TemporaryDirectory(prefix=BUILD_TMP_PREFIX, dir=out_path.parent.parent.parent) as tmp:
+        tmp_dir = Path(tmp)
+        write_documents(root, snapshot, chunk_of, tmp_dir, stats, rejects)
+        try:
+            with pq.ParquetWriter(out_path, schema) as writer:
+                for n, chunk in enumerate(chunks):
+                    documents = read_documents(tmp_dir, n)
+                    base, details = base_rows.get_many(chunk), detail.get_many(chunk)
+                    chunk_ingredients, chunk_pills = ingredients.get_many(chunk), pills.get_many(chunk)
+                    chunk_easy, chunk_dur, chunk_sr = easy.get_many(chunk), dur_info.get_many(chunk), sr_split.get_many(chunk)
+                    chunk_cautions = {name: caution_values[name].get_many(chunk) for name in caution_order}
+                    rows = []
+                    for item_seq in chunk:
+                        row = {"item_seq": item_seq, "sale_status": sale[item_seq], **base[item_seq]}
+                        row.update({name: details.get(item_seq, {}).get(name) for name in detail_cols})
+                        row["ingredients"] = chunk_ingredients.get(item_seq)
+                        row["pills"] = chunk_pills.get(item_seq)
+                        row["easy_info"] = chunk_easy.get(item_seq)
+                        row["dur_info"] = chunk_dur.get(item_seq)
+                        in_dur = item_seq in chunk_dur
+                        for name in caution_order:
+                            # 마스터에 있는 제품은 해당 없음 = 빈 목록, 없는 제품은 정보 없음 = null
+                            row[name] = chunk_cautions[name].get(item_seq, [] if in_dur else None)
+                        row["dur_sr_split"] = chunk_sr.get(item_seq)
+                        docs = documents.get(item_seq, {})
+                        for doc_type, column in DOC_TYPE_COLUMNS.items():
+                            row[column] = docs.get(doc_type)
+                        row["snapshot"] = snapshot_date
+                        rows.append(row)
+                    part = pa.Table.from_pylist(rows, schema=schema)
+                    # 묶음은 품목코드 범위가 겹치지 않으므로 묶음마다 확인하면 전체 PK 확인과 같다
+                    validate(part, DRUG_PRODUCT_TABLE, ("item_seq",), ["item_seq", "sale_status", "item_name", "snapshot"])
+                    writer.write_table(part)
+                    written += part.num_rows
+        except BaseException:
+            out_path.unlink(missing_ok=True)
+            raise
+
     if missing_detail:
         raise BuildError(f"[{DRUG_PRODUCT_TABLE}] 허가 상세가 없는 제품 {missing_detail}개")
     unlinked = {name: s.get("연결 안 됨", 0) for name, s in link_stats.items() if s.get("연결 안 됨")}
     meta = {
         "table": DRUG_PRODUCT_TABLE, "snapshot": snapshot, "spec_version": SPEC_VERSION, "primary_key": ["item_seq"],
-        "rows": out.num_rows, "sale_status_counts": dict(Counter(sale.values())),
+        "rows": written, "sale_status_counts": dict(Counter(sale.values())),
         "permit_status_mismatch_with_detail": status_mismatch,
         "permit_products_removed": dict(removed), "rows_dropped_from_other_sources": {
             k: v for k, v in stats.items() if k.endswith("_dropped")},
@@ -670,15 +837,15 @@ def build_drug_product(root, snapshot):
         "rejected_values": sum(r.get("rows", 1) for r in rejects), "sources": sources,
         "build_seconds": round(time.time() - started),
     }
-    return out, meta, rejects
+    return meta, rejects
 
 
 # ---------------------------------------------------------------- 병용금기
 
 def build_contraindication(root, snapshot):
     """성분 병용금기와 품목 병용금기를 한 테이블로. 그 level 에 없는 컬럼은 null 이다 (컬럼 사전의 level 별 컬럼 참고)."""
-    ingr, ingr_meta, ingr_rejects, _ = prepare(root, DUR_INGR_USJNT, snapshot)
-    item, item_meta, item_rejects, _ = prepare(root, DUR_ITEM_USJNT, snapshot)
+    ingr, ingr_meta, ingr_rejects = prepare(root, DUR_INGR_USJNT, snapshot)
+    item, item_meta, item_rejects = prepare(root, DUR_ITEM_USJNT, snapshot)
 
     def as_list(column):  # 성분 쪽 이름(문자열)을 품목 쪽처럼 목록으로
         return pa.array([[value] if value else None for value in column.to_pylist()], type=pa.list_(pa.string()))
@@ -730,9 +897,13 @@ def write_json(path, payload):
 def save(root, snapshot, name, table, meta, rejects):
     """검증을 통과한 테이블만 저장한다."""
     out_dir = table_dir(root, name, snapshot)
-    tmp = out_dir / "data.parquet.tmp"
-    pq.write_table(table, tmp)
-    os.replace(tmp, out_dir / "data.parquet")
+    pq.write_table(table, out_dir / "data.parquet.tmp")
+    publish(out_dir, meta, rejects)
+
+
+def publish(out_dir, meta, rejects):
+    """data.parquet.tmp 를 data.parquet 로 바꾸고 메타·rejects 를 쓴다."""
+    os.replace(out_dir / "data.parquet.tmp", out_dir / "data.parquet")
     meta["transformed_at"] = datetime.now().isoformat(timespec="seconds")
     write_json(out_dir / "_meta.json", meta)
     rejects_path = out_dir / "_rejects.json"
@@ -761,6 +932,8 @@ def main():
                   *(t.operation for t in DUR_ITEM_CAUTION_TABLES), *(t.operation for t in OUTPUT_TABLES),
                   DUR_INGR_USJNT.operation, DUR_ITEM_USJNT.operation}
     snapshot = args.snapshot or latest_common_snapshot(root, operations)
+    for leftover in (root / "silver").glob(f"{BUILD_TMP_PREFIX}*"):  # 강제 종료된 이전 실행이 남긴 임시 파일
+        shutil.rmtree(leftover, ignore_errors=True)
     print(f"snapshot={snapshot} spec={SPEC_VERSION} 테이블 {sorted(selected)}", flush=True)
 
     failures = []
@@ -769,14 +942,16 @@ def main():
             continue
         started = time.time()
         try:
-            out, meta, rejects, _ = prepare(root, table, snapshot)
+            out, meta, rejects = prepare(root, table, snapshot)
             save(root, snapshot, table.name, out, meta, rejects)
             print(f"[{table.name}] {meta['rows']:,}행 (원본 {meta['source_rows']:,}, 중복 {meta['exact_duplicates_removed']}, "
                   f"합침 {meta['collapsed_rows']}, 변환 실패 {meta['rejected_values']}) {time.time() - started:.0f}초", flush=True)
         except BuildError as error:
             failures.append(str(error))
             print(f"실패 {error}", flush=True)
+        out = None
         gc.collect()
+        pa.default_memory_pool().release_unused()
 
     if CONTRAINDICATION_TABLE in selected:
         started = time.time()
@@ -787,12 +962,15 @@ def main():
         except BuildError as error:
             failures.append(str(error))
             print(f"실패 {error}", flush=True)
+        out = None  # 저장한 테이블을 붙잡고 있으면 다음 테이블을 만드는 동안 메모리에 남는다
         gc.collect()
+        pa.default_memory_pool().release_unused()
 
     if DRUG_PRODUCT_TABLE in selected:
         try:
-            out, meta, rejects = build_drug_product(root, snapshot)
-            save(root, snapshot, DRUG_PRODUCT_TABLE, out, meta, rejects)
+            out_dir = table_dir(root, DRUG_PRODUCT_TABLE, snapshot)
+            meta, rejects = build_drug_product(root, snapshot, out_dir / "data.parquet.tmp")
+            publish(out_dir, meta, rejects)
             print(f"[{DRUG_PRODUCT_TABLE}] {meta['rows']:,}행 {meta['sale_status_counts']} 제거 {meta['permit_products_removed']} "
                   f"DUR 연결 안 됨 {meta['dur_unlinked'] or 0} {meta['build_seconds']}초", flush=True)
         except BuildError as error:
