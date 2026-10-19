@@ -1,4 +1,4 @@
--- gold 스키마: 앱이 바로 조회하는 판정용 테이블. silver(_latest.json) 에서 load.py 가 매번 통째로 다시 만든다.
+-- gold 스키마: 앱이 바로 조회하는 판정용 테이블. S3 gold 파일(build.py 가 silver 로 만듦)을 load.py 가 매번 통째로 다시 채운다.
 -- 이 테이블들을 직접 고치지 말 것 (다음 적재 때 사라짐). 컬럼 설명은 docs/gold_table_spec.md
 -- 인덱스는 데이터를 넣은 뒤 load.py 가 만든다 (INDEXES 아래 블록)
 
@@ -107,7 +107,8 @@ CREATE TABLE gold.health_food (
 -- 적재 기록 (마지막 적재 1행)
 CREATE TABLE gold.load_info (
     silver_snapshot     date NOT NULL,
-    silver_written_at   text NOT NULL,                  -- silver/_latest.json 의 written_at. 같으면 이미 적재한 silver 라 건너뜀
+    silver_written_at   text NOT NULL,                  -- 이 gold 를 만든 silver/_latest.json 의 written_at
+    gold_written_at     text NOT NULL,                  -- S3 gold/_latest.json 의 written_at. 같으면 이미 적재한 gold 라 건너뜀
     spec_version        text NOT NULL,
     loaded_at           timestamptz NOT NULL DEFAULT now(),
     row_counts          jsonb NOT NULL,

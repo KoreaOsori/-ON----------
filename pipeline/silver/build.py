@@ -5,14 +5,15 @@ silver 테이블 3개:
   dur_contraindication    병용금기 (gold 판정용). level = 성분(성분 A × B 규칙) / 품목(제품 A × B 쌍)
   health_food_product     건강기능식품 (식품안전나라 C003)
 
-  python pipeline/silver/build.py                       # 모든 원본에 공통인 최신 스냅샷으로 전체 빌드
+  python pipeline/silver/build.py                       # S3 bronze 에서 모든 원본에 공통인 최신 스냅샷으로 전체 빌드
   python pipeline/silver/build.py --snapshot 2026-10-13
   python pipeline/silver/build.py health_food_product   # 일부만 다시 만들기 (_latest.json 은 건드리지 않음)
+  python pipeline/silver/build.py --work 폴더            # 임시 폴더를 지정하면 끝나도 지우지 않는다 (다시 돌릴 때 bronze 를 다시 안 받음)
 
-출력: {root}/silver/{table}/snapshot={날짜}/data.parquet, _meta.json
-      {root}/silver/{table}/snapshot={날짜}/_rejects.json   (변환 실패 값이 있을 때만)
-      {root}/silver/_latest.json  ← 전체 빌드가 모두 검증을 통과했을 때만 마지막에 갱신
-      {root}/silver/.build_tmp_*/   ← drug_product 허가 문서 임시 파일 (빌드가 끝나면 삭제, 남은 것은 다음 실행 때 삭제)
+읽기: s3://{버킷}/bronze/.../snapshot={날짜}/ 를 임시 폴더로 받아서 빌드한다 (S3 가 원본, 디스크는 빌드 중에만 씀)
+출력: s3://{버킷}/silver/{table}/snapshot={날짜}/data.parquet, _meta.json, _rejects.json (변환 실패 값이 있을 때만)
+      s3://{버킷}/silver/_latest.json  ← 전체 빌드가 모두 검증을 통과하고 데이터 파일을 다 올린 뒤 마지막에 갱신
+      하나라도 실패하면 S3 에 아무것도 올리지 않는다
 
 메모리: 전체 최대 약 1.5~1.7GB (2026-10-18 로컬 측정). 큰 테이블을 한 번에 펼치지 않도록 행 해시·열 단위 처리·묶음 단위 조립을 쓴다.
 """
@@ -38,15 +39,17 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from dur_link import LINKED, MULTIPLE, link_rule
-from tables import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from dur_link import LINKED, MULTIPLE, link_rule  # noqa: E402
+from s3store import DEFAULT_BUCKET, Store  # noqa: E402
+from tables import (  # noqa: E402
     ALL_TABLE_NAMES, CONTRAINDICATION_TABLE, DOC_SOURCE_COLUMNS, DRUG_PRODUCT_TABLE, DUR_INGR_TABLES,
     DUR_INGR_USJNT, DUR_ITEM_CAUTION_TABLES, DUR_ITEM_EFCY_DPLCT, DUR_ITEM_MASTER, DUR_ITEM_SEOBANGJEONG,
     DUR_ITEM_USJNT, EASY_DRUG, EASY_TEXT_FIELDS, OUTPUT_TABLES,
     PERMIT_DETAIL, PERMIT_INGREDIENT, PERMIT_ITEM, PILL_IDENTIFICATION, SPEC_VERSION,
 )
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "s3"
 PLACEHOLDER_NULL = {"PROHBT_CONTENT": {"-", "_"}}  # 내용 없음을 뜻하는 자리표시 값
 ARROW_TYPES = {
     "str": pa.string(), "int": pa.int64(), "float": pa.float64(), "date": pa.date32(), "bool": pa.bool_(),
@@ -99,7 +102,10 @@ def response_items(response, operation):
 
 
 def complete_pages(root, operation, snapshot):
-    """스냅샷의 페이지 경로 목록과 전체 건수. 페이지가 빠졌으면 실패."""
+    """스냅샷의 페이지 경로 목록과 전체 건수. 페이지가 빠졌으면 실패.
+
+    쪽 수와 건수는 수집기가 검증해 남긴 _manifest.json(pages, items_total)을 기준으로 한다. 식품안전나라는 API totalCount 가
+    실제보다 늦게 갱신되므로 1쪽의 totalCount 를 쓰면 안 된다. 매니페스트가 없으면 1쪽의 totalCount 로."""
     dirs = list((root / "bronze").glob(f"*/{operation}/snapshot={snapshot}"))
     if len(dirs) != 1:
         raise BuildError(f"[{operation}] bronze snapshot={snapshot} 폴더가 {len(dirs)}개")
@@ -110,9 +116,14 @@ def complete_pages(root, operation, snapshot):
             pages[int(match.group(1))] = path
     if 1 not in pages:
         raise BuildError(f"[{operation}] 1쪽이 없음")
-    first = json.loads(pages[1].read_text(encoding="utf-8"))
-    total = response_total(first["response"], operation)
-    expected = set(range(1, math.ceil(total / first["meta"]["num_of_rows"]) + 1))
+    manifest_path = dirs[0] / "_manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        total, expected = manifest["items_total"], set(range(1, manifest["pages"] + 1))
+    else:
+        first = json.loads(pages[1].read_text(encoding="utf-8"))
+        total = response_total(first["response"], operation)
+        expected = set(range(1, math.ceil(total / first["meta"]["num_of_rows"]) + 1))
     if set(pages) != expected:
         raise BuildError(f"[{operation}] 페이지 불일치: 없음 {sorted(expected - set(pages))[:10]}, "
                          f"남음 {sorted(set(pages) - expected)[:10]}")
@@ -154,14 +165,35 @@ def load_source(root, operation, snapshot, skip=()):
     return pa.concat_tables(parts, promote_options="default")
 
 
-def latest_common_snapshot(root, operations):
-    common = None
-    for operation in operations:
-        found = {p.name.removeprefix("snapshot=") for p in (root / "bronze").glob(f"*/{operation}/snapshot=*")}
-        common = found if common is None else common & found
+def bronze_sources(store, operations):
+    """S3 bronze 의 {오퍼레이션: (서비스, 스냅샷 날짜 집합)}."""
+    sources = {}
+    for service in store.folders("bronze/"):
+        for operation in store.folders(f"bronze/{service}/"):
+            if operation in operations:
+                snapshots = {name.removeprefix("snapshot=") for name in store.folders(f"bronze/{service}/{operation}/")}
+                sources[operation] = (service, snapshots)
+    missing = sorted(set(operations) - set(sources))
+    if missing:
+        raise BuildError(f"S3 bronze 에 없는 원본: {missing}")
+    return sources
+
+
+def latest_common_snapshot(sources):
+    common = set.intersection(*(snapshots for _, snapshots in sources.values()))
     if not common:
         raise BuildError("모든 원본에 공통인 bronze 스냅샷이 없음")
     return max(common)
+
+
+def download_bronze(store, sources, snapshot, root):
+    """S3 bronze 스냅샷을 root/bronze/ 아래 같은 경로로 받는다."""
+    started = time.time()
+    count = 0
+    for operation, (service, _) in sorted(sources.items()):
+        path = f"bronze/{service}/{operation}/snapshot={snapshot}/"
+        count += store.download_prefix(path, root / path)
+    print(f"S3 bronze snapshot={snapshot} 파일 {count:,}개 받음 → {root / 'bronze'} {time.time() - started:.0f}초", flush=True)
 
 
 # ---------------------------------------------------------------- 값 변환
@@ -922,27 +954,10 @@ def publish(out_dir, meta, rejects):
 
 # ---------------------------------------------------------------- 실행
 
-def main():
-    parser = argparse.ArgumentParser(description="Bronze → Silver 빌드")
-    parser.add_argument("tables", nargs="*", help=f"일부 테이블만 (기본: 전체). 사용 가능: {ALL_TABLE_NAMES}")
-    parser.add_argument("--snapshot", help="bronze 스냅샷 날짜 (기본: 모든 원본에 공통인 최신)")
-    parser.add_argument("--root", default=str(DEFAULT_ROOT))
-    args = parser.parse_args()
-    unknown = [name for name in args.tables if name not in ALL_TABLE_NAMES]
-    if unknown:
-        raise SystemExit(f"알 수 없는 테이블: {unknown}\n사용 가능: {ALL_TABLE_NAMES}")
-    root = Path(args.root)
-    selected = set(args.tables or ALL_TABLE_NAMES)
-    operations = {PERMIT_ITEM.operation, PERMIT_DETAIL.operation, PERMIT_INGREDIENT.operation, EASY_DRUG.operation,
-                  PILL_IDENTIFICATION.operation, DUR_ITEM_MASTER.operation, DUR_ITEM_EFCY_DPLCT.operation,
-                  DUR_ITEM_SEOBANGJEONG.operation, *(t.operation for t in DUR_INGR_TABLES),
-                  *(t.operation for t in DUR_ITEM_CAUTION_TABLES), *(t.operation for t in OUTPUT_TABLES),
-                  DUR_INGR_USJNT.operation, DUR_ITEM_USJNT.operation}
-    snapshot = args.snapshot or latest_common_snapshot(root, operations)
+def build(root, snapshot, selected):
+    """root/bronze 로 silver 를 root/silver 에 만든다. 실패 내용 목록을 돌려준다."""
     for leftover in (root / "silver").glob(f"{BUILD_TMP_PREFIX}*"):  # 강제 종료된 이전 실행이 남긴 임시 파일
         shutil.rmtree(leftover, ignore_errors=True)
-    print(f"snapshot={snapshot} spec={SPEC_VERSION} 테이블 {sorted(selected)}", flush=True)
-
     failures = []
     for table in OUTPUT_TABLES:
         if table.name not in selected:
@@ -983,16 +998,57 @@ def main():
         except BuildError as error:
             failures.append(str(error))
             print(f"실패 {error}", flush=True)
+    return failures
 
-    if failures:
-        print(f"\n실패 {len(failures)}건 — _latest.json 을 갱신하지 않음", flush=True)
-        sys.exit(1)
-    if not args.tables:
-        write_json(root / "silver" / "_latest.json", {
+
+def upload(store, root, snapshot, selected, full):
+    """만든 테이블을 S3 에 올리고, 전체 빌드면 _latest.json 을 마지막에 올린다."""
+    for name in sorted(selected):
+        store.upload_dir(table_dir(root, name, snapshot), f"silver/{name}/snapshot={snapshot}/")
+    if full:
+        latest_path = root / "silver" / "_latest.json"
+        write_json(latest_path, {
             "snapshot": snapshot, "spec_version": SPEC_VERSION, "tables": {name: snapshot for name in ALL_TABLE_NAMES},
             "written_at": datetime.now().isoformat(timespec="seconds"),
         })
-        print(f"_latest.json → {snapshot}", flush=True)
+        store.upload_file(latest_path, "silver/_latest.json")
+        print(f"s3://{store.bucket}/silver/_latest.json → {snapshot} (마지막)", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="S3 Bronze → S3 Silver 빌드")
+    parser.add_argument("tables", nargs="*", help=f"일부 테이블만 (기본: 전체). 사용 가능: {ALL_TABLE_NAMES}")
+    parser.add_argument("--snapshot", help="bronze 스냅샷 날짜 (기본: 모든 원본에 공통인 최신)")
+    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument("--work", help="임시 폴더 (지정하면 끝나도 지우지 않음. 기본: 새 임시 폴더를 만들고 끝나면 삭제)")
+    args = parser.parse_args()
+    unknown = [name for name in args.tables if name not in ALL_TABLE_NAMES]
+    if unknown:
+        raise SystemExit(f"알 수 없는 테이블: {unknown}\n사용 가능: {ALL_TABLE_NAMES}")
+    selected = set(args.tables or ALL_TABLE_NAMES)
+    operations = {PERMIT_ITEM.operation, PERMIT_DETAIL.operation, PERMIT_INGREDIENT.operation, EASY_DRUG.operation,
+                  PILL_IDENTIFICATION.operation, DUR_ITEM_MASTER.operation, DUR_ITEM_EFCY_DPLCT.operation,
+                  DUR_ITEM_SEOBANGJEONG.operation, *(t.operation for t in DUR_INGR_TABLES),
+                  *(t.operation for t in DUR_ITEM_CAUTION_TABLES), *(t.operation for t in OUTPUT_TABLES),
+                  DUR_INGR_USJNT.operation, DUR_ITEM_USJNT.operation}
+    store = Store(args.bucket)
+    sources = bronze_sources(store, operations)
+    snapshot = args.snapshot or latest_common_snapshot(sources)
+    missing = sorted(op for op, (_, snapshots) in sources.items() if snapshot not in snapshots)
+    if missing:
+        raise SystemExit(f"S3 bronze snapshot={snapshot} 이 없는 원본: {missing}")
+    root = Path(args.work) if args.work else Path(tempfile.mkdtemp(prefix="pill-silver-"))
+    print(f"snapshot={snapshot} spec={SPEC_VERSION} 테이블 {sorted(selected)} 버킷 {store.bucket} 임시 폴더 {root}", flush=True)
+    try:
+        download_bronze(store, sources, snapshot, root)
+        failures = build(root, snapshot, selected)
+        if failures:
+            print(f"\n실패 {len(failures)}건 — S3 에 올리지 않음 (_latest.json 도 그대로)", flush=True)
+            sys.exit(1)
+        upload(store, root, snapshot, selected, full=not args.tables)
+    finally:
+        if not args.work:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
