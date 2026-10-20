@@ -9,18 +9,22 @@
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DEFAULT_BUCKET = "pill-check-data-827913617635"
 REGION = "us-east-1"
+DOWNLOAD_THREADS = 16  # 작은 파일이 많아(bronze 2,300개) 하나씩 받으면 느리다 (EC2 에서 350초)
 
 
 class Store:
     def __init__(self, bucket=DEFAULT_BUCKET):
         import boto3
+        from botocore.config import Config
 
         self.bucket = bucket
-        self.s3 = boto3.client("s3", region_name=REGION)
+        # 동시에 받는 스레드 수만큼 접속을 열어 둔다 (기본 10개면 남는 스레드가 기다린다)
+        self.s3 = boto3.client("s3", region_name=REGION, config=Config(max_pool_connections=DOWNLOAD_THREADS))
 
     def list(self, prefix):
         """prefix 아래 객체 {키: 크기}."""
@@ -50,16 +54,21 @@ class Store:
                            Body=json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
 
     def download_prefix(self, prefix, local_dir):
-        """prefix 아래 파일을 local_dir 로 받는다 (같은 크기 파일이 이미 있으면 건너뜀). 받은 파일 수를 돌려준다."""
+        """prefix 아래 파일을 local_dir 로 동시에 받는다 (같은 크기 파일이 이미 있으면 건너뜀). 받은 파일 수를 돌려준다."""
         objects = self.list(prefix)
-        for key, size in objects.items():
+
+        def download(item):
+            key, size = item
             path = Path(local_dir) / key[len(prefix):]
             if path.exists() and path.stat().st_size == size:
-                continue
+                return
             path.parent.mkdir(parents=True, exist_ok=True)
             self.s3.download_file(self.bucket, key, str(path))
             if path.stat().st_size != size:
                 raise RuntimeError(f"s3://{self.bucket}/{key} 받은 크기 {path.stat().st_size} != {size}")
+
+        with ThreadPoolExecutor(DOWNLOAD_THREADS) as pool:
+            list(pool.map(download, objects.items()))  # 하나라도 실패하면 여기서 예외
         return len(objects)
 
     def upload_file(self, path, key):

@@ -13,6 +13,9 @@
   목록이 바뀌므로 이어받지 않고 매번 처음부터 받는다 (46쪽, 약 1분). 실패하면 바로 다시 받지 않고 다음 실행 때 처음부터 받는다:
   식품안전나라는 CHNG_DT 없이 1시간에 100번까지만 호출할 수 있어서 (INFO-320) 한 번 수집(46쪽 + 확인 3번 = 49번)을
   곧바로 반복하면 한도에 걸린다. 한도에 걸리면 남은 쪽을 받지 않고 바로 멈춘다
+- 속도: EC2(미국 동부)에서 한국 API 를 받으면 쪽마다 왕복이 길어 느리다 (2026-10-19 전체 수집 5시간 35분).
+  공공데이터포털 API 는 CONCURRENCY 쪽씩 동시에 받고, 접속은 재사용한다 (내 PC 측정: 쪽당 1.32초 → 0.31초).
+  식품안전나라는 호출 한도와 "데이터 없음"으로 끝을 찾는 방식 때문에 한 쪽씩 받는다
 
   python pipeline/collect/collect.py getDrbEasyDrugList C003 --snapshot 2026-10-19
   python pipeline/collect/collect.py --all
@@ -24,11 +27,14 @@ import json
 import math
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import urlopen
+
+import urllib3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -42,6 +48,8 @@ FOOD_SAFETY_ROWS = 1000  # 식품안전나라는 한 번에 최대 1,000건
 ALL_OPERATIONS = {**OPERATIONS, **FOOD_SAFETY_OPERATIONS}
 MAX_RETRIES = 3
 TIMEOUT_SECONDS = 120
+CONCURRENCY = 4  # 공공데이터포털 API 를 동시에 받는 쪽 수
+HTTP = urllib3.PoolManager(maxsize=CONCURRENCY, retries=False, timeout=TIMEOUT_SECONDS)  # 접속 재사용 (스레드 안전)
 FOOD_SAFETY_KEYS = {"C003": "PRDLST_REPORT_NO"}  # 식품안전나라 목록의 제품 키 (중복 검사)
 NO_DATA = "INFO-200"  # 식품안전나라: 해당하는 데이터가 없습니다 (마지막 쪽 다음)
 RATE_LIMITED = "INFO-320"  # 식품안전나라: 1시간 호출 한도 초과
@@ -74,14 +82,20 @@ class RateLimited(RuntimeError):
     """다시 시도해도 소용없는 오류 (호출 한도). 재시도하지 않는다."""
 
 
-def fetch_food_safety_page(operation, page_no, rows, key):
-    start, end = (page_no - 1) * rows + 1, page_no * rows
-    url = f"{FOOD_SAFETY_URL}/{key}/{operation}/json/{start}/{end}"
+def get_json(url, key):
+    """GET 해서 JSON 으로. 오류 메시지에 들어간 API 키는 가린다."""
     try:
-        with urlopen(url, timeout=TIMEOUT_SECONDS) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        response = HTTP.request("GET", url)
+        if response.status != 200:
+            raise RuntimeError(f"HTTP {response.status}")
+        return json.loads(response.data.decode("utf-8"))
     except Exception as exc:
         raise RuntimeError(str(exc).replace(key, "***")) from None
+
+
+def fetch_food_safety_page(operation, page_no, rows, key):
+    start, end = (page_no - 1) * rows + 1, page_no * rows
+    data = get_json(f"{FOOD_SAFETY_URL}/{key}/{operation}/json/{start}/{end}", key)
     result = (data.get(operation) or data).get("RESULT") or {}
     if result.get("CODE") == NO_DATA:  # 마지막 쪽 다음: 빈 응답으로 돌려준다
         return {operation: {"RESULT": result, "row": []}}
@@ -96,13 +110,7 @@ def fetch_page(service, operation, page_no, rows, key):
     if is_food_safety(operation):
         return fetch_food_safety_page(operation, page_no, rows, key)
     query = urlencode({"serviceKey": key, "pageNo": page_no, "numOfRows": rows, "type": "json"})
-    url = f"{BASE_URL}/{service}/{operation}?{query}"
-    try:
-        with urlopen(url, timeout=TIMEOUT_SECONDS) as resp:
-            text = resp.read().decode("utf-8")
-        data = json.loads(text)
-    except Exception as exc:
-        raise RuntimeError(str(exc).replace(key, "***")) from None
+    data = get_json(f"{BASE_URL}/{service}/{operation}?{query}", key)
     header = data.get("header") or {}
     if header.get("resultCode") != "00" or "body" not in data:
         raise RuntimeError(f"API 오류 응답: {header}")
@@ -202,14 +210,27 @@ def collect_operation(operation, snapshot, store, rows, key):
             "collected_at": datetime.now().isoformat(timespec="seconds"),
         }
         store.put_json(page_key(page_no), {"meta": meta, "response": response})
-        page_items[page_no] = count_items_of(response, operation)
+        with lock:  # 여러 스레드가 동시에 쓴다
+            page_items[page_no] = count_items_of(response, operation)
 
     def save_progress():
+        with lock:
+            snapshot_items = dict(page_items)
         store.put_json(manifest_key, {
             "service": service, "operation": operation, "snapshot": snapshot, "rows": rows,
-            "status": "수집 중", "started_at": started_at, "page_items": page_items,
+            "status": "수집 중", "started_at": started_at, "page_items": snapshot_items,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         })
+
+    def fetch_and_save(page_no):
+        """한 쪽을 받아 S3 에 저장 (스레드에서 실행). (쪽, 그 쪽의 totalCount 또는 None, 오류)."""
+        response, error = fetch_with_retry(service, operation, page_no, rows, key)
+        if response is None:
+            return page_no, None, error
+        save_page(page_no, response)
+        return page_no, total_count_of(response, operation), None
+
+    lock = threading.Lock()
 
     # 1쪽으로 totalCount 확인
     if 1 in existing:
@@ -226,33 +247,42 @@ def collect_operation(operation, snapshot, store, rows, key):
 
     failed_pages = []
     total_count_changes = []
-    page_no = 1
-    while True:
-        page_no += 1
-        # 공공데이터포털은 totalCount 로 정한 쪽까지. 식품안전나라는 "데이터 없음" 쪽이 나올 때까지 (totalCount 가 늦게 갱신됨)
-        if not food_safety and page_no > pages:
-            break
-        if page_no in existing:
-            continue
-        response, error = fetch_with_retry(service, operation, page_no, rows, key)
-        if response is None:
+
+    def record(page_no, current_total, error):
+        if current_total is None:
             failed_pages.append(page_no)
             print(f"[{operation}] {page_no}쪽 실패: {error}", flush=True)
-            if isinstance(error, RateLimited):
-                break  # 호출 한도: 남은 쪽도 모두 실패하므로 바로 멈춘다 (검증에서 실패 처리)
-            if food_safety and failed_pages[-MAX_RETRIES:] == list(range(page_no - MAX_RETRIES + 1, page_no + 1)):
-                break  # 연속으로 실패하면 끝을 알 수 없으므로 멈춘다 (검증에서 실패 처리)
-            continue
-        if food_safety and not count_items_of(response, operation):
-            break  # 마지막 쪽 다음
-        save_page(page_no, response)
-        current_total = total_count_of(response, operation)
-        if current_total != total_count:
+        elif current_total != total_count:
             total_count_changes.append({"page": page_no, "total_count": current_total})
             print(f"[{operation}] 경고: {page_no}쪽에서 totalCount가 {total_count} → {current_total}로 바뀜", flush=True)
-        if page_no % CHECKPOINT_PAGES == 0:
-            save_progress()
-            print(f"[{operation}] {page_no}/{pages}", flush=True)
+
+    if food_safety:
+        # 한 쪽씩, "데이터 없음" 쪽이 나올 때까지 (totalCount 가 늦게 갱신되고, 호출 한도가 있다)
+        page_no = 1
+        while True:
+            page_no += 1
+            response, error = fetch_with_retry(service, operation, page_no, rows, key)
+            if response is None:
+                record(page_no, None, error)
+                if isinstance(error, RateLimited):
+                    break  # 호출 한도: 남은 쪽도 모두 실패하므로 바로 멈춘다 (검증에서 실패 처리)
+                if failed_pages[-MAX_RETRIES:] == list(range(page_no - MAX_RETRIES + 1, page_no + 1)):
+                    break  # 연속으로 실패하면 끝을 알 수 없으므로 멈춘다 (검증에서 실패 처리)
+                continue
+            if not count_items_of(response, operation):
+                break  # 마지막 쪽 다음
+            save_page(page_no, response)
+            record(page_no, total_count_of(response, operation), None)
+    else:
+        # totalCount 로 정한 쪽까지, S3 에 없는 쪽만 CONCURRENCY 개씩 동시에
+        todo = [n for n in range(2, pages + 1) if n not in existing]
+        with ThreadPoolExecutor(CONCURRENCY) as pool:
+            for done, (page_no, current_total, error) in enumerate(pool.map(fetch_and_save, todo), start=1):
+                record(page_no, current_total, error)
+                if done % CHECKPOINT_PAGES == 0:
+                    save_progress()
+                    print(f"[{operation}] {done}/{len(todo)}", flush=True)
+        failed_pages.sort()
 
     if food_safety:  # 이전 시도에서 받았지만 이번 목록에는 없는 뒤쪽 페이지는 지운다
         for n in sorted(page_numbers(store.list(prefix))):

@@ -47,6 +47,7 @@ dependencies = [
     { name = "boto3" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyarrow" },
+    { name = "urllib3" },
 ]
 
 [package.metadata]
@@ -54,6 +55,7 @@ requires-dist = [
     { name = "boto3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pyarrow", specifier = ">=26.0.0" },
+    { name = "urllib3" },
 ]
 
 [[package]]

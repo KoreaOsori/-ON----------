@@ -7,4 +7,5 @@ dependencies = [
     "boto3",
     "psycopg[binary]>=3.3.6",
     "pyarrow>=26.0.0",
+    "urllib3",
 ]
