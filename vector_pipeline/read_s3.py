@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
+from config import settings
 
 
 @contextmanager
@@ -19,18 +20,13 @@ def parquet_source(uri):
     parsed = urlsplit(uri)
     if not parsed.netloc or not parsed.path.strip("/") or parsed.query:
         raise ValueError("S3 경로는 s3://bucket/exact/key.parquet 형식이어야 합니다.")
-    if not os.getenv("AWS_REGION"):
-        raise ValueError("S3를 읽으려면 AWS_REGION을 명시하세요.")
-    client = boto3.client("s3", region_name=os.environ["AWS_REGION"],
+    client = boto3.client("s3", region_name=settings()["aws"]["region"],
                           config=Config(retries={"mode": "standard", "max_attempts": 5}))
     key = parsed.path.lstrip("/")
     head = client.head_object(Bucket=parsed.netloc, Key=key)
-    # Pin version, or use an ETag precondition to reject a concurrent overwrite.
-    args = {"Bucket": parsed.netloc, "Key": key}
-    if head.get("VersionId"):
-        args["VersionId"] = head["VersionId"]
-    else:
-        args["IfMatch"] = head["ETag"]
+    # Current EC2 role grants GetObject, not GetObjectVersion. Read the current
+    # object conditionally and record the version actually returned by S3.
+    args = {"Bucket": parsed.netloc, "Key": key, "IfMatch": head["ETag"]}
     with TemporaryDirectory() as temp:
         dest = Path(temp) / "data.parquet"
         obj = client.get_object(**args)
@@ -41,4 +37,4 @@ def parquet_source(uri):
         finally:
             obj["Body"].close()
         yield pq.ParquetFile(dest), {"uri": uri, "etag": head["ETag"],
-                                    "version_id": head.get("VersionId")}
+                                    "version_id": obj.get("VersionId")}

@@ -46,14 +46,15 @@ def prepare(args):
         raise ValueError("min_chars 또는 limit이 잘못되었습니다.")
     root = Path(args.output)
     root.mkdir(parents=True, exist_ok=True)
-    names = ("documents.jsonl", "links.jsonl")
+    names = ("documents.jsonl", "links.jsonl", "rejects.jsonl")
     if any((root / n).exists() for n in (*names, "manifest.json")):
         raise ValueError("기존 결과가 있습니다. 새로운 출력 폴더를 지정하세요.")
     counts, sources, snapshots, hashes = Counter(), {}, set(), set()
-    links = characters = 0
+    links = characters = rejected = 0
     try:
         with (root / "documents.jsonl.partial").open("w", encoding="utf-8", newline="\n") as docs, \
-                (root / "links.jsonl.partial").open("w", encoding="utf-8", newline="\n") as mapping:
+                (root / "links.jsonl.partial").open("w", encoding="utf-8", newline="\n") as mapping, \
+                (root / "rejects.jsonl.partial").open("w", encoding="utf-8", newline="\n") as rejects:
             for kind, uri in (("drug", args.drug), ("health_food", args.health_food)):
                 seen = set()
                 with parquet_source(uri) as (parquet, identity):
@@ -71,10 +72,18 @@ def prepare(args):
                             seen.add(product_id)
                             snapshot = str(row.get("snapshot"))
                             date.fromisoformat(snapshot)
+                            if getattr(args, "expected_snapshot", None) and snapshot != args.expected_snapshot:
+                                raise ValueError("Parquet snapshot이 Silver 완료 포인터와 다릅니다.")
                             snapshots.add(snapshot)
                             if len(snapshots) != 1:
                                 raise ValueError("두 소스의 snapshot이 같아야 합니다.")
-                            for chunk in build_documents(row, kind, uri, args.max_chars, args.overlap, args.min_chars):
+                            def on_reject(error):
+                                nonlocal rejected
+                                rejected += 1
+                                rejects.write(json.dumps({"product_key": f"{kind}:{product_id}", "source": uri,
+                                                          **error}, ensure_ascii=False) + "\n")
+
+                            for chunk in build_documents(row, kind, uri, args.max_chars, args.overlap, args.min_chars, on_reject):
                                 if chunk["content_hash"] not in hashes:
                                     hashes.add(chunk["content_hash"])
                                     docs.write(json.dumps({k: chunk[k] for k in DOC_FIELDS}, ensure_ascii=False) + "\n")
@@ -88,7 +97,8 @@ def prepare(args):
                         if args.limit and len(seen) >= args.limit:
                             break
                     sources[kind]["processed_rows"] = len(seen)
-        manifest = {"format_version": FORMAT_VERSION, "complete": not bool(args.limit),
+        manifest = {"format_version": FORMAT_VERSION, "complete": not bool(args.limit) and rejected == 0,
+                    "rejected_rules": rejected,
                     "snapshot": next(iter(snapshots)), "sources": sources, "documents": len(hashes),
                     "links": links, "counts": dict(counts), "embedding_characters": characters,
                     "max_chars": args.max_chars, "min_chars": args.min_chars, "overlap": args.overlap,
@@ -104,7 +114,7 @@ def prepare(args):
 
 
 def verify_files(root, manifest):
-    if set(manifest["files"]) != {"documents.jsonl", "links.jsonl"}:
+    if set(manifest["files"]) not in ({"documents.jsonl", "links.jsonl"}, {"documents.jsonl", "links.jsonl", "rejects.jsonl"}):
         raise ValueError("잘못된 bundle 파일 목록")
     for name, expected in manifest["files"].items():
         if file_hash(Path(root) / name) != expected:
@@ -117,6 +127,9 @@ def validate_bundle(folder):
     if manifest.get("format_version") != FORMAT_VERSION:
         raise ValueError("v2 bundle이 필요합니다. 이전 결과를 새 폴더에 다시 prepare 하세요.")
     verify_files(root, manifest)
+    rejected = sum(1 for _ in records(root / "rejects.jsonl")) if "rejects.jsonl" in manifest["files"] else 0
+    if rejected != manifest.get("rejected_rules", 0) or (rejected and manifest["complete"]):
+        raise ValueError("격리된 규칙 수 또는 complete 상태 불일치")
     date.fromisoformat(manifest["snapshot"])
     if set(manifest["sources"]) != {"drug", "health_food"} or not isinstance(manifest["complete"], bool):
         raise ValueError("소스 또는 complete 값 불일치")

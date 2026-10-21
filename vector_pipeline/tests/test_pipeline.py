@@ -96,10 +96,9 @@ class DocumentTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_vector(vector, 2)
 
-    def test_region_is_required(self):
+    def test_region_falls_back_to_settings(self):
         with patch.dict(os.environ, {"AWS_REGION": "", "BEDROCK_REGION": ""}):
-            with self.assertRaises(ValueError):
-                EmbeddingConfig.from_env()
+            self.assertEqual(EmbeddingConfig.from_env().region, "us-east-1")
 
 
 class TempTests(unittest.TestCase):
@@ -296,8 +295,9 @@ class StoreTests(unittest.TestCase):
         conn.execute.return_value.fetchone.side_effect = [("complete", 3, 4), None]
         publish_run(conn, "run", {"complete": True, "documents": 3, "links": 4, "snapshot": "2026-10-13"})
         writes = [c.args[0] for c in conn.execute.call_args_list if c.args[0].startswith("INSERT")]
-        self.assertEqual(len(writes), 1)
-        self.assertIn("active_snapshot", writes[0])
+        self.assertEqual(len(writes), 2)
+        self.assertIn("publication_events", writes[0])
+        self.assertIn("active_snapshot", writes[1])
 
     def test_run_identity_covers_manifest_and_model(self):
         a = EmbeddingConfig("test", "a", 2)

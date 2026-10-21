@@ -15,9 +15,8 @@ LINK_FIELDS = ("chunk_id", "content_hash", "product_type", "source_product_id", 
 
 def connect():
     import psycopg
-    if not all(os.getenv(x) for x in ("PGHOST", "PGDATABASE", "PGUSER")):
-        raise ValueError("PGHOST, PGDATABASE, PGUSER 설정이 필요합니다.")
-    return psycopg.connect(sslmode=os.getenv("PGSSLMODE", "verify-full"), connect_timeout=15, autocommit=True)
+    from aws_runtime import database_options
+    return psycopg.connect(**database_options(), connect_timeout=15, autocommit=True)
 
 
 def check_config(conn, config):
@@ -80,7 +79,7 @@ def write_links(conn, batch, run_id, offset):
         conn.execute("UPDATE product_search.ingestion_runs SET links_loaded=%s,updated_at=now() WHERE run_id=%s", (offset, run_id))
 
 
-def publish_run(conn, run_id, manifest):
+def publish_run(conn, run_id, manifest, rollback=False, reason="publish completed snapshot"):
     if not manifest["complete"]:
         raise ValueError("샘플 bundle은 공개할 수 없습니다. 전체 prepare 결과가 필요합니다.")
     with conn.transaction():
@@ -88,8 +87,11 @@ def publish_run(conn, run_id, manifest):
         if row != ("complete", manifest["documents"], manifest["links"]):
             raise ValueError("완료되지 않은 run은 공개할 수 없습니다.")
         latest = conn.execute("SELECT r.snapshot FROM product_search.active_snapshot a JOIN product_search.ingestion_runs r USING(run_id)").fetchone()
-        if latest and str(latest[0]) > manifest["snapshot"]:
+        if latest and str(latest[0]) > manifest["snapshot"] and not rollback:
             raise ValueError("현재 공개된 데이터보다 오래된 스냅샷입니다.")
+        conn.execute("INSERT INTO product_search.publication_events(from_run_id,to_run_id,operation,reason) "
+                     "VALUES((SELECT run_id FROM product_search.active_snapshot WHERE singleton),%s,%s,%s)",
+                     (run_id, "rollback" if rollback else "publish", reason))
         conn.execute("INSERT INTO product_search.active_snapshot VALUES(true,%s) ON CONFLICT(singleton) DO UPDATE SET run_id=EXCLUDED.run_id", (run_id,))
 
 
@@ -104,6 +106,8 @@ def ingest(root, manifest, config, cache_path, batch_size=128, publish=False):
         conn.execute("INSERT INTO product_search.ingestion_runs(run_id,snapshot,manifest,status) VALUES(%s,%s,%s,'loading') ON CONFLICT DO NOTHING",
                      (run_id, manifest["snapshot"], Jsonb(manifest)))
         status, docs_done, links_done = conn.execute("SELECT status,documents_loaded,links_loaded FROM product_search.ingestion_runs WHERE run_id=%s", (run_id,)).fetchone()
+        if status == "pruning":
+            raise ValueError("정리 중인 run입니다. prune을 완료한 뒤 다시 적재하세요.")
         if status != "complete":
             for batch in batched(islice(records(root / "documents.jsonl"), docs_done, None), batch_size):
                 hashes = [d["content_hash"] for d in batch]
