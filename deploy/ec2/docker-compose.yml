@@ -1,21 +1,29 @@
-# EC2 배포용: nginx(80) → 프론트엔드(Next.js) / 백엔드(FastAPI, /api) + Redis
+# EC2 배포용: nginx(80) → 프론트엔드(Next.js) / 백엔드(FastAPI, /api) + 데이터 파이프라인 · RAG · LLM (필요할 때만 실행)
 # DB 는 RDS, 파일 저장은 S3 (컨테이너로 띄우지 않음). AWS 권한은 EC2 IAM 역할을 쓰므로 키를 넣지 않는다.
+# Redis 는 쓰지 않는다 (2026-10-18 팀 결정).
 #
 #   cd deploy/ec2
 #   cp .env.example .env   # 값 채우기 (Secrets Manager 참고)
-#   docker compose up -d --build
+#   docker compose up -d --build                                                   # 웹 서비스
+#   docker compose run --rm data-pipeline                                          # 데이터 파이프라인 (오늘 날짜)
+#   docker compose run --rm data-pipeline --snapshot 2026-10-13 --skip-collect     # S3 에 있는 bronze 로 silver·gold·RDS 만
+#   docker compose run --rm vector-pipeline check-db                               # RAG (vector_pipeline/README.md)
+#   docker compose --profile llm up -d llm-v1 llm-v2                               # LLM API (EC2 안 127.0.0.1:8011 / 8012)
 name: pill-check
 
 services:
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "80:80"
+      - "0.0.0.0:80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - frontend
-      - backend
+    # nginx.conf 에서 Docker DNS 를 요청 시 조회하므로 앱 시작/재시작과 독립적으로 실행한다.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   frontend:
@@ -24,6 +32,9 @@ services:
       target: runner
       args:
         NEXT_PUBLIC_API_BASE_URL: ""  # 같은 주소(nginx)로 /api 호출
+    environment:
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
     restart: unless-stopped
 
   backend:
@@ -31,19 +42,75 @@ services:
       context: ../../backend
       target: runtime
     env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
-  # 비회원 질문 횟수 제한 등 (EC2 안에서 실행, ElastiCache 미사용)
-  redis:
-    image: redis:7-alpine
+  # 데이터 파이프라인: API → S3 bronze → S3 silver → S3 gold → RDS (pipeline/run_pipeline.py). 항상 띄우지 않는다 (profile)
+  # - 데이터의 원본은 S3. 컨테이너 디스크는 빌드 중 임시 폴더로만 쓰고 지운다 (호스트 폴더 연결 없음)
+  # - API 키와 RDS 접속 정보는 Secrets Manager(pill-check/dev/app)에서 EC2 역할로 읽는다 (.env 안 씀)
+  data-pipeline:
+    profiles: ["data"]
+    build:
+      context: ../../pipeline
+    environment:
+      TZ: Asia/Seoul  # 스냅샷 날짜("오늘")를 한국 날짜로. 없으면 UTC 라 한국 시간 0~9시 실행은 전날 날짜가 된다
+    restart: "no"
+
+  # RAG 벡터 파이프라인 (vector_pipeline/, RAG 팀): S3 silver → 임베딩(Bedrock Titan) → RDS product_search. 일회성 실행 (profile)
+  # - vector_pipeline/compose.yaml · compose.ec2.yaml 과 같은 구성. 명령은 vector_pipeline/README.md (예: sync-silver, check-db)
+  # - 설정은 vector_pipeline/settings.toml (버킷·RDS·시크릿 이름), 비밀값은 EC2 역할로 Secrets Manager 에서
+  # - output/ 에 bundle·임베딩 캐시가 쌓인다 (지우면 임베딩을 처음부터 다시 함). 처음 한 번 폴더 준비:
+  #     mkdir -p ../../vector_pipeline/output ../../vector_pipeline/input && sudo chown 10001:10001 ../../vector_pipeline/output
+  vector-pipeline:
+    profiles: ["rag"]
+    build:
+      context: ../../vector_pipeline
+    init: true
+    network_mode: host  # 컨테이너에서 EC2 역할(IMDS) 사용 (RAG 팀 compose.ec2.yaml 과 같음)
+    volumes:
+      - ../../vector_pipeline/settings.toml:/app/settings.toml:ro
+      - ../../vector_pipeline/output:/app/output
+      - ../../vector_pipeline/input:/input:ro
+      # settings.toml 의 sslrootcert(/certs/global-bundle.pem): 저장소에 있는 RDS CA 번들(us-east-1, AWS 공식)을 그 이름으로 연결
+      - ../../backend/app/llm/v2/certs/us-east-1-bundle.pem:/certs/global-bundle.pem:ro
+    restart: "no"
+
+  # LLM API (backend/app/llm/v1, v2, LLM 팀): 백엔드와 같은 이미지로 별도 FastAPI 앱을 띄운다. 필요할 때만 (profile)
+  # - EC2 에서는 .env 없이 RDS 고정 설정 + Secrets Manager + EC2 역할(Bedrock)로 동작 (각 README)
+  # - 포트는 EC2 안(127.0.0.1)에만 연다. 인터넷에 열지 않음 (보안 그룹도 80 만).
+  #   확인: EC2 에서 curl http://127.0.0.1:8012/llm/v2/health, 내 PC 브라우저로 Swagger 는 ssh -L 8012:127.0.0.1:8012 pill-ec2 후 http://127.0.0.1:8012/docs
+  # - 백엔드와는 아직 연결하지 않음 (웹 화면에서는 쓰이지 않음)
+  llm-v1:
+    profiles: ["llm"]
+    build:
+      context: ../../backend
+      target: runtime
+    command: ["uvicorn", "app.llm.v1.api:app", "--host", "0.0.0.0", "--port", "8011"]
+    environment:
+      LLM_V1_AUTH_MODE: ec2_role
+    ports:
+      - "127.0.0.1:8011:8011"
+    healthcheck:  # 이미지 기본 healthcheck 는 백엔드(8000) 용이라 바꾼다
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/docs')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  llm-v2:
+    profiles: ["llm"]
+    build:
+      context: ../../backend
+      target: runtime
+    command: ["uvicorn", "app.llm.v2.api:app", "--host", "0.0.0.0", "--port", "8012"]
+    environment:
+      LLM_V2_AUTH_MODE: ec2_role  # v2 README: 컨테이너에서는 명시 권장 (EC2 역할이 아니면 시작 실패)
+    ports:
+      - "127.0.0.1:8012:8012"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8012/llm/v2/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     restart: unless-stopped
