@@ -1,25 +1,31 @@
-import { drugCategories } from "@/mocks/drugs"
+import type { MedicineType } from "../api"
+
+const options: [MedicineType | undefined, string][] = [
+  [undefined, "전체"],
+  ["일반", "일반의약품"],
+  ["전문", "전문의약품"],
+]
 
 export default function CategoryFilter({
   value,
   onChange,
 }: {
-  value: string
-  onChange: (category: string) => void
+  value: MedicineType | undefined
+  onChange: (type: MedicineType | undefined) => void
 }) {
   return (
     <div className="my-5 flex flex-wrap gap-2">
-      {drugCategories.map((item) => (
+      {options.map(([type, label]) => (
         <button
-          key={item}
-          onClick={() => onChange(item)}
+          key={label}
+          onClick={() => onChange(type)}
           className={`min-h-11 rounded-full border px-4 text-sm ${
-            value === item
+            value === type
               ? "border-blue-600 bg-blue-600 text-white"
               : "border-slate-200 text-slate-600"
           }`}
         >
-          {item}
+          {label}
         </button>
       ))}
     </div>

@@ -52,8 +52,8 @@ class Settings(BaseSettings):
     # 처방전 OCR: textract 는 한국어 미지원 → 한국어 처방전은 claude(비전) 권장
     ocr_provider: Literal["mock", "claude", "textract"] = "mock"
 
-    # 공공데이터 (data.go.kr) — 식약처 e약은요 / DUR / 약국 정보
-    drug_data_source: Literal["mock", "public_api"] = "mock"
+    # 의약품 데이터: gold = 데이터 파이프라인이 RDS 에 적재한 gold 스키마 / mock = 가상 데이터 (테스트·DB 없는 로컬) / public_api = 공공데이터 (data.go.kr) e약은요
+    drug_data_source: Literal["mock", "public_api", "gold"] = "mock"
     public_data_service_key: str | None = None
 
     # 인증
