@@ -26,7 +26,7 @@ langchain/langgraph 없이 anthropic SDK의 `tools` 기능으로 루프를 직�
 | `llm_client.py` | Claude 클라이언트(bedrock / mantle) | `llm.py` |
 | `prompts.py`, `safety.py` | 시스템 프롬프트·고정 문구, 응급/위기 표현 감지 | `prompt.py` |
 | `config.py` | 환경변수 설정(`V2Settings`) | `config.py` |
-| `evaluation/` | 평가 케이스 생성, HitRate@k·MRR, **거리 분포·임계값 보정(`retrieval_eval.py`)**, **제품명 변형 평가(`name_eval.py`)**, **모델 비교(`model_compare.py`)** | `evaluation/` |
+| `evaluation/` | 평가 케이스 생성, HitRate@k·MRR, **거리 분포·임계값 보정(`retrieval_eval.py`)**, **제품명 변형 평가(`name_eval.py`)**, **모델 비교(`model_compare.py`)**, **시나리오 점검(`scenario_check.py`, 질문 세트 `scenarios.jsonl`)**, **대상 DB 점검(`db_probe.py`)** | `evaluation/` |
 | `tests/` | 가짜 DB·가짜 Claude 기반 테스트 (DB·AWS 불필요) | — |
 | `docker-compose.dev-db.yml` | 로컬 pgvector DB (`pgvector/pgvector:pg17`) | — |
 
@@ -293,6 +293,47 @@ uv run python -m app.llm.v2.evaluation.model_compare --limit 30
 - 저장 파일의 `tool_trace`에 모델이 도구에 넘긴 인자(제품명·섹션·`product_key`·질문)와 결과 첫머리가 들어 있어, 모델이 갈린 질문의 원인(제품명을 잘못 넘겼는지 등)을 볼 수 있습니다. 로그에는 남기지 않고 이 로컬 파일에만 저장됩니다.
 - 모델을 한 개만 바꿔 쓰려면 `LLM_V2_MODEL_ID`만 바꾸면 됩니다.
 
+## 시나리오 점검 (프롬프트를 고치며 반복 확인)
+
+`evaluation/scenarios.jsonl`의 질문 17개(약 정보·병용·건강기능식품·응급/위기·범위 밖·프롬프트 주입·용량 변경 등)를 실제 에이전트로 돌려 **기대한 동작**이 나오는지 표로 봅니다.
+자동 판정은 동작만 봅니다: 종료 상태, 쓴 도구, 출처, 근거 기반 답변의 고정 꼬리말, 있으면 안 되는 표현, "안전/괜찮다/문제없다"를 유보 없이 말하는 문장(WARN, 휴리스틱). **답변 문장이 자연스럽고 정확한지는 채점하지 않습니다.** `--show`나 저장된 JSONL을 사람이 읽고 판단하세요.
+
+```powershell
+cd backend
+uv run python -m app.llm.v2.evaluation.scenario_check                  # 전체
+uv run python -m app.llm.v2.evaluation.scenario_check --only S05,S07 --show
+uv run python -m app.llm.v2.evaluation.scenario_check --model sonnet   # 모델을 바꿔 비교
+```
+
+- 제품명은 로컬 개발 DB에 있던 제품입니다. 대상 DB에 없으면 `no_evidence`가 나올 수 있으니 `scenarios.jsonl`의 이름을 그 DB에 있는 제품으로 바꿔 쓰세요.
+- 답변 전문은 `evaluation/generated/scenario_check-<시각>.jsonl`에만 저장됩니다(git 제외). 프롬프트를 고치기 전후 파일을 나란히 비교하세요.
+- FAIL이 하나라도 있으면 종료 코드 1입니다.
+- 모든 시나리오가 `no_evidence`로 끝나고 로그에 `ProgrammingError`가 나오면 대상 DB의 스키마가 v2의 기대와 다른 것입니다. `uv run python -m app.llm.v2.evaluation.db_probe`가 어느 테이블·컬럼이 없는지 DB 오류 메시지와 함께 보여 줍니다(읽기 전용, 제품 본문·비밀번호는 출력하지 않음).
+
+### 실제 RDS에 로컬에서 붙어 반복하기 (SSM 터널)
+
+팀 규칙상 EC2에서 코드를 직접 고치지 않으므로, 프롬프트를 다듬는 반복은 내 PC에서 실제 RDS(`product_search`)에 붙어서 하고, 마지막에 PR → master → EC2 pull·재빌드 후 같은 점검을 한 번 더 합니다.
+
+1. 터미널 하나에서 터널을 열어 둡니다(팀 문서 5-1. 내 PC의 5432가 쓰이고 있으면 `localPortNumber=15432`).
+
+```powershell
+aws ssm start-session --target i-00d9e7255e6bcc7c6 --region us-east-1 --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com,portNumber=5432,localPortNumber=5432
+```
+
+2. 다른 터미널에서 연결 정보를 설정합니다. 비밀번호는 AWS 콘솔 Secrets Manager에서 찾고, 화면에 보이지 않게 입력해 명령 기록에 남기지 않습니다.
+
+```powershell
+cd backend
+$env:PGHOST = "localhost"; $env:PGPORT = "5432"; $env:PGDATABASE = "pill"; $env:PGUSER = "pill_admin"; $env:PGSSLMODE = "require"
+$p = Read-Host "RDS 비밀번호" -AsSecureString
+$env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p))
+```
+
+3. 위의 점검 명령을 실행합니다. 이 계정은 팀이 공유하는 마스터 계정이므로, v2가 하는 읽기 전용 조회 외에는 아무것도 하지 않도록 주의하세요. 끝나면 `Remove-Item Env:PGPASSWORD`로 지웁니다.
+
+- 연결은 `localhost`라서 인증서 호스트명 검사(`verify-full`)가 맞지 않아 `PGSSLMODE=require`를 씁니다. 이 설정은 이 방식(터널)에서만 쓰세요.
+- 병용금기는 `dev_data/contraindication.sqlite`가 있으면 로컬에서도 켜집니다.
+
 ## 테스트
 
 ```powershell
@@ -305,7 +346,7 @@ uv run pytest app/llm/v2/tests
 ## 확인된 것 / 확인되지 않은 것
 
 확인됨(작성 환경에서 실행):
-- 위 테스트 184개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
+- 위 테스트 192개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
 - 자격증명 정책(`aws_auth.py`)은 가짜 세션으로 엄격·완화·EC2 감지를, 설정 기본값은 `PGHOST` 유무에 따른 전환을 시험했다(정책 검사를 지우거나 항상 완화로 바꾸면 해당 테스트가 실패한다). **실제 EC2의 `iam-role` 판정과 DMI 감지는 이 환경에서 확인하지 못했다.**
 - 건강기능식품 주의사항(`check_contraindication`)은 가짜 DB로 문단 단위 자르기·예산 분배·생략 안내·주의사항 없음·이름 검색(의약품+건강기능식품)을 시험했다(예산 검사나 중복 제거를 지우면 해당 테스트가 실패한다). 원본 건강기능식품 데이터(`data/health_food`)의 '섭취 시 주의사항'은 45,938개 제품 중 44,270개(96%)에 있고 글자 수가 중앙값 140자·99% 533자·최대 1,242자라 6,000자 예산 안에 거의 항상 들어간다. **다만 파이프라인이 이 값을 DB에서 어떤 문단으로 나눠 `precautions`에 넣었는지(문단 개수)는 이 환경에서 확인하지 못했다.**
 - HTTP API(`api.py`)는 가짜 에이전트로 요청 검증·인증·상태 코드·동시 요청 제한·오류 비노출을 시험했다. 단, **`build_agent`가 실제 DB·Bedrock으로 앱을 띄우는 경로는 작성 환경에 SQLAlchemy가 없어 시험하지 못했다**(에이전트 자체는 평가 스크립트에서 실제로 동작을 확인).
