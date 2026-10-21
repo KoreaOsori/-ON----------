@@ -185,3 +185,59 @@ def test_api_settings_from_env():
     assert custom.api_key == "s3cret-v2-key"
     assert custom.api_max_concurrency == 1 and custom.api_queue_seconds == 0.0  # 하한으로 보정
     assert "s3cret-v2-key" not in repr(custom)  # API 키는 repr 에 나오지 않는다
+
+
+def test_db_defaults_match_v1_fixed_rds_when_pghost_is_unset():
+    from app.llm.v2.config import DEFAULT_DB_CA_FILE, DEFAULT_DB_HOST, DEFAULT_DB_NAME, DEFAULT_DB_SECRET_ID
+
+    settings = V2Settings.from_env({})
+    assert (settings.db_host, settings.db_name, settings.rds_secret_arn) == (DEFAULT_DB_HOST, DEFAULT_DB_NAME, DEFAULT_DB_SECRET_ID)
+    assert settings.db_host.endswith(".rds.amazonaws.com") and settings.db_port == 5432
+    assert settings.db_ssl_mode == "verify-full" and settings.db_ssl_root_cert == DEFAULT_DB_CA_FILE
+    assert DEFAULT_DB_CA_FILE.replace("\\", "/").endswith("/llm/v2/certs/us-east-1-bundle.pem")  # v1 파일을 참조하지 않는다
+    # 시크릿 이름은 비밀값이 아니지만 repr 에 비밀번호가 나오지 않는 것은 그대로다
+    assert settings.db_password is None
+
+
+def test_pghost_switches_to_env_only_for_local_dev_db():
+    local = V2Settings.from_env(
+        {"PGHOST": "localhost", "PGPORT": "5433", "PGDATABASE": "pill", "PGUSER": "pill_dev", "PGPASSWORD": "pw", "PGSSLMODE": "disable"}
+    )
+    assert (local.db_host, local.db_port, local.db_name, local.db_user) == ("localhost", 5433, "pill", "pill_dev")
+    assert local.rds_secret_arn is None  # 로컬 DB 에는 고정 RDS 시크릿을 쓰지 않는다
+    assert local.db_ssl_root_cert is None and local.db_ssl_mode == "disable"
+    no_db = V2Settings.from_env({"PGHOST": "localhost"})
+    assert no_db.db_name is None and no_db.rds_secret_arn is None  # 일부만 주면 나머지는 비워 둔다(오류로 드러남)
+
+
+def test_env_overrides_fixed_defaults_individually():
+    settings = V2Settings.from_env({"PGDATABASE": "other", "RDS_SECRET_ARN": SECRET_ARN, "PGSSLROOTCERT": "/x/ca.pem"})
+    assert settings.db_name == "other" and settings.rds_secret_arn == SECRET_ARN and settings.db_ssl_root_cert == "/x/ca.pem"
+    assert settings.db_host.endswith(".rds.amazonaws.com")
+
+
+def test_default_ca_applies_only_to_rds_hosts():
+    from app.llm.v2.config import DEFAULT_DB_CA_FILE
+
+    rds = V2Settings.from_env({"PGHOST": "mydb.abc.us-east-1.rds.amazonaws.com", "PGDATABASE": "pill", "RDS_SECRET_ARN": SECRET_ARN})
+    assert rds.db_ssl_root_cert == DEFAULT_DB_CA_FILE
+    other = V2Settings.from_env({"PGHOST": "db.example.com", "PGDATABASE": "pill"})
+    assert other.db_ssl_root_cert is None
+
+
+def test_bundled_rds_ca_file_exists_and_is_a_valid_trust_bundle():
+    import ssl
+    from pathlib import Path
+
+    from app.llm.v2.config import DEFAULT_DB_CA_FILE
+
+    path = Path(DEFAULT_DB_CA_FILE)
+    assert path.is_file() and "v1" not in path.parts
+    text = path.read_text(encoding="ascii")
+    assert text.count("-----BEGIN CERTIFICATE-----") == text.count("-----END CERTIFICATE-----") >= 1
+    assert "PRIVATE KEY" not in text  # 공개 신뢰 앵커만 들어 있어야 한다
+    context = ssl.create_default_context(cafile=str(path))
+    subjects = [dict(item[0] for item in cert["subject"]) for cert in context.get_ca_certs()]
+    assert subjects and all("Amazon RDS" in subject.get("organizationalUnitName", "") for subject in subjects)
+    assert build_ssl(make_settings(db_ssl_mode="verify-full", db_ssl_root_cert=str(path))).verify_mode == ssl.CERT_REQUIRED
+
