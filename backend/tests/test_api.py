@@ -22,15 +22,11 @@ async def test_interaction_check_flags_demo_pair(client):
     )
     pairs = response.json()["pairs"]
     assert len(pairs) == 3
-    assert [pair for pair in pairs if pair["contraindicated"]] == [
-        {
-            "first": "가나다정",
-            "second": "마바사정",
-            "contraindicated": True,
-            "durContent": pairs[1]["durContent"],
-            "easyExplanation": pairs[1]["easyExplanation"],
-        }
+    flagged = [pair for pair in pairs if pair["contraindicated"]]
+    assert [(pair["first"], pair["second"], pair["level"]) for pair in flagged] == [
+        ("가나다정", "마바사정", "금기")
     ]
+    assert flagged[0]["details"][0]["basis"] == "품목 DUR"
 
 
 async def test_interaction_check_requires_two_medicines(client):

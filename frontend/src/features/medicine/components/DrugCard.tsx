@@ -1,6 +1,6 @@
 import { ChevronRight } from "lucide-react"
 import DrugArt from "@/components/ui/DrugArt"
-import type { Drug } from "@/types/drug"
+import type { MedicineSummary } from "../api"
 
 export default function DrugCard({
   drug,
@@ -11,7 +11,7 @@ export default function DrugCard({
   onOpen,
   onAdd,
 }: {
-  drug: Drug
+  drug: MedicineSummary
   index: number
   mode: "search" | "interaction"
   added: boolean
@@ -27,6 +27,9 @@ export default function DrugCard({
         <p className="mt-1 text-sm text-slate-500">
           {drug.maker}{" "}
           <span className="ml-1 rounded bg-slate-100 px-1.5 text-xs">{drug.type} 의약품</span>
+          {drug.saleStatus === "판매중지" && (
+            <span className="ml-1 rounded bg-amber-50 px-1.5 text-xs text-amber-700">판매중지</span>
+          )}
         </p>
       </button>
       {mode === "interaction" ? (

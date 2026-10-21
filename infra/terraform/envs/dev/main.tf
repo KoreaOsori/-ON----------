@@ -52,4 +52,6 @@ module "scheduler" {
   source      = "../../modules/scheduler"
   name        = local.name
   instance_id = module.ec2.instance_id
+  # 동작 확인용 1회 실행 (2026-10-22 02:00 KST). 확인 후 이 줄을 지우면 기본값(매월 10일 02:00)으로 돌아감
+  schedule_expression = "cron(0 2 22 10 ? 2026)"
 }

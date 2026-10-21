@@ -89,7 +89,16 @@ Python이 각 의약품 쌍의 성분 집합을 양방향으로 비교한다. �
 
 ## 백엔드 호출
 
-독립 서비스의 `/llm/v1/ask`를 기존 백엔드에서 HTTP로 호출하거나 `Service(Repository(connection, settings), Bedrock(settings), settings).ask(AskRequest(...))`를 호출한다. 직접 호출 시 connection은 PostgreSQL repeatable-read/read-only 트랜잭션이어야 한다. 독립 앱의 `lifespan`과 `router`를 재사용할 수도 있지만 기존 백엔드에 router만 추가하면 필요한 app.state가 없으므로 작동하지 않는다. 현재 변경 범위 제한 때문에 기존 main.py에는 라우터를 등록하지 않았다.
+백엔드 `app/main.py`가 v1 전용 앱을 `/api/llm/v1`에 mount하고, 부모 lifespan에서 자식 앱의 초기화·종료를 수행한다. 기존 Nginx `/api/` 프록시를 그대로 사용한다. 메인 백엔드 Swagger와 별도로 v1 Swagger를 제공하며, 메인 앱의 prod Swagger 비활성화 설정과 무관하게 v1 docs는 열린다.
+
+- 별도 Swagger: http://ec2-54-197-92-156.compute-1.amazonaws.com/api/llm/v1/docs
+- OpenAPI: `/api/llm/v1/openapi.json`
+- 모델 목록: `GET /api/llm/v1/models`
+- 질문: `POST /api/llm/v1/ask`
+
+변경된 코드를 EC2에 반영한 뒤 `deploy/ec2`에서 `docker compose up -d --build backend`로 재배포한다. 이 경로에는 별도 llm-v1 컨테이너가 필요 없다. 백엔드 컨테이너가 EC2 역할·Secrets Manager·RDS·Bedrock에 접근할 수 있어야 한다. Swagger의 Try it out도 위 mount 경로를 사용한다. `LLM_V1_API_KEY`를 설정했다면 Authorize에 입력한다.
+
+기존 독립 실행(`app.llm.v1.api:app`)은 계속 `/docs`, `/llm/v1/ask`, `/llm/v1/models`를 제공한다. 직접 Python 호출은 `Service(Repository(connection, settings), Bedrock(settings), settings).ask(AskRequest(...))`를 사용하며 connection은 PostgreSQL repeatable-read/read-only 트랜잭션이어야 한다.
 
 ## IAM 및 모델
 
