@@ -1,4 +1,4 @@
-"""수집 → bronze 검증 → silver 빌드 → gold 빌드 → RDS 적재를 차례로 실행한다. 스케줄러는 이 스크립트만 부르면 된다.
+"""수집 → bronze 검증 → silver 빌드 → gold 빌드 → RDS 적재 → 오래된 스냅샷 정리를 차례로 실행한다. 스케줄러는 이 스크립트만 부르면 된다.
 
 S3 가 bronze·silver·gold 의 원본이다. 각 단계는 앞 단계의 결과를 S3 에서 읽고 S3 에 쓴다 (디스크는 빌드 중 임시 폴더로만 씀).
 
@@ -15,6 +15,7 @@ S3 가 bronze·silver·gold 의 원본이다. 각 단계는 앞 단계의 결과
 3. silver 빌드: S3 bronze → S3 silver (검증에 실패하면 S3 에 올리지 않고 silver/_latest.json 도 그대로)
 4. gold 빌드: S3 silver → S3 gold (이미 만든 silver 면 건너뜀. 검사에 실패하면 올리지 않음)
 5. RDS 적재: S3 gold → RDS (이미 적재한 gold 면 건너뜀. 실패하면 기존 gold 유지)
+6. 오래된 스냅샷 정리: 1~5 가 모두 성공했을 때만. 완성된 스냅샷을 bronze 2·silver 4·gold 2 개만 남긴다 (retention.py)
 앞 단계가 실패하면 뒤 단계는 실행하지 않고 종료 코드 1 (RDS 접속 실패는 2: S3 gold 는 완성됐으니 RDS 를 켜고 5단계만 다시)
 """
 
@@ -95,13 +96,13 @@ def main():
     log(f"버킷 {store.bucket}, snapshot={args.snapshot}")
 
     if args.skip_collect:
-        log("1/5 수집 생략")
+        log("1/6 수집 생략")
         collect_errors = {}
     else:
-        log(f"1/5 수집 시작 API {len(ALL_OPERATIONS)}개 → s3://{store.bucket}/bronze/")
+        log(f"1/6 수집 시작 API {len(ALL_OPERATIONS)}개 → s3://{store.bucket}/bronze/")
         collect_errors = collect_all(args.snapshot, store)
 
-    log("2/5 bronze 검증")
+    log("2/6 bronze 검증")
     problems = check_bronze(args.snapshot, store, collect_errors)
     if problems:
         log(f"bronze 검증 실패 {len(problems)}개 — silver·gold 를 만들지 않음. 같은 --snapshot 으로 다시 실행하면 이어받는다")
@@ -110,23 +111,29 @@ def main():
         sys.exit(1)
     log(f"bronze 검증 통과 ({len(ALL_OPERATIONS)}개)")
 
-    log("3/5 silver 빌드 (S3 bronze → S3 silver)")
+    log("3/6 silver 빌드 (S3 bronze → S3 silver)")
     code = run_step("silver/build.py", "--snapshot", args.snapshot, "--bucket", store.bucket)
     if code != 0:
         log("silver 빌드 실패 — S3 silver 는 이전 그대로, gold 는 만들지 않음")
         sys.exit(code)
 
-    log("4/5 gold 빌드 (S3 silver → S3 gold)")
+    log("4/6 gold 빌드 (S3 silver → S3 gold)")
     code = run_step("gold/build.py", "--bucket", store.bucket)
     if code != 0:
         log("gold 빌드 실패 — S3 gold 는 이전 그대로, RDS 적재는 하지 않음")
         sys.exit(code)
 
-    log("5/5 RDS 적재 (S3 gold → RDS)")
+    log("5/6 RDS 적재 (S3 gold → RDS)")
     target = ["--dsn", args.gold_dsn] if args.gold_dsn else ["--host", args.gold_host] if args.gold_host else []
     code = run_step("gold/load.py", "--bucket", store.bucket, *target)
     if code != 0:
         log("RDS 적재 실패 — S3 gold 는 완성, RDS 는 기존 gold 유지. 원인 해결 후 pipeline/gold/load.py 만 다시 실행하면 된다")
+        sys.exit(code)
+
+    log("6/6 오래된 스냅샷 정리 (모든 단계 성공)")
+    code = run_step("retention.py", "--bucket", store.bucket, "--apply")
+    if code != 0:
+        log("스냅샷 정리 실패 — 데이터(S3 gold·RDS)는 완성. 다음 실행 때 다시 정리한다")
         sys.exit(code)
     log("완료")
 
