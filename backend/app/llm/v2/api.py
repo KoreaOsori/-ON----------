@@ -7,13 +7,16 @@
   사용자가 고른 product_key 를 넣어 같은 질문을 다시 보낸다.
 - 보안: LLM_V2_API_KEY 가 있으면 X-API-Key 헤더가 일치해야 한다(상수 시간 비교). 없으면 키 없이 열리므로 localhost 로만 띄운다.
   질문·프로필 내용과 비밀값은 로그에 남기지 않는다. 오류 응답에는 내부 메시지를 담지 않는다.
-- 기존 backend 의 main.py 는 건드리지 않았다. 독립 앱으로 실행하거나, 나중에 백엔드가 HTTP 로 호출한다.
-  라우터만 다른 앱에 붙이면 lifespan 이 설정하는 app.state 가 없어 동작하지 않는다(v1 과 같은 제약).
+- 독립 앱으로 실행하거나(위 명령), 백엔드 앱에 v1 처럼 mount 한다: `create_app(route_prefix="", require_api_key=True)` 를
+  `/api/llm/v2` 에 mount 하고, 부모 lifespan 에서 `mounted_lifespan(child)` 를 연다(backend/app/main.py).
+  라우터만 다른 앱에 붙이면 lifespan 이 설정하는 app.state 가 없어 동작하지 않는다.
+- mount 모드의 안전장치: ① LLM_V2_API_KEY 가 없으면 공개 경로로 서비스하지 않고 503 을 돌려준다(Bedrock 비용 보호).
+  ② v2 초기화가 실패해도 백엔드 전체는 계속 뜨고 v2 경로만 503 이다(웹 서비스를 v2 때문에 내리지 않는다).
 """
 import asyncio
 import logging
 import secrets
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -21,7 +24,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.llm.v2.agent import DrugInfoAgent, build_agent
-from app.llm.v2.config import V2Settings
+from app.llm.v2.config import ConfigError, V2Settings
 from app.llm.v2.db import safe_error_name
 from app.llm.v2.prompts import ERROR_ANSWER, TIMEOUT_ANSWER
 from app.llm.v2.search import PRODUCT_KEY_PATTERN
@@ -83,14 +86,22 @@ class AskResponse(BaseModel):
     model_id: str
 
 
+async def ensure_ready(request: Request) -> None:
+    """mount 모드에서 초기화에 실패했거나 아직 시작 전이면 내부 속성 오류 대신 503 을 돌려준다."""
+    state = request.app.state
+    if getattr(state, "llm_unavailable", False) or getattr(state, "llm_agent", None) is None:
+        raise HTTPException(503, ERROR_ANSWER)
+
+
 async def authorize(request: Request, key: str | None = Depends(api_key_header)) -> None:
     expected = request.app.state.llm_settings.api_key
     if expected and (not key or not secrets.compare_digest(key.encode(), expected.encode())):
         raise HTTPException(401, "올바른 X-API-Key가 필요합니다.")
 
 
-router = APIRouter(prefix="/llm/v2", tags=["LLM v2"], dependencies=[Depends(authorize)])
-public_router = APIRouter(prefix="/llm/v2", tags=["LLM v2"])
+# 경로 접두사는 create_app(route_prefix=...) 가 붙인다(독립 실행은 /llm/v2, 백엔드 mount 는 빈 접두사).
+router = APIRouter(tags=["LLM v2"], dependencies=[Depends(ensure_ready), Depends(authorize)])
+public_router = APIRouter(tags=["LLM v2"], dependencies=[Depends(ensure_ready)])
 
 
 @public_router.get("/health")
@@ -161,12 +172,24 @@ async def ask(body: AskRequest, request: Request) -> AskResponse:
     )
 
 
-def create_app(settings: V2Settings | None = None, agent: DrugInfoAgent | None = None) -> FastAPI:
-    """앱 팩토리. settings/agent 를 주면(테스트) 그대로 쓰고, 없으면 시작할 때 환경변수로 만든다."""
+def create_app(
+    settings: V2Settings | None = None,
+    agent: DrugInfoAgent | None = None,
+    *,
+    route_prefix: str = "/llm/v2",
+    require_api_key: bool = False,
+) -> FastAPI:
+    """앱 팩토리. settings/agent 를 주면(테스트) 그대로 쓰고, 없으면 시작할 때 환경변수로 만든다.
+
+    route_prefix    : 독립 실행은 "/llm/v2"(기존 경로 유지), 백엔드에 mount 할 때는 ""(mount 경로가 접두사).
+    require_api_key : True 면 LLM_V2_API_KEY 가 없을 때 시작을 거부한다(공개 경로용).
+    """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         resolved = settings or V2Settings.from_env()  # 설정 오류는 여기서 시작을 막는다(메시지에 비밀값 없음)
+        if require_api_key and not resolved.api_key:
+            raise ConfigError("공개 경로로 서비스하려면 LLM_V2_API_KEY 환경변수가 필요합니다.")
         app.state.llm_settings = resolved
         app.state.llm_agent = agent or build_agent(resolved)
         app.state.llm_gate = asyncio.Semaphore(resolved.api_max_concurrency)
@@ -177,10 +200,34 @@ def create_app(settings: V2Settings | None = None, agent: DrugInfoAgent | None =
         finally:
             await app.state.llm_agent.aclose()
 
-    app = FastAPI(title="약온 LLM v2", version="2.0.0", lifespan=lifespan)
-    app.include_router(public_router)
-    app.include_router(router)
+    app = FastAPI(
+        title="약온 LLM v2", version="2.0.0", lifespan=lifespan,
+        docs_url="/docs", openapi_url="/openapi.json", redoc_url=None,
+    )
+    app.include_router(public_router, prefix=route_prefix)
+    app.include_router(router, prefix=route_prefix)
     return app
+
+
+@asynccontextmanager
+async def mounted_lifespan(child: FastAPI):
+    """부모(백엔드) 앱의 lifespan 안에서 mount 한 v2 앱의 시작·종료를 수행한다(mount 한 앱의 lifespan 은 자동으로 돌지 않는다).
+
+    v2 초기화가 실패해도 예외를 밖으로 내보내지 않는다: 백엔드 전체는 계속 뜨고 v2 경로는 503 을 돌려준다.
+    원인은 예외 클래스 이름만 로그에 남긴다(비밀값 비노출).
+    """
+    stack = AsyncExitStack()
+    try:
+        await stack.enter_async_context(child.router.lifespan_context(child))
+    except Exception as exc:  # noqa: BLE001
+        child.state.llm_unavailable = True
+        # ConfigError 의 메시지는 설정 안내뿐이라(비밀값 없음) 그대로 남기고, 그 밖의 예외는 클래스 이름만 남긴다.
+        reason = str(exc) if isinstance(exc, ConfigError) else safe_error_name(exc)
+        logger.error("LLM v2 시작 실패(백엔드는 계속 실행, v2 경로는 503): %s", reason)
+    try:
+        yield
+    finally:
+        await stack.aclose()
 
 
 app = create_app()
