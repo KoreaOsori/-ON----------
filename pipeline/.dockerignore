@@ -1,0 +1,7 @@
+# 비밀값·로컬 파일·개인 감사 스크립트는 이미지에 넣지 않는다 (API 키·DB 접속 정보는 실행할 때 Secrets Manager 에서 읽는다)
+.env
+.env.*
+.venv/
+**/__pycache__/
+**/*.pyc
+audit/

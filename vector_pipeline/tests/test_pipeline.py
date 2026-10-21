@@ -96,10 +96,9 @@ class DocumentTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_vector(vector, 2)
 
-    def test_region_is_required(self):
+    def test_region_falls_back_to_settings(self):
         with patch.dict(os.environ, {"AWS_REGION": "", "BEDROCK_REGION": ""}):
-            with self.assertRaises(ValueError):
-                EmbeddingConfig.from_env()
+            self.assertEqual(EmbeddingConfig.from_env().region, "us-east-1")
 
 
 class TempTests(unittest.TestCase):

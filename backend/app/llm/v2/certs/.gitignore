@@ -1,0 +1,2 @@
+# Public AWS RDS trust anchors, not a private key.
+!us-east-1-bundle.pem

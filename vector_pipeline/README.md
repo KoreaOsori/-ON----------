@@ -4,10 +4,10 @@
 
 ## 기존 인프라 연결 (EC2)
 
-저장소 설정은 us-east-1, EC2 역할 인증, 프라이빗 RDS 데이터베이스 `pill`, 버전 관리되는 데이터 버킷입니다. 이는 코드 확인 결과이며 실제 배포 상태·S3 객체·연결 성공을 확인한 것은 아닙니다. `pipeline/silver/build.py`는 로컬 `s3/silver/`에 파일을 생성합니다. 확인한 수집 진입점에는 S3 업로드 코드가 없으므로 별도 업로드 단계에서 Parquet과 메타데이터를 먼저 올리고 **`silver/_latest.json`을 마지막에** 올려야 합니다. 공개한 snapshot 경로는 덮어쓰지 않아야 합니다.
+저장소 설정은 us-east-1, EC2 역할 인증, 프라이빗 RDS 데이터베이스 `pill`, 버전 관리되는 데이터 버킷입니다. 이는 코드 확인 결과이며 실제 배포 상태·S3 객체·연결 성공을 확인한 것은 아닙니다. `pipeline/silver/build.py`는 로컬 `s3/silver/`에 파일을 생성합니다. 확인한 수집 진입점에는 S3 업로드 코드가 없으므로 별도 업로드 단계에서 두 제품의 data.parquet 업로드를 완료한 뒤 동기화 명령을 실행하세요. 현재 선택기는 `_latest.json`을 사용하지 않고 날짜 폴더의 실제 파일을 조회합니다.
 
-1. EC2에서 `vector_pipeline/.env.example`을 `.env`로 복사합니다.
-2. Terraform 출력 `data_bucket` → `DATA_BUCKET`, `rds_endpoint` → `PGHOST`, `rds_db_name` → `PGDATABASE`, `rds_master_secret_arn` → `RDS_SECRET_ARN`을 설정합니다. 실제 배포 리전으로 `AWS_REGION`과 `BEDROCK_REGION`을 확인합니다.
+1. `settings.toml`에 제공된 RDS 호스트·DB 이름·시크릿 이름과 us-east-1 리전이 설정되어 있습니다. `.env`는 필요하지 않습니다.
+2. EC2 역할에 해당 시크릿의 `secretsmanager:GetSecretValue` 권한이 있어야 합니다. S3 버킷은 settings.toml에 `pill-check-data-827913617635`, prefix는 `silver`로 설정되어 있습니다. 날짜 탐색에는 `s3:ListBucket` 권한도 필요합니다.
 3. RDS CA 번들을 `vector_pipeline/certs/global-bundle.pem`에 준비합니다. `output/`은 컨테이너 UID 10001이 쓸 수 있어야 합니다.
 4. 다음 명령은 `vector_pipeline/`에서 실행합니다. EC2용 override는 Linux host 네트워크를 사용하여 기존 IMDSv2 hop limit에서도 역할 인증에 접근합니다. 포트를 열거나 서비스를 상시 실행하지 않습니다.
 
@@ -22,9 +22,9 @@ docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline create-inde
 docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline ingest --input /app/output/silver-run-001 --cache /app/output/embedding-cache.sqlite --publish
 ```
 
-각 명령이 성공한 뒤 다음 단계로 진행하세요. `prepare-silver`는 완료 포인터를 한 번 읽어 두 제품 테이블의 날짜를 고정하고 Parquet 행의 snapshot도 확인합니다. `--snapshot YYYY-MM-DD`는 현재 포인터가 예상 날짜인지 확인하는 옵션입니다. 과거 스냅샷 재처리는 기존 `prepare --drug ... --health-food ...`를 사용합니다. 재실행할 때 완성된 bundle은 재생성하지 않고 embed/ingest부터 재개합니다.
+각 명령이 성공한 뒤 다음 단계로 진행하세요. `prepare-silver`는 두 제품의 data.parquet이 모두 있는 최신 공통 날짜를 선택하고 Parquet 행의 snapshot도 확인합니다. `--snapshot YYYY-MM-DD`로 특정 공통 날짜를 지정할 수 있습니다. 완성된 bundle의 실패 작업은 embed/ingest부터 재개할 수 있습니다.
 
-`RDS_SECRET_ARN`이 있으면 연결마다 username/password를 읽어 비밀번호 회전에 대응하고 파일에 저장하지 않습니다. 호스트·DB 이름은 환경변수로 지정합니다. 기존 배포의 `DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`도 지원하며 대응하는 `PG*` 설정이 우선합니다. Secret 지정 시 인증정보는 Secret이 우선합니다.
+`settings.toml`의 시크릿 이름으로 연결마다 username/password를 조회합니다. 비밀번호를 파일에 저장하지 않습니다. DB 설정은 이 파일만 사용하며 PG*/DB_* 환경변수로 덮어쓰지 않습니다. AWS 인증은 EC2 IAM 역할을 사용합니다.
 
 인프라 주석의 `rag`와 달리 이 파이프라인은 기존 **`product_search` 스키마를 유지**합니다. `gold` 및 백엔드 테이블을 변경하지 않으며 스키마 이름 자동 변경도 하지 않습니다. RDS 실제 사양·확장 권한·Titan 접근 권한·검색 지연시간은 EC2에서 별도 확인해야 합니다.
 
@@ -92,7 +92,7 @@ python -m unittest discover -s tests -v
 ## Docker 준비
 
 ```sh
-cp .env.example .env
+# settings.toml 사용: .env 복사 불필요
 mkdir -p input output certs
 sudo chown 10001:10001 output
 docker compose build
@@ -102,11 +102,11 @@ docker compose run --rm pipeline validate --input /app/output/full-v2
 
 Linux EC2 기준입니다. `input`에는 원본 Parquet, `output`에는 bundle과 SQLite 캐시를 둡니다. **`output` bind mount를 유지해야 컨테이너 재생성 후에도 재개할 수 있습니다.** 캐시를 EBS 등 지속되는 로컬 디스크에 두세요. SQLite WAL은 네트워크 파일시스템 공유용이 아닙니다. 캐시 DB를 백업할 때는 작업을 중지하거나 SQLite backup API를 사용해야 합니다.
 
-`.env`는 Compose만 자동으로 읽습니다. 로컬 Python은 환경변수를 직접 설정하세요. 실제 배포 리전을 추정하지 않도록 AWS_REGION/BEDROCK_REGION 기본값은 비워 두었습니다. 로컬 prepare/validate/tests에는 리전이 필요하지 않습니다.
+Compose는 `.env`를 컨테이너에 주입하지 않습니다. `settings.toml`을 읽기 전용 마운트합니다. 로컬 Python도 같은 파일을 읽으며 로컬 실행 시 인증서 경로는 로컬 경로로 수정해야 합니다.
 
 ## AWS 준비 후 임베딩
 
-`AWS_REGION`(S3), `BEDROCK_REGION`(임베딩)을 명시하세요. 현재 어댑터는 Titan Text Embeddings V2만 지원하며 기본 1,024차원, 256/512차원도 설정할 수 있습니다. 다른 모델을 지정하면 명시적으로 실패합니다. 실제 한국어 검색 품질은 별도 평가가 필요합니다.
+S3와 Secrets Manager 리전은 `settings.toml`의 aws.region을 사용합니다. 임베딩도 기본적으로 같은 리전의 Titan V2 1,024차원을 사용합니다. 임베딩 전용 환경변수 오버라이드는 호환성을 위해 유지합니다.
 
 ```sh
 docker compose run --rm pipeline embed --input /app/output/full-v2 --cache /app/output/embedding-cache.sqlite --workers 4 --batch-size 128
@@ -132,7 +132,7 @@ docker compose run --rm pipeline prepare --drug s3://BUCKET/silver/drug_product/
 
 ## RDS 준비 후 적재
 
-`PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`를 설정하고 RDS CA 번들을 `certs/global-bundle.pem`에 준비합니다. 기본 TLS는 `verify-full`입니다. 프라이빗 RDS에 접근 가능한 EC2 네트워크·보안 그룹이 필요하며 로컬 Compose가 자동으로 터널을 만들지는 않습니다.
+`settings.toml`의 DB 설정을 사용하고 RDS CA 번들을 `certs/global-bundle.pem`에 준비합니다. TLS는 `verify-full`입니다. RDS가 실행 중이어야 하며 EC2에서 RDS 5432 포트에 접근 가능해야 합니다.
 
 ```sh
 docker compose run --rm pipeline init-db
@@ -212,3 +212,34 @@ RDS 사양은 이 폴더에서 결정하지 않습니다. 고유 벡터 수 × �
 
 - [Titan V2 모델 규격](https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html)
 - [pgvector 적재 및 인덱싱](https://github.com/pgvector/pgvector#loading)
+
+## 환경변수 없이 DB 연결 확인
+
+RDS를 시작하고 Available 상태에서 EC2의 `vector_pipeline/` 디렉터리에서 실행하세요. 인증서가 준비되어 있어야 합니다. 다음 검사는 테이블을 만들거나 데이터를 변경하지 않습니다.
+
+```sh
+docker compose -f compose.yaml -f compose.ec2.yaml build
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline check-db
+```
+
+이번 변경은 모의 Secret 응답을 이용해 검증했습니다. 실제 RDS 시작·접속은 수행하지 않았습니다.
+
+## 최신 Silver → 벡터 DB 동기화
+
+기본 입력은 `s3://pill-check-data-827913617635/silver/`의 `drug_product/`, `health_food_product/`입니다. 각 폴더 아래 `snapshot=YYYY-MM-DD/data.parquet` 또는 `YYYY-MM-DD/data.parquet`을 지원합니다. 날짜는 S3 수정 시간이 아니라 폴더명으로 비교하며 목록 전체 페이지를 조회합니다. 0바이트 파일·임시 파일·잘못된 날짜는 제외합니다. 같은 테이블에 같은 날짜의 두 경로가 있으면 모호하므로 중단합니다.
+
+두 제품이 모두 있는 가장 최근 날짜를 사용합니다. 한쪽만 10월 16일이고 다른 쪽이 10월 15일까지 있으면 두 제품 모두 존재하는 10월 15일을 사용합니다. 공통 날짜가 없으면 중단합니다. 파일 존재만으로 수집 전체 완료까지 증명할 수는 없으므로 **업로드가 끝난 뒤 실행**해야 합니다.
+
+EC2에서 초기 한 번 `init-db`로 스키마를 준비하고 다음 명령을 실행하세요. 기존 DB 설정과 TLS 인증서 요구사항은 동일합니다.
+
+```sh
+docker compose -f compose.yaml -f compose.ec2.yaml build
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline init-db
+docker compose -f compose.yaml -f compose.ec2.yaml run --rm pipeline sync-silver
+```
+
+`sync-silver`는 DB 연결·스키마 확인 → 최신 날짜 선택 → 새 bundle 준비·검증 → 임베딩 캐시 재사용/생성 → 배치 적재 → 활성 스냅샷 공개를 수행합니다. 새 제품·변경 본문은 반영하고 삭제된 제품은 새 활성 스냅샷에서 제외합니다. 이전 run은 보존하며 물리적 정리는 prune으로 별도 수행합니다. 같은 날짜의 파일 수정도 다음 실행에 반영됩니다. 매번 새 bundle을 만들지만 같은 입력이면 동일 run 식별자와 캐시를 재사용합니다.
+
+임베딩 실패 시 공개하지 않고 종료 코드 2를 반환합니다. 기록된 실패를 다시 시도하려면 `sync-silver --retry-failed`를 사용하세요. 준비 결과는 `output/sync/`에 남고 캐시는 `output/embedding-cache.sqlite`에 유지됩니다. DB 적재 중 실패한 경우 출력 bundle을 지정한 `ingest --input ... --publish`로 체크포인트부터 재개할 수 있습니다. 이전 날짜로의 자동 공개는 기존 보호 장치로 차단됩니다.
+
+명령 한 번당 동기화 한 번을 수행합니다. 상시 감시나 스케줄러 설치는 포함하지 않으며 EC2의 기존 데이터 업로드 완료 단계에서 호출할 수 있습니다. 이번 검증은 모의 S3/DB 기반이며 실제 유료 임베딩·RDS 적재는 실행하지 않았습니다.

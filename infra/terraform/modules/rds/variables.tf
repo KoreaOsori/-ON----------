@@ -52,6 +52,12 @@ variable "backup_retention_days" {
   default = 7
 }
 
+variable "master_password_rotation_days" {
+  description = "마스터 비밀번호 자동 교체 주기 (일, 최대 1000)"
+  type        = number
+  default     = 365
+}
+
 variable "deletion_protection" {
   description = "true 면 삭제 방지. 프로젝트 종료 후 지울 때는 false 로 바꿔 apply 한 뒤 destroy"
   type        = bool

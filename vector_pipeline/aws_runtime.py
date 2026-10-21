@@ -2,11 +2,12 @@
 import json
 import os
 from datetime import date
+from config import settings
 
 
 def client(service):
     import boto3
-    region = os.getenv("AWS_REGION")
+    region = settings()["aws"]["region"]
     if not region:
         raise ValueError("AWS_REGION 설정이 필요합니다.")
     return boto3.client(service, region_name=region)
@@ -19,35 +20,44 @@ def silver_sources(bucket, prefix="silver", snapshot=None, s3=None):
     if not prefix or any(p in (".", "..") for p in prefix.split("/")):
         raise ValueError("잘못된 Silver prefix입니다.")
     s3 = s3 or client("s3")
-    # Even a date-selected run must be covered by the successful build pointer.
-    response = s3.get_object(Bucket=bucket, Key=f"{prefix}/_latest.json")
-    try:
-        pointer = json.loads(response["Body"].read())
-    finally:
-        response["Body"].close()
-    selected = snapshot or pointer["snapshot"]
-    if date.fromisoformat(selected).isoformat() != selected:
-        raise ValueError("snapshot은 YYYY-MM-DD 형식이어야 합니다.")
     tables = ("drug_product", "health_food_product")
-    if selected != pointer["snapshot"] or any(pointer.get("tables", {}).get(t) != selected for t in tables):
-        raise ValueError("Silver 완료 포인터와 두 제품 테이블의 snapshot이 일치해야 합니다.")
-    return {t: f"s3://{bucket}/{prefix}/{t}/snapshot={selected}/data.parquet" for t in tables}
+    available = {}
+    for table in tables:
+        base = f"{prefix}/{table}/"
+        found = {}
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=base):
+            for obj in page.get("Contents", []):
+                relative = obj["Key"][len(base):].split("/")
+                if len(relative) != 2 or relative[1] != "data.parquet" or obj.get("Size", 0) <= 0:
+                    continue
+                value = relative[0].removeprefix("snapshot=")
+                try:
+                    valid = date.fromisoformat(value).isoformat() == value
+                except ValueError:
+                    valid = False
+                if not valid:
+                    continue
+                if value in found:
+                    raise ValueError(f"같은 날짜의 경로가 중복됩니다: {table}/{value}")
+                found[value] = obj["Key"]
+        available[table] = found
+    common = set(available[tables[0]]) & set(available[tables[1]])
+    if not common or (snapshot and snapshot not in common):
+        raise ValueError("두 제품의 data.parquet이 모두 있는 날짜가 없습니다.")
+    selected = snapshot or max(common)
+    return {t: f"s3://{bucket}/{available[t][selected]}" for t in tables}
 
 
 def database_options(secret_client=None):
-    options = {}
-    for pg, alias, key in (("PGHOST", "DB_HOST", "host"), ("PGPORT", "DB_PORT", "port"),
-                           ("PGDATABASE", "DB_NAME", "dbname"), ("PGUSER", "DB_USERNAME", "user"),
-                           ("PGPASSWORD", "DB_PASSWORD", "password")):
-        value = os.getenv(pg) or os.getenv(alias)
-        if value:
-            options[key] = value
-    secret_id = os.getenv("RDS_SECRET_ARN")
+    db = settings()["database"]
+    options = {"host": db["host"], "port": db["port"], "dbname": db["name"],
+               "sslmode": db["sslmode"], "sslrootcert": db["sslrootcert"]}
+    secret_id = db["secret_id"]
     if secret_id:
         response = (secret_client or client("secretsmanager")).get_secret_value(SecretId=secret_id)
         secret = json.loads(response["SecretString"])
         # Resolve on each connection so RDS password rotations are respected.
         options.update(user=secret["username"], password=secret["password"])
     if not all(options.get(k) for k in ("host", "dbname", "user")):
-        raise ValueError("DB host/name/user 설정이 필요합니다. PG* 또는 DB_* 및 RDS_SECRET_ARN을 확인하세요.")
+        raise ValueError("settings.toml DB 설정 및 시크릿의 username/password를 확인하세요.")
     return options

@@ -42,9 +42,14 @@ data "aws_iam_policy_document" "app" {
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = var.secret_arns
   }
-  # LLM, 임베딩
+  # LLM, 임베딩 (EC2 안의 앱은 이 역할로 인증하므로 Bedrock API 키가 필요 없다)
   statement {
     actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = ["*"]
+  }
+  # Claude Messages API 엔드포인트 (bedrock-mantle). 백엔드의 AsyncAnthropicBedrockMantle 이 사용
+  statement {
+    actions   = ["bedrock-mantle:CreateInference", "bedrock-mantle:Get*", "bedrock-mantle:List*"]
     resources = ["*"]
   }
 }

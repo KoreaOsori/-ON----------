@@ -10,7 +10,12 @@
   5. 내용이 같은 중복 규칙 → 하나로 확정
   6. 제형 정확 일치
   7. 제형 분류 (제품은 '나정', 규칙은 '정제'처럼 표기 단위가 다름)
-  8. 남은 후보의 값(등급·연령 기준 등)이 모두 같으면 확정, 다르면 '조건별 복수' (예: 적응증별로 등급이 다른 규칙)
+  8. 비고(적응증·조건)가 품목 규칙과 같은 규칙만 남김 — 후보 중 비고가 서로 다를 때만 (2026-10-18 추가)
+     예: 세마글루티드 임부금기 — 품목 비고 '제2형 당뇨병' → 2등급 규칙, '비만 및 과체중 환자 체중관리' → 1등급 규칙
+         (그 전에는 46개 품목 규칙이 두 등급 모두 연결된 '조건별 복수'였음)
+     예: 대한5%쏠비톨주사액 용량주의 — 비고 없음 → 비고 없는 규칙 (그 전에는 'D-소르비톨 함유 아미노산 복합제' 규칙도 연결됨)
+  9. 남은 후보의 값(등급·연령 기준 등)이 모두 같으면 확정
+  10. 그래도 값이 다른 후보가 남으면 '조건별 복수'
 """
 
 import re
@@ -88,6 +93,9 @@ def link_rule(item, rules, value_column):
     if grouped and len({signature(r) for r in grouped}) == 1:
         return LINKED, "제형 분류", grouped
     remaining = exact or grouped or candidates
+    same_remark = [r for r in remaining if _no_space(r.get("remark")) == _no_space(item.get("remark"))]
+    if 0 < len(same_remark) < len(remaining) and len({signature(r) for r in same_remark}) == 1:
+        return LINKED, "비고", same_remark
     if value_column is None or len({r.get(value_column) for r in remaining}) == 1:
         return LINKED, "값 동일", remaining
     return MULTIPLE, "값이 다른 규칙", remaining

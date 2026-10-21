@@ -55,11 +55,11 @@ Thumbs.db
 
 
 # ---------- kkm -----------
-s3/*
-!s3/.gitkeep
+s3/
 trash
 docs
 memo.md
+pipeline/audit
 =======
 # ---------- codx analysis ----------
 .analysis_deps

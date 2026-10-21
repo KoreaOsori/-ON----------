@@ -1,4 +1,4 @@
-# 보안 그룹: 인터넷 → EC2(웹 80/443) → RDS(5432)
+# 보안 그룹: 인터넷 → EC2(웹 80) → RDS(5432). HTTPS 는 쓰지 않으므로 443 은 열지 않는다
 # EC2 접속은 SSM Session Manager 로 하므로 SSH(22) 는 열지 않는다.
 resource "aws_security_group" "ec2" {
   name        = "${var.name}-ec2"
@@ -8,7 +8,7 @@ resource "aws_security_group" "ec2" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "ec2_web" {
-  for_each          = toset(["80", "443"])
+  for_each          = toset(["80"])
   security_group_id = aws_security_group.ec2.id
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = tonumber(each.value)

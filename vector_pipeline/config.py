@@ -1,5 +1,12 @@
 import os
+import tomllib
+from pathlib import Path
 from dataclasses import dataclass
+
+
+def settings():
+    with Path(__file__).with_name("settings.toml").open("rb") as stream:
+        return tomllib.load(stream)
 
 
 @dataclass(frozen=True)
@@ -11,7 +18,7 @@ class EmbeddingConfig:
     @classmethod
     def from_env(cls):
         config = cls(
-            os.getenv("BEDROCK_REGION") or os.getenv("AWS_REGION", ""),
+            os.getenv("BEDROCK_REGION") or os.getenv("AWS_REGION") or settings()["aws"]["region"],
             os.getenv("EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"),
             int(os.getenv("EMBEDDING_DIMENSIONS", "1024")),
         )
