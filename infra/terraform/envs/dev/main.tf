@@ -1,4 +1,5 @@
 # 구성: VPC + EC2 1대(웹·백엔드·파이프라인) + RDS PostgreSQL 1대(gold / rag 스키마) + S3 데이터 버킷 + Secrets Manager
+#       + 파이프라인 정기 실행 스케줄 (매월 10일 02:00 KST)
 locals {
   name = "${var.project}-${var.environment}"
 }
@@ -45,4 +46,10 @@ module "ec2" {
   security_group_id = module.security.ec2_sg_id
   data_bucket_arn   = module.data_bucket.bucket_arn
   secret_arns       = [module.secrets.app_secret_arn, module.rds.master_user_secret_arn]
+}
+
+module "scheduler" {
+  source      = "../../modules/scheduler"
+  name        = local.name
+  instance_id = module.ec2.instance_id
 }

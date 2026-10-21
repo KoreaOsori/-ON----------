@@ -1,12 +1,13 @@
--- gold 스키마: 앱이 바로 조회하는 판정용 테이블. silver(_latest.json) 에서 load.py 가 매번 통째로 다시 만든다.
+-- gold 스키마: 앱이 바로 조회하는 판정용 테이블. S3 gold 파일(build.py 가 silver 로 만듦)을 load.py 가 매번 통째로 다시 채운다.
 -- 이 테이블들을 직접 고치지 말 것 (다음 적재 때 사라짐). 컬럼 설명은 docs/gold_table_spec.md
 -- 인덱스는 데이터를 넣은 뒤 load.py 가 만든다 (INDEXES 아래 블록)
 
 CREATE SCHEMA IF NOT EXISTS gold;
 
-DROP TABLE IF EXISTS gold.drug_contraindication, gold.drug_dur_caution, gold.drug, gold.health_food, gold.load_info;
+DROP TABLE IF EXISTS gold.drug_contraindication, gold.drug_dur_caution, gold.drug_ingredient, gold.drug, gold.health_food,
+    gold.load_info;
 
--- 의약품 제품 1개 = 1행 (판매 + 판매중지)
+-- 의약품 제품 1개 = 1행 (판매 + 판매중지). 판매중지 약은 공식 DUR 판정이 없다 (병용금기는 성분 규칙으로만 나옴)
 CREATE TABLE gold.drug (
     item_seq            text PRIMARY KEY,               -- 품목기준코드
     item_name           text NOT NULL,
@@ -21,7 +22,6 @@ CREATE TABLE gold.drug (
     chart               text,                           -- 성상 (모양·색 설명)
     image_url           text,
     item_permit_date    date,
-    is_dur_target       boolean NOT NULL,               -- DUR 품목 마스터에 있음. false 면 병용금기 "판정 불가"
     -- e약은요 (일반인용 쉬운 설명, 일부 제품만)
     easy_efcy           text,
     easy_use_method     text,
@@ -49,7 +49,8 @@ CREATE TABLE gold.drug_contraindication (
     mixture_ingr_names  text[],
     prohbt_content      text,                           -- 금기 내용
     remark              text,
-    notification_date   date                            -- 고시일
+    notification_date   date,                           -- 고시일
+    carried_from        date                            -- 품목 DUR 인데 이번 수집에서 빠져 이전 수집(이 날짜)에서 유지한 행. 평소 null
 );
 
 -- DUR 주의. 한 행 = 제품 × 품목 규칙 × 연결된 성분 규칙
@@ -78,6 +79,15 @@ CREATE TABLE gold.drug_dur_caution (
     rule_remark         text
 );
 
+-- 제품별 성분. 조합한 약끼리 ingr_key 가 같으면 동일 성분 중복 (예: 타이레놀 + 판콜에이 → 아세트아미노펜)
+CREATE TABLE gold.drug_ingredient (
+    item_seq            text NOT NULL REFERENCES gold.drug,
+    ingr_key            text NOT NULL,                  -- 같은 성분 판단 키: DUR 성분 코드(D코드), 없으면 정리한 원료 이름
+    ingr_name           text NOT NULL,
+    dur_ingr_code       text,                           -- DUR 성분 코드 (매핑된 경우만)
+    PRIMARY KEY (item_seq, ingr_key)
+);
+
 -- 건강기능식품 1개 = 1행 (식품안전나라 C003)
 CREATE TABLE gold.health_food (
     prdlst_report_no    text PRIMARY KEY,               -- 품목제조번호
@@ -97,13 +107,16 @@ CREATE TABLE gold.health_food (
 -- 적재 기록 (마지막 적재 1행)
 CREATE TABLE gold.load_info (
     silver_snapshot     date NOT NULL,
+    silver_written_at   text NOT NULL,                  -- 이 gold 를 만든 silver/_latest.json 의 written_at
+    gold_written_at     text NOT NULL,                  -- S3 gold/_latest.json 의 written_at. 같으면 이미 적재한 gold 라 건너뜀
     spec_version        text NOT NULL,
     loaded_at           timestamptz NOT NULL DEFAULT now(),
-    row_counts          jsonb NOT NULL
+    row_counts          jsonb NOT NULL,
+    carried_over        jsonb NOT NULL,                 -- 이전 수집에서 유지한 품목 DUR: {스냅샷: {products, rows, item_seqs}}
+    excluded            jsonb NOT NULL                  -- drug 에 없는 제품이 낀 품목 DUR (뺀 것): {rows, item_seqs}
 );
 
 -- INDEXES
-CREATE INDEX drug_item_name_idx ON gold.drug (item_name);
 CREATE INDEX drug_contraindication_pair_idx ON gold.drug_contraindication (item_seq, mixture_item_seq);
 CREATE INDEX drug_dur_caution_item_idx ON gold.drug_dur_caution (item_seq, caution_type);
-CREATE INDEX health_food_name_idx ON gold.health_food (prdlst_nm);
+CREATE INDEX drug_ingredient_key_idx ON gold.drug_ingredient (ingr_key);
