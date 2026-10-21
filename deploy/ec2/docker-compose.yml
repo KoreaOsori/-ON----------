@@ -15,12 +15,15 @@ services:
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "80:80"
+      - "0.0.0.0:80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - frontend
-      - backend
+    # nginx.conf 에서 Docker DNS 를 요청 시 조회하므로 앱 시작/재시작과 독립적으로 실행한다.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   frontend:
@@ -29,6 +32,9 @@ services:
       target: runner
       args:
         NEXT_PUBLIC_API_BASE_URL: ""  # 같은 주소(nginx)로 /api 호출
+    environment:
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
     restart: unless-stopped
 
   backend:
