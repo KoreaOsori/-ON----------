@@ -26,7 +26,7 @@ async def authorize(request: Request, key: str | None = Depends(api_key_header))
         raise HTTPException(401, "올바른 X-API-Key가 필요합니다.")
 
 
-router = APIRouter(prefix="/llm/v1", tags=["LLM v1"], dependencies=[Depends(authorize)])
+router = APIRouter(tags=["LLM v1"], dependencies=[Depends(authorize)])
 
 
 @router.get("/models")
@@ -71,5 +71,14 @@ async def lifespan(app: FastAPI):
         await app.state.llm_engine.dispose()
 
 
-app = FastAPI(title="약·건강기능식품 LLM v1 테스트", version="1.0.0", lifespan=lifespan)
-app.include_router(router)
+def create_app(*, route_prefix: str = "") -> FastAPI:
+    application = FastAPI(
+        title="약·건강기능식품 LLM v1 테스트", version="1.0.0", lifespan=lifespan,
+        docs_url="/docs", openapi_url="/openapi.json", redoc_url=None,
+    )
+    application.include_router(router, prefix=route_prefix)
+    return application
+
+
+# Preserve existing standalone :8011/llm/v1/* clients.
+app = create_app(route_prefix="/llm/v1")
