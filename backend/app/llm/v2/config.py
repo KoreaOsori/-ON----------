@@ -27,8 +27,9 @@ REGION = "us-east-1"
 DEFAULT_DB_HOST = "pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com"
 DEFAULT_DB_NAME = "pill"
 DEFAULT_DB_SECRET_ID = "rds!db-71cf9992-e13e-4601-88da-425ac219f336"  # Secrets Manager 시크릿 이름(비밀값 아님)
-# RDS 호스트일 때 PGSSLROOTCERT 가 없으면 v1 이 저장소에 두는 AWS 공식 RDS CA 번들을 읽기만 한다(v1 파일은 수정하지 않는다).
-DEFAULT_DB_CA_FILE = str(Path(__file__).resolve().parent.parent / "v1" / "certs" / "us-east-1-bundle.pem")
+# RDS 호스트일 때 PGSSLROOTCERT 가 없으면 v2 폴더에 둔 AWS 공식 RDS CA 번들(us-east-1)을 쓴다. v1 의 같은 파일을 복사한 것이라 v1 과 독립적이다.
+# CA 가 바뀌면 AWS 공식 번들(https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem)로 갱신한다.
+DEFAULT_DB_CA_FILE = str(Path(__file__).resolve().parent / "certs" / "us-east-1-bundle.pem")
 
 # 비교 대상 Claude 모델. backend/app/llm/v1/config.py 의 기본값(us. 추론 프로파일 ID)과 같은 값이다.
 # 이 값은 v1 쪽 설정을 그대로 가져온 것이며 v2 에서 실제 호출로 확인하지 않았다.

@@ -113,6 +113,40 @@ async def find_by_key(reader: Reader, run_id: str, product_key: str) -> dict[str
     return _product_rows(rows[:1])[0] if rows else None
 
 
+MAX_SECTION_CHUNKS = 100
+
+
+async def fetch_section_texts(
+    reader: Reader, run_id: str, product_key: str, section_type: str, limit: int = MAX_SECTION_CHUNKS
+) -> dict[str, Any]:
+    """제품 하나의 한 섹션 문단을 순서대로 전부 가져온다(임베딩·순위 없음).
+
+    건강기능식품 섭취 주의사항처럼 일부만 보여 주면 안 되는 내용에 쓴다. 같은 본문(content_hash)은 한 번만 담는다.
+    limit 을 넘으면 truncated=True 로 알리고 limit 개까지만 돌려준다.
+    """
+    if not PRODUCT_KEY_PATTERN.match(product_key):
+        raise ValueError("잘못된 product_key")
+    if section_type not in SECTION_TYPES:
+        raise ValueError("잘못된 section_type")
+    if not 1 <= limit <= 200:
+        raise ValueError("limit은 1~200이어야 합니다.")
+    rows = await reader.fetch(
+        "SELECT l.chunk_index, v.content_hash, v.content "
+        f"FROM {SCHEMA}.product_links l JOIN {SCHEMA}.product_vectors v USING (content_hash) "
+        "WHERE l.run_id = :run_id AND l.product_key = :product_key AND l.section_type = :section_type "
+        "ORDER BY l.chunk_index, v.content_hash LIMIT :limit",
+        {"run_id": run_id, "product_key": product_key, "section_type": section_type, "limit": limit + 1},
+    )
+    seen: set[str] = set()
+    chunks: list[str] = []
+    for row in rows[:limit]:
+        text = (row["content"] or "").strip()
+        if text and row["content_hash"] not in seen:
+            seen.add(row["content_hash"])
+            chunks.append(text)
+    return {"chunks": chunks, "truncated": len(rows) > limit}
+
+
 def filter_clause(
     run_id: str,
     product_keys: list[str] | None = None,

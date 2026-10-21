@@ -194,7 +194,7 @@ def test_db_defaults_match_v1_fixed_rds_when_pghost_is_unset():
     assert (settings.db_host, settings.db_name, settings.rds_secret_arn) == (DEFAULT_DB_HOST, DEFAULT_DB_NAME, DEFAULT_DB_SECRET_ID)
     assert settings.db_host.endswith(".rds.amazonaws.com") and settings.db_port == 5432
     assert settings.db_ssl_mode == "verify-full" and settings.db_ssl_root_cert == DEFAULT_DB_CA_FILE
-    assert DEFAULT_DB_CA_FILE.replace("\\", "/").endswith("/llm/v1/certs/us-east-1-bundle.pem")
+    assert DEFAULT_DB_CA_FILE.replace("\\", "/").endswith("/llm/v2/certs/us-east-1-bundle.pem")  # v1 파일을 참조하지 않는다
     # 시크릿 이름은 비밀값이 아니지만 repr 에 비밀번호가 나오지 않는 것은 그대로다
     assert settings.db_password is None
 
@@ -223,3 +223,21 @@ def test_default_ca_applies_only_to_rds_hosts():
     assert rds.db_ssl_root_cert == DEFAULT_DB_CA_FILE
     other = V2Settings.from_env({"PGHOST": "db.example.com", "PGDATABASE": "pill"})
     assert other.db_ssl_root_cert is None
+
+
+def test_bundled_rds_ca_file_exists_and_is_a_valid_trust_bundle():
+    import ssl
+    from pathlib import Path
+
+    from app.llm.v2.config import DEFAULT_DB_CA_FILE
+
+    path = Path(DEFAULT_DB_CA_FILE)
+    assert path.is_file() and "v1" not in path.parts
+    text = path.read_text(encoding="ascii")
+    assert text.count("-----BEGIN CERTIFICATE-----") == text.count("-----END CERTIFICATE-----") >= 1
+    assert "PRIVATE KEY" not in text  # 공개 신뢰 앵커만 들어 있어야 한다
+    context = ssl.create_default_context(cafile=str(path))
+    subjects = [dict(item[0] for item in cert["subject"]) for cert in context.get_ca_certs()]
+    assert subjects and all("Amazon RDS" in subject.get("organizationalUnitName", "") for subject in subjects)
+    assert build_ssl(make_settings(db_ssl_mode="verify-full", db_ssl_root_cert=str(path))).verify_mode == ssl.CERT_REQUIRED
+

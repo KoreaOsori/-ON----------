@@ -230,3 +230,35 @@ async def test_retrieve_marks_approximate_single_match():
     reader = FakeReader(lambda sql, params: ([PRODUCT] if params.get("value") == "타이레놀%" else []) if "SELECT DISTINCT" in sql else _handler()(sql, params))
     outcome = await retrieve(reader, make_settings(), "[1]", "타이레놀(아세트아미노펜)")
     assert outcome.status == "ok" and outcome.approximate is True and outcome.matched_as == "타이레놀"
+
+
+async def test_fetch_section_texts_binds_parameters_orders_and_dedupes():
+    from app.llm.v2.search import fetch_section_texts
+
+    rows = [
+        {"chunk_index": 0, "content_hash": "a", "content": " 첫 문단 "},
+        {"chunk_index": 1, "content_hash": "b", "content": "둘째 문단"},
+        {"chunk_index": 2, "content_hash": "a", "content": " 첫 문단 "},  # 같은 본문은 한 번만
+        {"chunk_index": 3, "content_hash": "c", "content": "   "},  # 빈 문단은 버린다
+    ]
+    reader = FakeReader(lambda sql, params: rows)
+    result = await fetch_section_texts(reader, "run1", "health_food:9", "precautions")
+    assert result == {"chunks": ["첫 문단", "둘째 문단"], "truncated": False}
+    sql, params = reader.calls[0]
+    assert params == {"run_id": "run1", "product_key": "health_food:9", "section_type": "precautions", "limit": 101}
+    assert "health_food:9" not in sql and "precautions" not in sql  # 값은 SQL 문자열에 이어 붙이지 않는다
+    assert "ORDER BY l.chunk_index" in sql and sql.count(":") == sql.count(":run_id") + sql.count(":product_key") + sql.count(":section_type") + sql.count(":limit")
+
+
+async def test_fetch_section_texts_reports_truncation_and_validates_inputs():
+    from app.llm.v2.search import fetch_section_texts
+
+    rows = [{"chunk_index": i, "content_hash": f"h{i}", "content": f"문단{i}"} for i in range(4)]
+    reader = FakeReader(lambda sql, params: rows)
+    result = await fetch_section_texts(reader, "run1", "drug:1", "usage", limit=3)
+    assert result["chunks"] == ["문단0", "문단1", "문단2"] and result["truncated"] is True
+    reader = FakeReader(lambda sql, params: [])
+    for bad in (("health_food:9; DROP", "precautions", 100), ("health_food:9", "nonsense", 100), ("health_food:9", "precautions", 0), ("health_food:9", "precautions", 201)):
+        with raises(ValueError):
+            await fetch_section_texts(reader, "run1", bad[0], bad[1], bad[2])
+    assert reader.calls == []  # 검증 실패는 DB 에 도달하지 않는다

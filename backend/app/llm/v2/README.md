@@ -83,7 +83,8 @@ app\llm\v2\dev_data\pipeline-venv\Scripts\python -m app.llm.v2.contra_index --pa
 
 - **켜는 방법**: `dev_data/contraindication.sqlite`가 있으면 자동으로 켜지고, 다른 위치는 `LLM_V2_CONTRA_DB`로 지정합니다(지정했는데 파일이 없으면 오류). 파일이 없으면 도구도 시스템 프롬프트의 안내도 빠집니다.
 - **안전 규칙(코드)**: 이름이 여러 제품으로 갈리면 임의로 고르지 않고 `[확인 필요]`로 되묻습니다(사용자가 고르면 `products`에 `product_key`를 넣어 다시 호출). 규칙이 없으면 "병용금기 규칙 없음 — 안전하다는 뜻이 아님"으로 전달하고, 근거 목록에는 "병용금기 자료 조회(해당 규칙 없음)"으로만 남깁니다.
-  건강기능식품은 이 자료로 확인할 수 없습니다. 조건·비고(예: "48시간 이내", "methotrexate 15mg 이상")는 반드시 함께 전합니다.
+  조건·비고(예: "48시간 이내", "methotrexate 15mg 이상")는 반드시 함께 전합니다.
+- **건강기능식품이 섞인 조합**: 병용금기(DUR) 자료는 의약품 전용이라 판정하지 않습니다(v1과 같은 정책). 대신 건강기능식품의 **섭취 주의사항(`precautions`)을 문단 단위로 전부** 돌려주고(임베딩 순위 없이 `fetch_section_texts`로 읽음), 모델에게는 "적힌 내용만 전하고 상호작용을 추정하거나 안전하다고 말하지 말 것"을 도구 결과와 프롬프트로 지시합니다. 의약품이 둘 이상이면 의약품끼리는 평소처럼 병용금기를 조회합니다. 글자 예산은 전체 6,000자(제품 수로 나눔, 제품당 최소 1,500자)이며 **문단 중간에서 자르지 않고**, 첫 문단은 항상 담습니다. 예산을 넘겨 못 담은 문단이 있으면 결과에 "일부 문단을 생략했습니다"를 적어 모델이 그 사실을 밝히게 합니다. 등록된 주의사항이 없는 제품은 "[확인 불가]"로 알립니다.
 - **한계**: 이 자료에 한 번도 등장하지 않는 제품은 "규칙 없음"과 "자료에 없음"을 구분할 수 없어, 결과에 "이 자료에 규칙이 하나도 등록돼 있지 않은 제품"을 표시합니다. 용량·질환 조건별 주의, 효능군 중복 등은 다루지 않습니다.
 - **운영 반영 시 결정 필요**: 지금은 로컬 파일입니다. 운영(EC2/RDS)에서는 이 인덱스를 배포물에 포함할지, RDS 테이블로 옮길지(그러면 `vector_pipeline` 쪽 적재가 필요) 팀에서 정해야 합니다.
 - **확인**: `uv run python -m app.llm.v2.evaluation.contra_eval --limit 100` — DB에 적재된 의약품 중 실제 병용금기 쌍(양성)과 규칙 없는 쌍(대조군)을 도구로 확인해, 양성은 key로 100% 규칙 있음·대조군은 100% 규칙 없음인지 봅니다(Bedrock 불필요).
@@ -169,13 +170,13 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변�
 - 검사는 `build_agent`(= HTTP API 시작, `answer()` 첫 호출)에서만 합니다. 평가 스크립트(`retrieval_eval` 등)는 영향받지 않습니다.
 - 오류 메시지에는 자격증명 값이 아니라 방식 이름(`env`, `iam-role` 등)만 나옵니다.
 
-**DB 연결** — `PGHOST`(또는 `DB_HOST`)가 **없으면** v1(`database.py`)과 같은 고정 RDS 설정을 씁니다: 호스트 `pill-check-dev-postgres…rds.amazonaws.com`, DB `pill`, 포트 5432, Secrets Manager 시크릿 `rds!db-71cf9992-…`(연결마다 새로 읽음), TLS `verify-full` + v1 저장소의 RDS CA 번들(`v1/certs/us-east-1-bundle.pem`, 읽기만 하며 수정하지 않음). 그래서 EC2에서는 DB 환경변수가 필요 없습니다.
+**DB 연결** — `PGHOST`(또는 `DB_HOST`)가 **없으면** v1(`database.py`)과 같은 고정 RDS 설정을 씁니다: 호스트 `pill-check-dev-postgres…rds.amazonaws.com`, DB `pill`, 포트 5432, Secrets Manager 시크릿 `rds!db-71cf9992-…`(연결마다 새로 읽음), TLS `verify-full` + v2 폴더의 RDS CA 번들(`v2/certs/us-east-1-bundle.pem`, v1의 같은 파일을 복사해 둔 것이라 v1과 독립적). 그래서 EC2에서는 DB 환경변수가 필요 없습니다.
 
 - `PGHOST`가 **있으면** 고정 설정을 쓰지 않고 환경변수만 씁니다(아래 "로컬 개발 DB"의 평가용 로컬 DB). 일부만 주면 나머지는 비어 오류로 드러납니다.
 - 고정 설정 위에서도 `PGDATABASE`, `RDS_SECRET_ARN`, `PGSSLROOTCERT`, `PGSSLMODE`로 항목별로 바꿀 수 있습니다.
 - `PGHOST`를 RDS 호스트(`*.rds.amazonaws.com`)로 직접 주고 `PGSSLROOTCERT`를 생략하면 같은 CA 번들을 씁니다. 그 밖의 호스트에는 적용하지 않습니다.
 - 주의: 로컬에서 `PGHOST`를 설정하지 않고 실행하면 위 고정 RDS에 연결을 시도합니다(VPC 밖이면 실패, 읽기 전용 연결).
-- v1 파일을 참조하므로 v1 폴더(`certs/`)가 배포에 포함돼야 합니다.
+- `v2/certs/us-east-1-bundle.pem`은 AWS 공식 RDS CA 번들(공개 신뢰 앵커 3개, 개인 키 아님)이며 `certs/.gitignore`로 git에 포함됩니다. CA가 바뀌면 [공식 번들](https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem)로 갱신하세요.
 
 ## 환경변수
 
@@ -185,7 +186,7 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변�
 | `PGHOST`, `PGPORT`, `PGDATABASE` (`DB_HOST` 등도 인식) | DB 위치. **`PGHOST`를 주면 v1 고정 RDS 설정 대신 환경변수만 사용** | v1 고정 RDS / 5432 / `pill` |
 | `RDS_SECRET_ARN` | 연결마다 여기서 사용자/비밀번호를 읽는다(시크릿 이름도 가능) | v1 고정 시크릿(`PGHOST`가 없을 때) |
 | `PGUSER`, `PGPASSWORD` | 시크릿을 쓰지 않을 때(로컬 개발) | — |
-| `PGSSLMODE`, `PGSSLROOTCERT` | `verify-full`(기본) / `require` / `disable`, RDS CA 번들 경로 | verify-full / v1 CA 번들(RDS 호스트일 때) |
+| `PGSSLMODE`, `PGSSLROOTCERT` | `verify-full`(기본) / `require` / `disable`, RDS CA 번들 경로 | verify-full / `v2/certs` CA 번들(RDS 호스트일 때) |
 | `LLM_V2_AUTH_MODE` | AWS 자격증명 정책 `auto` / `ec2_role` / `default_chain` (위 "AWS 자격증명과 DB 연결") | auto |
 | `LLM_V2_HAIKU_MODEL_ID`, `LLM_V2_SONNET_MODEL_ID` | 비교·기본 모델. 기본값은 v1 설정과 같은 추론 프로파일 ID이며 v2에서 실제 호출로는 미검증 | `us.anthropic.claude-haiku-5-5`, `us.anthropic.claude-sonnet-5-5` |
 | `LLM_V2_DEFAULT_MODEL` | `answer()`가 쓰는 모델 (`haiku` / `sonnet`) | haiku |
@@ -304,8 +305,9 @@ uv run pytest app/llm/v2/tests
 ## 확인된 것 / 확인되지 않은 것
 
 확인됨(작성 환경에서 실행):
-- 위 테스트 171개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
+- 위 테스트 184개가 통과했다(변이 확인: 근거 검사·허용 도구 검사를 지우면 해당 테스트가 실패한다).
 - 자격증명 정책(`aws_auth.py`)은 가짜 세션으로 엄격·완화·EC2 감지를, 설정 기본값은 `PGHOST` 유무에 따른 전환을 시험했다(정책 검사를 지우거나 항상 완화로 바꾸면 해당 테스트가 실패한다). **실제 EC2의 `iam-role` 판정과 DMI 감지는 이 환경에서 확인하지 못했다.**
+- 건강기능식품 주의사항(`check_contraindication`)은 가짜 DB로 문단 단위 자르기·예산 분배·생략 안내·주의사항 없음·이름 검색(의약품+건강기능식품)을 시험했다(예산 검사나 중복 제거를 지우면 해당 테스트가 실패한다). 원본 건강기능식품 데이터(`data/health_food`)의 '섭취 시 주의사항'은 45,938개 제품 중 44,270개(96%)에 있고 글자 수가 중앙값 140자·99% 533자·최대 1,242자라 6,000자 예산 안에 거의 항상 들어간다. **다만 파이프라인이 이 값을 DB에서 어떤 문단으로 나눠 `precautions`에 넣었는지(문단 개수)는 이 환경에서 확인하지 못했다.**
 - HTTP API(`api.py`)는 가짜 에이전트로 요청 검증·인증·상태 코드·동시 요청 제한·오류 비노출을 시험했다. 단, **`build_agent`가 실제 DB·Bedrock으로 앱을 띄우는 경로는 작성 환경에 SQLAlchemy가 없어 시험하지 못했다**(에이전트 자체는 평가 스크립트에서 실제로 동작을 확인).
 - 검색 SQL을 실제 PostgreSQL 16에서 `vector_pipeline/sql/init.sql` 스키마로 실행했다: 이름 단계(exact/prefix/contains), `%`·`_` 이스케이프, 악의적 입력 무해, 제품 범위 한정, 공유 본문의 `source_count`, 읽기 전용 트랜잭션의 쓰기 거부, 괄호 이름 처리(괄호 포함/제외 입력, 전각 괄호, 공백, 근사 일치, 후보 여럿 → 되묻기, `product_key` 지정). 제품명 변형 평가(`name_eval`)의 집계 로직도 같은 DB로 시험했다(3개 제품, 변형 6종). 병용금기 도구는 실제 `data.parquet`에서 만든 인덱스로, 같은 PostgreSQL에 적재한 실제 제품명·`item_seq`와 함께 시험했다(실제 규칙 쌍 9개 모두 확인, 규칙 없는 대조군 2쌍은 규칙 없음, 이름이 갈리는 입력은 되묻기). 단, **pgvector는 없어서** `vector` 타입과 `<=>`는 같은 모양의 대체물로 시험했다.
 
