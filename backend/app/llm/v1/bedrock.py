@@ -32,11 +32,11 @@ class Bedrock:
             return vector
         return await asyncio.to_thread(invoke)
 
-    async def generate(self, model_id: str, system: str, prompt: str) -> dict:
+    async def generate(self, model_id: str, system: str, prompt: str, *, max_tokens: int | None = None) -> dict:
         response = await asyncio.to_thread(
             self.client.converse, modelId=model_id, system=[{"text": system}],
             messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": self.settings.max_output_tokens},
+            inferenceConfig={"maxTokens": max_tokens or self.settings.max_output_tokens},
             additionalModelRequestFields={"thinking": {"type": "disabled"}})
         reason = response.get("stopReason")
         answer = "".join(block.get("text", "") for block in

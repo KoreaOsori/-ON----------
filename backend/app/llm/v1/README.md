@@ -20,16 +20,36 @@ EC2에서도 같은 명령을 사용하고 SSH 터널로 접속할 수 있다: `
 
 ```json
 {
-  "question": "이 제품의 효능을 알려주세요",
-  "intent": "efficacy",
-  "products": [{"name": "DB에 저장된 정확한 제품명", "product_type": "drug"}],
+  "question": "이 제품의 효능을 알려주세요.",
+  "products": ["DB에 저장된 실제 제품명"],
   "model": "haiku"
 }
 ```
 
-병용 질문은 `intent: "interactions"`와 서로 다른 제품 2~8개를 넣는다. 건강기능식품은 `product_type: "health_food"`다. `model`만 `sonnet`으로 변경해 같은 질문의 답변, `usage`, `latency_ms`를 비교한다. 모델 접근 권한·리전별 실제 품질/비용/속도는 EC2에서 확인해야 한다. 자동 모델 전환은 없으며 선택한 모델 실패를 그대로 알린다.
+`intent` 입력은 제거했다. `products`는 OCR에서 받은 **제품명 문자열 배열**(1~8개)이다. 제품 유형·ID 입력은 필요 없다. 모델은 `haiku` 또는 `sonnet`이며 생략하면 기본 모델을 사용한다.
 
-유사 이름·동일 이름 복수 후보·미등록 제품은 `needs_clarification`으로 반환한다. 후보의 제조사와 제품명을 사용자에게 확인받고 해당 입력에 `product_key`를 추가하여 전체 요청을 다시 보낸다. 이름 검색은 정확 일치 → 부분/철자 유사 후보 검색이며, 유사 후보를 자동 확정하지 않는다. 서버가 대화 상태를 저장하지 않는다. 백엔드에서 사용자 자연어를 전달할 때도 `intent`, 제품 목록을 함께 제공해야 한다.
+```json
+{
+  "question": "이 두 제품의 효능과 함께 먹을 때 주의사항을 알려주세요.",
+  "products": ["첫 번째 제품명", "두 번째 제품명"],
+  "model": "sonnet"
+}
+```
+
+서버가 gold에서 의약품/건기식과 제품 ID를 확인한다. 정확한 이름이 하나만 있으면 선택하며, 부분 일치·동일 이름 복수 후보·미등록은 `needs_clarification`으로 반환한다. 철자가 틀려 후보를 못 찾으면 제품명을 다시 요청한다. 후보는 제조사·함량·제품명을 확인해야 하며 자동 선택하지 않는다. 후속 요청은 같은 질문/이름 목록과 함께 선택한 후보를 `selections`로 보낸다. 처음에는 이 필드를 생략한다.
+
+```json
+{
+  "question": "이 제품의 효능을 알려주세요.",
+  "products": ["OCR에서 받은 이름"],
+  "selections": {"0": "drug:응답에서_선택한_실제_ID"},
+  "model": "haiku"
+}
+```
+
+`selections` 키는 products의 0부터 시작하는 위치다. 서버는 선택된 ID가 실제 존재하는지 다시 확인한다. 대화 상태는 서버에 저장하지 않는다.
+
+확인된 제품에 대해 짧은 Claude 호출(최대 200 출력 토큰)로 질문을 information/interactions/both/clarify로 분류한다. 효능·용법·주의사항·성분·보관도 구분한다. 분류 출력이 유효하지 않거나 질문이 모호하면 재질문한다. 단일 제품의 금기/부작용 질문은 일반 정보이고, 함께 복용하는 질문은 병용이다. 병용에는 서로 다른 제품 2개 이상이 필요하다. 분류는 확률적이므로 실제 질문 평가가 필요하다. LLM에는 성분 비교를 맡기지 않는다.
 
 ## 데이터 연결
 
@@ -59,33 +79,28 @@ python -m app.llm.v1.check_database
 
 AWS 참고: [GetSecretValue 권한](https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html), [RDS 관리형 시크릿](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-secrets-manager.html).
 
-기존 `vector_pipeline`으로 pgvector 스키마 v2를 생성하고 전체 snapshot을 publish해야 한다. `product_search.pipeline_config`의 임베딩 모델/차원/version이 일치해야 한다. 제품 선택 후 해당 제품의 `benefits`를 Titan V2 임베딩으로 순위 검색한다. 건강기능식품 병용은 해당 제품 `precautions` 전체를 읽는다. 한 질문은 repeatable-read 트랜잭션에서 하나의 run_id만 조회한다.
+현재 ask는 **gold 직접 조회**를 사용한다. 벡터 snapshot이나 임베딩 호출은 요구하지 않는다. 요청 전체는 repeatable-read/read-only 트랜잭션에서 처리하며 `gold.load_info`로 적재 버전을 표시한다. 실제 gold 테이블이 적재되어 있어야 하며 런타임 계정에 gold 스키마 USAGE/테이블 SELECT 권한이 필요하다.
 
-기존 파이프라인의 성분·DUR 자료는 silver Parquet이고 현재 백엔드에는 실제 병용금기 SQL 테이블이 없다. 따라서 추가 계약 `llm_v1.product_ingredients`, `llm_v1.contraindication`을 제공한다. 자동 성분명 추측이나 허가 원료 코드(mtral_code)를 DUR 코드로 간주하지 않는다. 실제 운영 전 검증된 **동일 DUR 코드 체계 매핑**과 금기 자료를 다음 JSON으로 준비한다. 아래 값은 형식 설명용이며 의료 데이터가 아니다.
+| 목적 | 원본 |
+| --- | --- |
+| 제품 이름·유형 | gold.drug / gold.health_food |
+| 의약품 효능·용법·주의 | doc_efficacy, doc_dosage, doc_precautions 및 easy_* |
+| DUR 주의 조건 | gold.drug_dur_caution 원문 전체 (조건별 복수 포함) |
+| 의약품 성분 | gold.drug_ingredient.ingr_key, ingr_name, dur_ingr_code |
+| 병용 규칙 | gold.drug_contraindication |
+| 건기식 기능성·섭취 방법·주의 | primary_fnclty, ntk_mthd, iftkn_atnt_matr_cn |
 
-```json
-{
-  "run_id": "vector_pipeline의 완료된 실제 run_id",
-  "code_system": "DUR",
-  "rules_complete": false,
-  "source": "원본 자료 식별자 및 버전",
-  "products": [
-    {"product_key":"drug:실제품목ID1","codes":["DUR_CODE_A"],"complete":false,"source":"검증된 매핑 출처"},
-    {"product_key":"drug:실제품목ID2","codes":["DUR_CODE_B"],"complete":false,"source":"검증된 매핑 출처"}
-  ],
-  "rules": [{
-    "rule_id":"원본 규칙 ID","left_codes":["DUR_CODE_A"],"right_codes":["DUR_CODE_B"],
-    "content":"병용금기 원문 전체","conditions":"제형·용량·대상 등 조건 및 예외 원문",
-    "source":"원본 규칙 출처 및 고시일"
-  }]
-}
-```
+Python이 각 의약품쌍의 성분과 DUR 코드를 읽고, 해당 제품쌍의 금기 규칙을 조회해 양방향으로 비교한다. gold 금기 테이블은 이미 제품쌍에 제형·복합제 조건을 적용한 데이터이므로 **다른 제품의 동일 성분 규칙을 가져와 적용하지 않는다**. `code_match`에 양쪽 성분 코드 비교 결과를 기록한다. 복합 코드 또는 매핑 누락 때문에 code_match가 false여도 정확한 제품쌍의 품목 DUR를 버리지 않는다.
 
-JSON을 v1 아래에 저장한 뒤 backend 디렉터리에서 `python -m app.llm.v1.load_safety app/llm/v1/safety-bundle.json`을 실행한다. DDL/INSERT 권한이 있는 적재 계정이 필요하다. CLI는 트랜잭션으로 테이블 생성·제품 존재 확인·적재를 수행한다. 동일 run 재적재는 덮어쓰지 않고 실패한다. 런타임 계정에는 두 스키마 USAGE와 테이블 SELECT만 부여한다. 실제 DB에 이 작업을 자동 실행하지는 않는다.
+- `basis=품목 DUR` → `contraindicated`: 공식 제품쌍 금기 확인.
+- `basis=성분 규칙` → `ingredient_caution`: 성분 기준 주의. 공식 품목 금기로 격상하지 않는다.
+- 규칙 없음 + 코드 누락/판매중지 → `unknown`.
+- 조회 조건이 충족되지만 규칙 없음 → `not_found`. 병용 안전 보장은 아니다.
+- `ingr_key`가 같으면 `duplicate_ingredients`로 별도 반환한다. 동일 성분 중복을 금기라고 단정하지 않는다.
 
-원본 `dur_contraindication`의 `level=성분`, `is_rule_valid=true`인 유효 규칙에서 좌우 DUR 코드를 준비한다. 복합 성분 배열은 **모든 성분이 함께 있어야 하는 조합**으로 비교된다. OR 대안은 별도 규칙 ID로 분리해야 한다. 원문의 조합·삭제 상태·조건을 검증하지 못하면 변환하지 않는다. `level=품목` 규칙은 이 성분 비교 계약의 지원 범위 밖이며, 해당 제약을 포함한 전체 커버리지가 검증되지 않았다면 `rules_complete=false`를 유지한다. 제품별 `complete`도 전 성분의 매핑을 확인한 경우에만 true로 설정한다. 이 코드에는 silver 원본에서 검증된 DUR 매핑을 자동 생성하는 기능이 없다.
+성분 매핑 여부는 조회 범위의 상태일 뿐 의료 데이터 전체의 완전성을 인증하지 않는다. `remark`, `notification_date`, `carried_from`, 원문 및 출처를 보존한다. 건기식이 포함된 병용은 건기식의 섭취 시 주의사항 원문을 추가한다. 건기식 상호작용을 추정하거나 의약품 DUR 판정으로 취급하지 않는다.
 
-Python이 각 의약품 쌍의 성분 집합을 양방향으로 비교한다. 조건 없는 일치=`contraindicated`, 조건 있는 일치=`conditional`, 완전한 조회에서 미발견=`not_found`, 불완전=`unknown`이다. 조건의 적용 여부는 자동 판단하지 않는다. 빈 DB·누락 성분·다른 snapshot은 안전 판정으로 처리하지 않는다. 약-건기식 및 건기식-건기식은 건기식 주의사항만 설명하며 정식 금기 판정은 제공하지 않는다.
+이전 `load_safety.py`, `sql/safety.sql`, SafetyBundle, 기존 compare 함수는 과거 계약 호환을 위해 남겨두었지만 **현재 ask에서는 사용하지 않는다**. 별도 llm_v1 금기 테이블이나 JSON 적재가 필요 없다. gold 데이터는 기존 파이프라인이 관리하며 이 모듈은 수정하지 않는다.
 
 ## 백엔드 호출
 
@@ -136,7 +151,9 @@ AWS 공식 문서에서 확인한 모델 ID를 기본 설정으로 사용한다(
 
 ## 토큰·정확성 및 테스트
 
-확인 질문은 LLM 호출 없이 반환한다. 제품 목록·질문을 명시 입력으로 받아 별도 추출 LLM 호출을 없앴다. 기본 효능 검색은 제품당 3개, 출력은 900토큰, 프롬프트는 18,000자 예산이다. 문자 예산은 정확한 토큰 수가 아니며 실제 값은 Bedrock `usage`로 확인한다. 주의사항/금기 조건은 임의로 잘라내지 않는다. 예산 초과 시 범위를 줄이도록 안내한다. 거리 임계값 0.65는 초기 설정이며 실제 평가 데이터로 조정해야 한다. 효능은 검색된 근거 일부에 대한 설명이며 전체 허가사항 요약을 보장하지 않는다.
+제품 확인 질문은 LLM 호출 없이 반환한다. 제품이 확정되면 분류 1회, 근거가 있으면 답변 생성 1회를 호출한다. gold 직접 조회로 임베딩 비용을 없앴다. 출력 기본 한도는 900토큰, 답변 프롬프트는 18,000자다. 조건·주의사항을 임의로 잘라내지 않으며 초과 시 질문 범위를 줄이도록 안내한다. 전체 원문이 긴 질문은 즉시 요약하지 못할 수 있다.
+
+`detected_intent`는 서버 분류 결과다. `usage.routing` 및 `usage.answer`에서 두 호출의 실제 토큰을 확인한다. `model`만 바꿔 동일 질문을 비교할 수 있다. 기존 `top_k`, 임베딩 설정·어댑터는 호환용으로 남아 있으나 현재 gold ask에서는 사용하지 않는다.
 
 응답의 `interaction_checks`, `evidence`, `warnings`를 답변과 함께 UI에 표시한다. 모델의 자연어 설명은 확률적이므로 구조화된 Python 판정이 기준이다. 거절·출력 길이 초과·미완료 답변은 정상 답변으로 반환하지 않는다. 근거 없음을 모델 지식으로 채우지 않는다.
 

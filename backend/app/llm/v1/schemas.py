@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -15,16 +15,24 @@ class ProductInput(StrictModel):
 
 
 class AskRequest(StrictModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {"question": "이 제품의 효능을 알려주세요.", "products": ["DB에 저장된 제품명"], "model": "haiku"},
+        {"question": "이 두 제품을 함께 먹어도 되나요?", "products": ["첫 번째 제품명", "두 번째 제품명"],
+         "model": "sonnet"},
+    ]})
     question: str = Field(min_length=1, max_length=1000)
-    intent: Literal["efficacy", "interactions"]
-    products: list[ProductInput] = Field(min_length=1, max_length=8)
+    products: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        min_length=1, max_length=8, description="OCR 제품명 목록. 유형과 ID는 서버에서 조회합니다.")
     model: Literal["sonnet", "haiku"] | None = None
+    selections: dict[int, str] = Field(default_factory=dict,
+        description="재확인할 때만 사용: products의 0부터 시작하는 위치 → 선택한 후보 product_key")
 
     @model_validator(mode="after")
-    def validate_pair(self):
-        if self.intent == "interactions" and len(self.products) < 2:
-            raise ValueError("병용 확인에는 제품을 2개 이상 입력하세요.")
+    def check_selections(self):
+        if any(i < 0 or i >= len(self.products) or len(key) > 200 for i, key in self.selections.items()):
+            raise ValueError("잘못된 후보 선택")
         return self
+
 
 
 class AskResponse(BaseModel):
@@ -39,6 +47,7 @@ class AskResponse(BaseModel):
     usage: dict = Field(default_factory=dict)
     latency_ms: int = 0
     run_id: str | None = None
+    detected_intent: str | None = None
 
 
 class IngredientProduct(StrictModel):
