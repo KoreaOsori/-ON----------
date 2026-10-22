@@ -40,7 +40,7 @@ services:
     build:
       context: ../../backend
       target: runtime
-    # DB 접속 정보는 Secrets Manager(pill-check/dev/app)에서 EC2 역할로 읽는다. 그 밖에 바꿀 값만 .env 에 (없어도 됨)
+    # DB 접속 정보·공공데이터 키는 Secrets Manager(pill-check/dev/app)에서 EC2 역할로 읽는다. 그 밖에 바꿀 값만 .env 에 (없어도 됨)
     environment:
       APP_ENV: dev
       DB_SECRET_ID: pill-check/dev/app
