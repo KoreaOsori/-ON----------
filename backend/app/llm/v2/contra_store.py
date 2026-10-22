@@ -32,6 +32,8 @@ class PairCheck:
     first: str
     second: str
     rules: list[ContraRule]
+    level: str = "product"  # product=제품 쌍(item_seq) 조회 | ingredient=성분 코드(D코드) 조회
+    unresolved: tuple[str, ...] = ()  # level=ingredient 에서 성분 코드를 찾지 못해 판정하지 못한 쪽(조회 키)
 
 
 @dataclass(frozen=True)

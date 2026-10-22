@@ -2,6 +2,8 @@
 
 사용자가 말한 제품명 2~5개 → 검색 DB 에서 제품 하나씩 확정(product_key 'drug:<item_seq>' 또는 'health_food:<id>') →
 의약품끼리는 병용금기 인덱스(contra_store)에서 모든 조합을 조회 → '[출처 | A × B | 병용금기(DUR)]' 형식의 근거 문자열.
+제품명으로 찾을 수 없는 이름은 성분 이름으로 한 번 더 찾는다(RDS 저장소일 때만): 성분이 낀 조합은 DUR 성분 코드로 조회하고,
+결과에 "성분 기준 조회라 제형 등 제품별 조건이 반영되지 않았다"는 점을 코드가 적는다.
 건강기능식품이 섞인 조합은 정식 병용금기 판정을 하지 않고, 그 제품의 섭취 주의사항(precautions)만 전부 보여 준다
 (v1 service.py 와 같은 정책: 상호작용 유무를 추정하지 않는다).
 
@@ -19,6 +21,7 @@ from itertools import combinations
 from typing import Any
 
 from app.llm.v2.config import V2Settings
+from app.llm.v2.contra_rds import ingredient_lookup_id
 from app.llm.v2.contra_store import LookupResult
 from app.llm.v2.db import ReaderFactory, safe_error_name
 from app.llm.v2.names import short_name
@@ -33,6 +36,11 @@ MAX_RULES_SHOWN = 5
 FOOD_TOTAL_CHARS = 6000  # 건강기능식품 주의사항 전체 글자 예산(제품 수로 나눔)
 MIN_FOOD_CHARS = 1500  # 제품당 최소 예산. 첫 문단은 예산과 상관없이 항상 담는다
 FOOD_LABEL = "건강기능식품"
+INGREDIENT_TYPE = "ingredient"
+INGREDIENT_CAVEAT = (
+    "[성분 기준 조회] 성분 이름이 낀 조합은 DUR 성분 코드로 조회했습니다. 제형 등 제품별 조건은 반영되지 않았고 복합제 규칙은 정확히 "
+    "맞지 않을 수 있습니다. 답변에서 이 점을 밝히고, 특정 제품 기준의 정확한 확인은 제품명으로 다시 물어보거나 약사·의사에게 확인하도록 안내하세요."
+)
 
 
 def build_contra_spec() -> dict[str, Any]:
@@ -41,6 +49,7 @@ def build_contra_spec() -> dict[str, Any]:
         "description": (
             "의약품 2~5개를 함께 복용해도 되는지, 등록된 병용금기(DUR) 자료에서 조합별로 확인한다. "
             "제품명은 사용자가 말한 이름을 그대로 넣는다(괄호 안 내용을 말했다면 포함, 말하지 않았다면 추측해서 넣지 않는다). "
+            "사용자가 제품이 아니라 성분 이름(예: 아세트아미노펜)을 말했으면 그 이름을 그대로 넣는다. "
             "[확인 필요] 후보 중 사용자가 고른 제품은 그 product_key를 이름 대신 넣는다. "
             "건강기능식품이 섞여 있으면 병용금기 판정은 할 수 없고, 그 제품의 섭취 주의사항만 보여 준다."
         ),
@@ -52,12 +61,19 @@ def build_contra_spec() -> dict[str, Any]:
                     "minItems": MIN_PRODUCTS,
                     "maxItems": MAX_PRODUCTS,
                     "items": {"type": "string", "maxLength": MAX_NAME_CHARS},
-                    "description": "함께 복용하려는 약·건강기능식품의 제품명(또는 product_key) 목록. 예: ['와파린정', '아스피린장용정100밀리그램']",
+                    "description": "함께 복용하려는 약·건강기능식품의 제품명(또는 성분 이름, product_key) 목록. 예: ['와파린정', '아스피린장용정100밀리그램']",
                 }
             },
             "required": ["products"],
         },
     }
+
+
+def _lookup_id(product: dict[str, Any]) -> str:
+    """병용금기 저장소의 조회 키: 제품은 item_seq, 성분은 'ingr:D코드[+D코드]'."""
+    if product["product_type"] == INGREDIENT_TYPE:
+        return ingredient_lookup_id(product["codes"])
+    return product["product_key"].split(":", 1)[1]
 
 
 def _fold(value: str) -> str:
@@ -98,21 +114,21 @@ class ContraindicationTool:
         return [next(i for i in items if i.lower() == key) for key in unique]
 
     # ------------------------------------------------------------------ 제품 확정
-    async def _resolve(self, reader: Any, run_id: str, text: str) -> tuple[dict[str, Any] | None, ToolResult | None, bool]:
-        """(제품, 사용자에게 돌려줄 결과(문제가 있을 때), 근사 일치 여부)."""
+    async def _resolve(self, reader: Any, run_id: str, text: str) -> tuple[dict[str, Any] | None, ToolResult | None, bool, bool]:
+        """(제품, 사용자에게 돌려줄 결과(문제가 있을 때), 근사 일치 여부, 이름으로 아무 제품도 못 찾았는지)."""
         folded = _fold(text)
         if PRODUCT_KEY_PATTERN.match(folded):
             product = await find_by_key(reader, run_id, folded)
             if product is None:
-                return None, ToolResult(f"[검색 결과 없음] product_key '{folded}'에 해당하는 제품이 없습니다. 제품명을 다시 확인해 달라고 안내하세요."), False
+                return None, ToolResult(f"[검색 결과 없음] product_key '{folded}'에 해당하는 제품이 없습니다. 제품명을 다시 확인해 달라고 안내하세요."), False, False
             approximate = False
         else:
             found = await find_products(reader, run_id, text)
             products = found["products"]
             if found["truncated"]:
-                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 제품이 너무 많습니다. 제품명을 더 구체적으로 알려 달라고 안내하세요."), False
+                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 제품이 너무 많습니다. 제품명을 더 구체적으로 알려 달라고 안내하세요."), False, False
             if not products:
-                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 의약품을 찾지 못했습니다. 제품명을 다시 확인해 달라고 안내하세요."), False
+                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 의약품을 찾지 못했습니다. 제품명을 다시 확인해 달라고 안내하세요."), False, True
             if len(products) > 1:
                 shown = products[:10]
                 lines = [
@@ -127,14 +143,35 @@ class ContraindicationTool:
                 if len(products) > len(shown):
                     lines.append(f"- …외 {len(products) - len(shown)}개")
                 candidates = [{k: p[k] for k in ("product_key", "product_name", "manufacturer")} for p in products]
-                return None, ToolResult("\n".join(lines), candidates=candidates), False
+                return None, ToolResult("\n".join(lines), candidates=candidates), False, False
             product, approximate = products[0], bool(found["approximate"])
         if product["product_type"] not in ("drug", "health_food"):
             return None, ToolResult(
                 f"[확인 불가] '{short_name(product['product_name'])}'은(는) 이 도구로 확인할 수 없는 종류입니다. "
                 "약사·의사에게 확인하도록 안내하세요."
-            ), False
-        return product, None, approximate
+            ), False, False
+        return product, None, approximate, False
+
+    async def _resolve_ingredient(self, reader: Any, text: str) -> tuple[dict[str, Any] | None, ToolResult | None]:
+        """제품으로 못 찾은 이름을 성분 이름으로 찾는다. (성분 항목, 안내 결과). 둘 다 None 이면 성분으로도 없다."""
+        finder = getattr(self._store, "find_ingredient", None)
+        if finder is None:  # SQLite 저장소는 성분 조회를 지원하지 않는다
+            return None, None
+        match, without_code = await finder(reader, _fold(text).strip())
+        if match is not None:
+            item = {
+                "product_key": f"{INGREDIENT_TYPE}:{'+'.join(match.codes)}",
+                "product_name": f"{match.name}(성분)",
+                "manufacturer": "",
+                "product_type": INGREDIENT_TYPE,
+                "codes": match.codes,
+            }
+            return item, None
+        if without_code:
+            return None, ToolResult(
+                f"[확인 불가] '{text}'은(는) 성분 이름으로는 있지만 DUR 성분 코드가 없어 병용금기를 확인할 수 없습니다. 약사·의사에게 확인하도록 안내하세요."
+            )
+        return None, None
 
     # ------------------------------------------------------------------ 실행
     async def run(self, arguments: Any) -> ToolResult:
@@ -152,7 +189,17 @@ class ContraindicationTool:
                 if run_id is None:
                     return ToolResult("[검색 불가] 공개된 의약품 정보가 아직 없습니다.", is_error=True)
                 for text in requested:
-                    product, problem, approximate = await self._resolve(reader, run_id, text)
+                    product, problem, approximate, not_found = await self._resolve(reader, run_id, text)
+                    if problem is not None and not_found:  # 제품명으로 아무것도 없으면 성분 이름으로 한 번 더 찾는다
+                        ingredient, ingredient_problem = await self._resolve_ingredient(reader, text)
+                        if ingredient is not None:
+                            notes.append(
+                                f"[참고] '{text}'은(는) 제품명으로 찾을 수 없어 성분 이름으로 확인했습니다. 답변에서 성분 기준 확인임을 밝히세요."
+                            )
+                            resolved.append(ingredient)
+                            continue
+                        if ingredient_problem is not None:
+                            return ingredient_problem
                     if problem is not None:
                         return problem
                     assert product is not None
@@ -169,10 +216,10 @@ class ContraindicationTool:
                 for key in keys:
                     if by_key[key]["product_type"] == "health_food":  # 같은 읽기 전용 트랜잭션에서 한 번에 읽는다
                         precautions[key] = await fetch_section_texts(reader, run_id, key, "precautions")
-                drug_keys = [key for key in keys if by_key[key]["product_type"] == "drug"]
+                drug_keys = [key for key in keys if by_key[key]["product_type"] in ("drug", INGREDIENT_TYPE)]
                 lookup = snapshot = None
-                if len(drug_keys) >= 2:  # 의약품이 둘 이상일 때만 병용금기 자료를 조회한다(RDS 저장소도 같은 읽기 전용 트랜잭션을 쓴다)
-                    lookup, snapshot = await self._store.lookup_with_snapshot(reader, [key.split(":", 1)[1] for key in drug_keys])
+                if len(drug_keys) >= 2:  # 의약품(또는 성분)이 둘 이상일 때만 병용금기 자료를 조회한다(RDS 저장소도 같은 읽기 전용 트랜잭션을 쓴다)
+                    lookup, snapshot = await self._store.lookup_with_snapshot(reader, [_lookup_id(by_key[key]) for key in drug_keys])
         except Exception as exc:  # noqa: BLE001 - 상세 메시지는 남기지 않는다.
             logger.error("check_contraindication 실패: %s", safe_error_name(exc))
             return ToolResult("[검색 오류] 지금은 병용금기 정보를 조회할 수 없습니다.", is_error=True)
@@ -214,6 +261,11 @@ def _rule_lines(pair_rules: list, limit: int) -> list[str]:
     return lines
 
 
+def _ingredient_only(rules: list) -> bool:
+    """모든 규칙이 '성분 규칙'(성분 단위 주의)인가. 품목 DUR 이 하나라도 있거나 규칙 종류를 모르면(SQLite) 금기로 본다."""
+    return bool(rules) and all(rule.basis == "성분 규칙" for rule in rules)
+
+
 def format_lookup(
     lookup: LookupResult, products_by_seq: dict[str, dict[str, Any]], snapshot: str | None, notes: list[str] | None = None
 ) -> ToolResult:
@@ -222,10 +274,28 @@ def format_lookup(
     blocks: list[str] = list(notes or [])
     when = f"자료 기준일 {snapshot} | " if snapshot else ""
     blocks.append(f"[병용금기 확인 | {when}확인한 제품 {len(names)}개]")
+    if any(pair.level == "ingredient" for pair in lookup.pairs):
+        blocks.append(INGREDIENT_CAVEAT)
     evidence: list[Evidence] = []
     for pair in lookup.pairs:
         label = f"{names[pair.first]} × {names[pair.second]}"
-        if pair.rules:
+        if pair.unresolved:
+            who = ", ".join(names[key] for key in pair.unresolved)
+            blocks.append(
+                f"■ {label} — [확인 불가] 성분 코드를 찾지 못한 제품({who})이 있어 성분 단위로는 확인하지 못했습니다. "
+                "병용금기 규칙이 없다는 뜻이 아닙니다. 약사·의사에게 확인하도록 안내하세요."
+            )
+            continue
+        if pair.rules and _ingredient_only(pair.rules):
+            # 성분 규칙만 있는 조합: 식약처가 제품에 적용한 품목 단위 금기와 구분해 '성분 기준 주의'로 전한다.
+            lines = [f"■ {label} — 성분 기준 주의 규칙 있음(품목 단위 병용금기는 아님)", f"[출처 | {label} | 병용 주의(성분 기준)]"]
+            lines += _rule_lines(pair.rules, MAX_RULES_SHOWN)
+            lines.append(
+                "안내: 이 조합은 성분 단위 규칙으로 등록된 주의입니다. '병용금기'라고 단정하지 말고 "
+                "'성분 기준으로 주의가 필요한 조합으로 등록돼 있다'고 전하세요."
+            )
+            evidence.append(Evidence(label, "", "contraindication_ingredient", 1, display=label))
+        elif pair.rules:
             lines = [f"■ {label} — 병용금기 규칙 있음", f"[출처 | {label} | 병용금기(DUR)]"]
             lines += _rule_lines(pair.rules, MAX_RULES_SHOWN)
             evidence.append(Evidence(label, "", "contraindication", 1, display=label))
@@ -301,7 +371,7 @@ def format_combination(
 ) -> ToolResult:
     """의약품 쌍의 병용금기 결과(있으면)와 건강기능식품 주의사항(있으면)을 한 결과로 합친다."""
     notes = list(notes or [])
-    drugs_by_seq = {key.split(":", 1)[1]: by_key[key] for key in keys if by_key[key]["product_type"] == "drug"}
+    drugs_by_seq = {_lookup_id(by_key[key]): by_key[key] for key in keys if by_key[key]["product_type"] in ("drug", INGREDIENT_TYPE)}
     parts: list[str] = []
     evidence: list[Evidence] = []
     if lookup is not None:

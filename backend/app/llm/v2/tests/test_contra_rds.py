@@ -57,6 +57,41 @@ async def test_reverse_direction_is_used_when_only_one_side_is_stored_and_names_
     assert len([1 for sql, _ in reader.calls if "mixture_item_seq = :second" in sql]) == 2
 
 
+async def test_ingredient_only_pair_is_reported_as_ingredient_level_caution_not_contraindication():
+    tool, _ = _tool([_rule("100", "200", content="심실성빈맥", basis="성분 규칙")])
+    result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})
+    text = result.text
+    assert "성분 기준 주의 규칙 있음(품목 단위 병용금기는 아님)" in text
+    assert "[출처 | 와파린정 × 아스피린장용정100밀리그램 | 병용 주의(성분 기준)]" in text
+    assert "금기 내용: 심실성빈맥" in text and "규칙 종류: 성분 규칙" in text
+    assert "'병용금기'라고 단정하지 말고" in text
+    assert "병용금기 규칙 있음" not in text
+    assert [e.section_type for e in result.evidence] == ["contraindication_ingredient"]
+    assert [e.label for e in result.evidence] == ["와파린정 × 아스피린장용정100밀리그램 · 병용 주의(성분 기준)"]
+
+
+async def test_pair_with_product_dur_stays_contraindication_even_if_ingredient_rules_exist_too():
+    tool, _ = _tool([_rule("100", "200", basis="성분 규칙", content="성분 단위"), _rule("100", "200", basis="품목 DUR")])
+    result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})
+    assert "병용금기 규칙 있음" in result.text and "성분 기준 주의" not in result.text
+    assert [e.section_type for e in result.evidence] == ["contraindication"]
+
+
+async def test_mixed_pairs_are_labeled_per_pair():
+    tool, _ = _tool([_rule("100", "200", basis="품목 DUR"), _rule("100", "300", basis="성분 규칙", content="성분 단위")])
+    result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램", "타이레놀정500밀리그램"]})
+    assert sorted(e.section_type for e in result.evidence) == ["contraindication", "contraindication_ingredient", "contraindication_none"]
+
+
+def test_prompt_and_outcome_know_ingredient_level_caution():
+    from app.llm.v2.evaluation.contra_eval import outcome_of
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM
+    from app.llm.v2.tools import Evidence, ToolResult
+
+    assert "성분 기준 주의 규칙 있음" in CONTRA_PROMPT_ADDENDUM and "'병용금기'라고 하지 말고" in CONTRA_PROMPT_ADDENDUM
+    assert outcome_of(ToolResult("x", [Evidence("a", "", "contraindication_ingredient", 1)])) == "found"
+
+
 async def test_ingredient_rules_are_labeled_and_product_dur_comes_first_and_duplicates_collapse():
     rules = [
         _rule("100", "200", content="성분 단위 사유", basis="성분 규칙"),
@@ -116,3 +151,148 @@ async def test_health_food_combination_does_not_touch_the_rule_table():
     result = await tool.run({"products": ["와파린정", "홍삼정"]})
     assert not result.is_error and "병용금기 판정 불가" in result.text
     assert not any("gold.drug_contraindication" in sql for sql, _ in reader.calls)
+
+
+# ----------------------------------------------------------------------------- 성분 이름 / 성분 코드 조회
+
+# 제품별 성분(gold.drug_ingredient): item_seq → DUR 성분 코드
+DRUG_INGREDIENTS = [
+    {"item_seq": "100", "ingr_name": "와파린나트륨", "dur_ingr_code": "D000001"},
+    {"item_seq": "200", "ingr_name": "아스피린", "dur_ingr_code": "D000002"},
+    {"item_seq": "300", "ingr_name": "아세트아미노펜", "dur_ingr_code": "D000147"},
+    {"item_seq": "310", "ingr_name": "코드없는원료", "dur_ingr_code": None},
+]
+# 성분 이름 → 코드 (제품과 연결되지 않은 이름도 있을 수 있어 별도 목록 + 위 목록 모두에서 찾는다)
+INGREDIENT_NAMES = DRUG_INGREDIENTS + [
+    {"item_seq": "999", "ingr_name": "케토코나졸", "dur_ingr_code": "D000769"},
+    {"item_seq": "999", "ingr_name": "트리아졸람", "dur_ingr_code": "D000592"},
+    {"item_seq": "998", "ingr_name": "이름만있는성분", "dur_ingr_code": None},
+]
+
+
+def _crow(code, mix_code, content="출혈 위험 증가", remark=None, basis="품목 DUR", names=("와파린", "아스피린"), date=datetime.date(2012, 3, 2)):
+    return {
+        "ingr_code": code, "mixture_ingr_code": mix_code, "ingr_names": [names[0]], "mixture_ingr_names": [names[1]],
+        "prohbt_content": content, "remark": remark, "notification_date": date, "basis": basis,
+        "item_seq": "x", "mixture_item_seq": "y",
+    }
+
+
+def _ingredient_handler(rows, base=_db):
+    def handler(sql, params):
+        if "gold.drug_ingredient" in sql:
+            if "WHERE ingr_name = :name" in sql:
+                return [{"ingr_name": r["ingr_name"], "dur_ingr_code": r["dur_ingr_code"]} for r in INGREDIENT_NAMES if r["ingr_name"] == params["name"]]
+            assert "item_seq = :seq" in sql
+            return [{"dur_ingr_code": r["dur_ingr_code"]} for r in DRUG_INGREDIENTS if r["item_seq"] == params["seq"] and r["dur_ingr_code"]]
+        if "gold.drug_contraindication" in sql and "ANY(:codes)" in sql:
+            return [{"hit": 1}] if any(r["ingr_code"] in params["codes"] for r in rows) else []
+        if "ANY(:first_codes)" in sql:
+            groups: dict[tuple, dict] = {}
+            for r in rows:
+                if r["ingr_code"] in params["first_codes"] and r["mixture_ingr_code"] in params["second_codes"]:
+                    key = (r["ingr_code"], r["mixture_ingr_code"], r["prohbt_content"], r["remark"], r["basis"])
+                    groups.setdefault(key, {"first_name": r["ingr_names"][0], "second_name": r["mixture_ingr_names"][0],
+                                            "prohbt_content": r["prohbt_content"], "remark": r["remark"], "basis": r["basis"],
+                                            "notification_date": r["notification_date"]})
+            return list(groups.values())[: params["limit"]]
+        if "gold.drug_contraindication" in sql:  # 제품 쌍 조회/보유 확인은 이 테스트에서 쓰지 않는 길
+            return []
+        return base(sql, params)
+
+    return handler
+
+
+def _ingredient_tool(rows):
+    reader = FakeReader(_ingredient_handler(rows))
+    return ContraindicationTool(make_settings(), FakeReaderFactory(reader), RdsContraStore()), reader
+
+
+async def test_ingredient_name_is_used_when_no_product_matches_and_result_carries_the_caveat():
+    tool, reader = _ingredient_tool([_crow("D000001", "D000147", content="출혈 위험 증가", remark="고용량 병용 시", names=("와파린", "아세트아미노펜"))])
+    result = await tool.run({"products": ["와파린정", "아세트아미노펜"]})
+    text = result.text
+    assert not result.is_error
+    assert "[참고] '아세트아미노펜'은(는) 제품명으로 찾을 수 없어 성분 이름으로 확인했습니다" in text
+    assert "[성분 기준 조회]" in text and "제형 등 제품별 조건은 반영되지 않았고" in text
+    assert "■ 와파린정 × 아세트아미노펜(성분) — 병용금기 규칙 있음" in text
+    assert "금기 내용: 출혈 위험 증가" in text and "조건·비고: 고용량 병용 시" in text and "규칙 종류: 품목 DUR" in text
+    assert [e.section_type for e in result.evidence] == ["contraindication"]
+    pair_calls = [p for sql, p in reader.calls if "ANY(:first_codes)" in sql]
+    assert pair_calls == [{"first_codes": ["D000001"], "second_codes": ["D000147"], "limit": 20}]  # 제품 쪽 코드는 drug_ingredient 에서 가져온다
+
+
+async def test_two_ingredients_check_the_code_pair_and_ingredient_only_rules_stay_caution():
+    rows = [_crow("D000769", "D000592", content="작용 증가", basis="성분 규칙", names=("케토코나졸", "트리아졸람"))]
+    tool, _ = _ingredient_tool(rows)
+    result = await tool.run({"products": ["케토코나졸", "트리아졸람"]})
+    assert "성분 기준 주의 규칙 있음(품목 단위 병용금기는 아님)" in result.text and "[성분 기준 조회]" in result.text
+    assert [e.section_type for e in result.evidence] == ["contraindication_ingredient"]
+
+
+async def test_ingredient_pair_reads_the_reverse_direction_when_only_that_is_stored_and_flips_names():
+    tool, _ = _ingredient_tool([_crow("D000592", "D000769", content="작용 증가", names=("트리아졸람", "케토코나졸"))])
+    result = await tool.run({"products": ["케토코나졸", "트리아졸람"]})
+    assert "성분: 케토코나졸 × 트리아졸람" in result.text  # 질문에서 앞에 놓은 성분이 앞에 온다
+
+
+async def test_ingredient_pair_without_rule_is_not_called_safe_and_still_has_the_caveat():
+    tool, _ = _ingredient_tool([_crow("D000769", "D000592", names=("케토코나졸", "트리아졸람"))])
+    result = await tool.run({"products": ["아세트아미노펜", "트리아졸람"]})
+    assert "병용금기 규칙 없음" in result.text and "안전하다는 뜻이 아닙니다" in result.text and "[성분 기준 조회]" in result.text
+    assert [e.section_type for e in result.evidence] == ["contraindication_none"]
+
+
+async def test_unknown_names_and_ingredients_without_dur_code_are_reported_not_guessed():
+    tool, _ = _ingredient_tool([])
+    result = await tool.run({"products": ["와파린정", "없는성분"]})
+    assert result.text.startswith("[검색 결과 없음]") and "없는성분" in result.text
+    result = await tool.run({"products": ["와파린정", "이름만있는성분"]})
+    assert result.text.startswith("[확인 불가]") and "DUR 성분 코드가 없어" in result.text
+
+
+async def test_drug_without_ingredient_code_is_marked_unresolved_instead_of_no_rule():
+    tool, _ = _ingredient_tool([_crow("D000001", "D000147")])
+    result = await tool.run({"products": ["와파린정", "아세트아미노펜", "타이레놀8시간정"]})
+    text = result.text
+    assert "성분 코드를 찾지 못한 제품(타이레놀8시간정)이 있어 성분 단위로는 확인하지 못했습니다" in text
+    assert text.count("[확인 불가]") == 1  # 아세트아미노펜(성분) × 타이레놀8시간정 만. 제품 × 제품(와파린정 × 타이레놀8시간정)은 제품 쌍으로 조회한다
+    assert sorted(e.section_type for e in result.evidence) == ["contraindication", "contraindication_none"]
+
+
+async def test_product_name_wins_over_ingredient_lookup_and_ambiguity_is_not_hidden():
+    tool, reader = _ingredient_tool([_crow("D000001", "D000147")])
+    result = await tool.run({"products": ["와파린정", "타이레놀"]})  # 제품이 여럿 → 되묻기. 성분으로 넘어가지 않는다
+    assert result.text.startswith("[확인 필요]")
+    assert not any("gold.drug_ingredient" in sql for sql, _ in reader.calls)
+
+
+async def test_ingredient_and_health_food_combination_keeps_the_food_policy():
+    tool, _ = _ingredient_tool([_crow("D000001", "D000147")])
+    result = await tool.run({"products": ["아세트아미노펜", "홍삼정"]})
+    assert "병용금기 판정 불가" in result.text and "혈압강하제" in result.text
+
+
+async def test_sqlite_store_has_no_ingredient_fallback():
+    import tempfile
+    from pathlib import Path
+
+    from app.llm.v2.contra_index import build_index
+    from app.llm.v2.contra_store import ContraStore
+
+    path = Path(tempfile.mkdtemp()) / "c.sqlite"
+    build_index([], path)
+    reader = FakeReader(_db)
+    tool = ContraindicationTool(make_settings(), FakeReaderFactory(reader), ContraStore(path))
+    result = await tool.run({"products": ["와파린정", "아세트아미노펜"]})
+    assert result.text.startswith("[검색 결과 없음]")
+
+
+async def test_find_ingredient_collects_every_code_for_the_same_name():
+    rows = [
+        {"ingr_name": "가나성분", "dur_ingr_code": "D000010"}, {"ingr_name": "가나성분", "dur_ingr_code": "D000011"},
+        {"ingr_name": "가나성분", "dur_ingr_code": None},
+    ]
+    reader = FakeReader(lambda sql, params: rows)
+    match, without_code = await RdsContraStore().find_ingredient(reader, "가나성분")
+    assert match.codes == ("D000010", "D000011") and without_code is False
