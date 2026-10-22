@@ -397,3 +397,72 @@ def test_fixed_no_evidence_messages_explain_what_the_bot_can_do():
         assert "약 이름" in text and "병용 주의사항" in text and "약사나 의사" in text
     assert "등록된 정보에서 확인할 수 없어요" in NO_EVIDENCE_ANSWER  # 없는 제품 시나리오(S10)가 기대하는 문구
     assert "지원하지 않아요" in OUT_OF_SCOPE_ANSWER and "증상" in OUT_OF_SCOPE_ANSWER and "성분" in OUT_OF_SCOPE_ANSWER
+
+
+# ---- 응답 문구 정책: 중단 상담 / 범위 밖 / 응급+되묻기 / 건기식 병용 되묻기
+
+async def test_stop_question_gets_consult_answer_without_model_or_tools():
+    from app.llm.v2.prompts import STOP_CONSULT_ANSWER
+
+    model = ScriptedModel()
+    result = await make_agent(model, FakeTool(FOUND)).run("와파린 먹는 중인데 약을 끊어도 돼요?")
+    assert result.stop_reason == "consult" and result.answer == STOP_CONSULT_ANSWER and not result.grounded
+    assert model.calls == [] and result.tools_used == []
+    assert "상담" in result.answer and "끊으세요" not in result.answer and "계속" not in result.answer
+
+
+def test_stop_pattern_catches_decisions_but_not_label_questions():
+    from app.llm.v2.safety import is_stop_question
+
+    for text in ("약을 끊어도 돼요?", "복용 중단해도 되나요", "혈압약 그만 먹어도 괜찮아요?", "이제 안 먹어도 될까요"):
+        assert is_stop_question(text), text
+    for text in ("다이크로짇정은 언제 복용을 중단해야 하나요", "아로나민골드정은 하루에 몇 번 먹어요?", "타이레놀 먹어도 돼요?"):
+        assert not is_stop_question(text), text
+
+
+async def test_stop_question_with_emergency_keeps_the_119_path():
+    model = ScriptedModel(response(text_block("")))
+    result = await make_agent(model, FakeTool(FOUND)).run("약 먹고 숨이 안 쉬어지는데 끊어도 돼요?")
+    assert result.emergency and result.stop_reason == "no_evidence" and result.answer == EMERGENCY_NOTICE
+
+
+async def test_off_topic_marker_gets_non_drug_answer_but_never_model_text():
+    from app.llm.v2.prompts import NON_DRUG_ANSWER, OFF_TOPIC_MARKER
+
+    model = ScriptedModel(response(text_block(OFF_TOPIC_MARKER)))
+    result = await make_agent(model, FakeTool(FOUND)).run("오늘 서울 날씨가 어때요?")
+    assert result.answer == NON_DRUG_ANSWER and result.stop_reason == "no_evidence" and "지원하지 않아요" not in result.answer
+    model = ScriptedModel(response(text_block("오늘은 맑아요.")))  # 표시가 없으면 기존 범위 안내
+    result = await make_agent(model, FakeTool(FOUND)).run("오늘 서울 날씨가 어때요?")
+    assert result.answer == OUT_OF_SCOPE_ANSWER and "맑아요" not in result.answer
+
+
+async def test_emergency_with_clarification_is_only_the_119_notice():
+    model = ScriptedModel(response(search_call()), response(text_block("어느 제품이에요?")))
+    result = await make_agent(model, FakeTool(CLARIFY)).run("타이레놀 먹었는데 호흡곤란이 와요")
+    assert result.emergency and result.answer == EMERGENCY_NOTICE
+    assert result.stop_reason == "no_evidence" and result.candidates == []
+
+
+async def test_clarification_for_food_combination_adds_consult_note():
+    from app.llm.v2.contra_tool import CONTRA_TOOL_NAME
+    from app.llm.v2.prompts import FOOD_COMBINATION_NOTE
+
+    food = ToolResult(
+        "[확인 필요] ...",
+        candidates=[
+            {"product_key": "health_food:1", "product_name": "고려인삼분말캡슐", "manufacturer": "A사"},
+            {"product_key": "health_food:2", "product_name": "고려인삼분말캡슐", "manufacturer": "B사"},
+        ],
+    )
+    model = ScriptedModel(response(contra_call()), response(text_block("x")))
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), contra_tool=FakeContraTool(food))
+    result = await agent.run("아로나민골드정이랑 고려인삼분말캡슐 같이 먹어도 돼요?")
+    assert result.stop_reason == "needs_clarification" and CONTRA_TOOL_NAME in result.tools_used
+    assert FOOD_COMBINATION_NOTE in result.answer
+    plain = await make_agent(ScriptedModel(response(search_call()), response(text_block("x"))), FakeTool(CLARIFY)).run("대한포도당주사액 용법")
+    assert FOOD_COMBINATION_NOTE not in plain.answer  # 약 되묻기에는 붙지 않는다
+
+
+def test_crisis_answer_uses_plain_hotline_name():
+    assert "상담전화 109" in CRISIS_ANSWER and "자살예방" not in CRISIS_ANSWER

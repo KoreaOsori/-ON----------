@@ -1,0 +1,251 @@
+{
+  "url": "http://ec2-54-197-92-156.compute-1.amazonaws.com/api/llm/v1/ask",
+  "results": [
+    {
+      "id": "01_invalid_mixed",
+      "request": {
+        "question": "코푸시럽, 셉트린정, 코데농정12345 제품을 함께 먹어도 되나요?",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "잘못된 이름을 특정하고 병용 확답 금지",
+      "http_status": 200,
+      "response": {
+        "status": "needs_clarification",
+        "answer": "코푸시럽과 셉트린정은 확인된 제품이라 함께 드시는 것에 대해 판단할 수 있는 단계이지만, 입력하신 '코데농정12345' 이름만으로는 정확한 제품을 확인하기 어려워요.\n\n'코데농정12345'를 포장에 적힌 전체 제품명, 제조사, 함량과 함께 다시 알려 주시면 확인해 보겠습니다. 그 전까지는 세 제품을 함께 드셔도 괜찮은지 말씀드리기 어려워요. 이 세 가지 약을 함께 드시는 경우라면 복용 전에 약사에게 확인해 보시는 것을 권해 드려요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 536,
+            "outputTokens": 45,
+            "totalTokens": 581,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 3.821
+    },
+    {
+      "id": "01_invalid_mixed",
+      "request": {
+        "question": "코푸시럽, 셉트린정, 코데농정12345 제품을 함께 먹어도 되나요?",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "잘못된 이름을 특정하고 병용 확답 금지",
+      "http_status": 200,
+      "response": {
+        "status": "needs_clarification",
+        "answer": "코푸시럽과 셉트린정은 확인되었어요. 다만 '코데농정12345'는 이 이름만으로는 정확한 제품을 확인하기 어려워요. 포장에 적힌 전체 제품명과 제조사, 함량을 다시 알려 주시면 확인해 드릴게요.\n\n세 제품의 병용 여부는 코데농정12345를 확인한 뒤에야 안내할 수 있어요. 그 전에 함께 드시는 것이 괜찮은지 궁금하시다면 약사나 의사에게 한 번 확인해 보시길 권해 드려요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 536,
+            "outputTokens": 45,
+            "totalTokens": 581,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 3.665
+    },
+    {
+      "id": "04_unmapped",
+      "request": {
+        "question": "이 두 제품을 함께 먹어도 되나요?",
+        "products": [
+          "용각산",
+          "원비디"
+        ],
+        "model": "haiku"
+      },
+      "expectation": "제품 금기 미발견과 성분 매핑 누락 구별",
+      "http_status": 200,
+      "response": {
+        "status": "answered",
+        "answer": "두 제품 사이에 등록된 병용금기 정보는 찾지 못했어요. 다만 이것이 함께 먹어도 안전하다는 뜻은 아니에요.\n\n- **용각산**: 조회된 성분 5개가 병용금기 비교에 연결되지 않아, 성분 기준으로는 비교를 진행하지 못했어요.\n- **원비디**: 조회된 성분 7개 중 1개(피리독신)만 비교에 연결되었고, 나머지 6개는 비교에 쓸 수 없었어요.\n\n따라서 성분 차원의 상호작용은 이번 조회로 확인하지 못한 상태예요. 두 제품을 함께 드실 계획이라면 약사에게 성분 정보를 보여 주며 확인해 보시는 것이 좋아요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 518,
+            "outputTokens": 25,
+            "totalTokens": 543,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 3.611
+    },
+    {
+      "id": "04_unmapped",
+      "request": {
+        "question": "이 두 제품을 함께 먹어도 되나요?",
+        "products": [
+          "용각산",
+          "원비디"
+        ],
+        "model": "sonnet"
+      },
+      "expectation": "제품 금기 미발견과 성분 매핑 누락 구별",
+      "http_status": 200,
+      "response": {
+        "status": "answered",
+        "answer": "용각산(보령)과 원비디(일양약품)를 함께 드셔도 되는지 확인해 보았어요. 등록된 제품 간 병용금기 정보는 찾지 못했어요. 다만 이것이 함께 먹어도 안전하다는 뜻은 아니에요.\n\n성분까지 비교해 보려 했지만, 확인 범위가 충분하지 않았어요.\n- 용각산: 조회된 성분 5개 중 병용금기 비교에 연결할 수 있는 성분은 0개예요.\n- 원비디: 조회된 성분 7개 중 1개만 병용금기 비교에 연결할 수 있어요.\n\n그래서 두 제품 사이의 성분 비교는 진행하지 못했어요. 또 이번 확인은 제품 제형 조건과 일부 복합제 규칙을 완전히 반영하지 못해서, 금기가 발견되지 않았다는 결과를 그대로 믿기에는 한계가 있어요.\n\n두 제품을 함께 드시기 전에 약사나 의사에게 복용 중인 약과 함께 확인해 보시길 권해 드려요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 518,
+            "outputTokens": 25,
+            "totalTokens": 543,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 5.52
+    },
+    {
+      "id": "06_single_caution",
+      "request": {
+        "question": "코푸시럽을 먹을 때 주의할 점과 부작용을 알려주세요.",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "단일 제품 주의 질문; 두 제품 요구 금지",
+      "http_status": 200,
+      "response": {
+        "status": "answered",
+        "answer": "코푸시럽은 **12세 미만 소아, 임부·임신 가능성이 있는 분, 수유부는 복용하지 않도록 해야 해요.** 12세 미만 소아는 호흡이 억제될 위험이 커서 사망을 포함한 중증 호흡억제 보고가 있어요.\n\n주요 주의사항과 부작용은 다음과 같아요.\n- **복용 금기:** 이 약·구성성분에 과민반응이 있었던 분, MAO억제제를 복용 중이거나 중단한 지 2주 이내인 분, 녹내장이나 전립선비대 등 배뇨 문제가 있는 분\n- **신중히 복용:** 간·신장 질환, 갑상선·당뇨 질환, 고혈압·심혈관 질환이 있거나 고령인 분, 천식·만성 기관지염 등으로 기침이 오래가는 분\n- **흔한 부작용:** 졸음, 어지러움, 입 마름, 변비, 배뇨 곤란 등이 나타날 수 있어요. 졸음이 올 수 있으니 운전이나 기계 조작은 피해 주세요.\n- **드물지만 심한 부작용:** 호흡곤란, 가슴 답답함, 혈압 저하, 심한 발진이나 두드러기 같은 알레르기 반응이 생기면 즉시 의료기관을 찾아야 해요.\n- **병용 주의:** 다른 감기약·진해거담제·항히스타민제·진정제와 함께 먹지 말고, 술이나 중추신경억제제와 함께 먹으면 졸음이 심해질 수 있어요. 페니토인을 복용 중이라면 약의 상호작용이 있을 수 있으니 의사나 약사와 상의하세요.\n- **과량·장기 복용 금지:** 정해진 용법을 지키고 과량 복용하거나 오래 먹지 마세요.\n\n정확한 복용 여부는 증상과 기저질환에 따라 달라지므로, 복용 전 의사나 약사와 상담하시는 것을 권해요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 529,
+            "outputTokens": 34,
+            "totalTokens": 563,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 5.603
+    },
+    {
+      "id": "06_single_caution",
+      "request": {
+        "question": "코푸시럽을 먹을 때 주의할 점과 부작용을 알려주세요.",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "단일 제품 주의 질문; 두 제품 요구 금지",
+      "http_status": 200,
+      "response": {
+        "status": "insufficient_data",
+        "answer": "답변을 끝까지 작성하지 못했어요. 질문 범위를 조금 줄여 다시 요청해 주세요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 529,
+            "outputTokens": 34,
+            "totalTokens": 563,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 15.086
+    },
+    {
+      "id": "07_health_ambiguous",
+      "request": {
+        "question": "코푸시럽과 오메가3를 같이 먹어도 되나요?",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "정확한 건기식 불명확 시 이름 확인; 성분 금기 추정 금지",
+      "http_status": 200,
+      "response": {
+        "status": "needs_clarification",
+        "answer": "코푸시럽은 확인됐지만, 오메가3 제품은 이 이름만으로는 정확한 제품을 확인하기 어려워요. 포장에 적힌 전체 제품명, 제조사, 함량을 알려주시면 다시 확인해 드릴게요. 그 전까지는 두 제품을 같이 드셔도 되는지 판단하기 어려우니, 드시기 전에 약사에게 함께 확인해 보시는 것이 좋아요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 524,
+            "outputTokens": 37,
+            "totalTokens": 561,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 2.849
+    },
+    {
+      "id": "07_health_ambiguous",
+      "request": {
+        "question": "코푸시럽과 오메가3를 같이 먹어도 되나요?",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "정확한 건기식 불명확 시 이름 확인; 성분 금기 추정 금지",
+      "http_status": 200,
+      "response": {
+        "status": "needs_clarification",
+        "answer": "코푸시럽과 오메가3를 함께 드셔도 되는지 안내해 드리려면, 먼저 \"오메가3\"가 어떤 제품인지 정확히 알아야 해요. 이 이름만으로는 정확한 제품을 확인하기 어려워서, 지금은 함께 드셔도 되는지 말씀드리기 어렵습니다.\n\n포장에 적힌 전체 제품명과 제조사, 함량을 알려 주시면 그 제품을 기준으로 다시 확인해 드릴게요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 524,
+            "outputTokens": 37,
+            "totalTokens": 561,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 3.251
+    },
+    {
+      "id": "09_negated_product",
+      "request": {
+        "question": "코데농정12345는 복용하지 않아요. 용각산의 효능만 알려주세요.",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "부정한 제품 제외; 용각산 효능 처리",
+      "http_status": 200,
+      "response": {
+        "status": "answered",
+        "answer": "용각산의 효능은 확인된 자료 기준으로 **기침, 가래, 목구멍(인후)의 염증으로 생긴 통증·부기·불쾌감, 목쉼**에 쓰인다고 되어 있어요.\n\n\"코데농정12345\"는 등록된 제품으로 확인되지 않아 이번 답변에서는 다루지 않았어요. 포장에 적힌 전체 제품명과 제조사를 알려 주시면 다시 확인해 드릴게요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 530,
+            "outputTokens": 31,
+            "totalTokens": 561,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 2.769
+    },
+    {
+      "id": "09_negated_product",
+      "request": {
+        "question": "코데농정12345는 복용하지 않아요. 용각산의 효능만 알려주세요.",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "부정한 제품 제외; 용각산 효능 처리",
+      "http_status": 200,
+      "response": {
+        "status": "answered",
+        "answer": "용각산은 기침, 가래, 목(인후)의 염증으로 인한 통증·부기·불쾌감, 그리고 목이 쉬는 증상에 사용하는 약이에요.",
+        "usage": {
+          "routing": {
+            "inputTokens": 530,
+            "outputTokens": 31,
+            "totalTokens": 561,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0
+          }
+        }
+      },
+      "seconds": 2.576
+    }
+  ]
+}

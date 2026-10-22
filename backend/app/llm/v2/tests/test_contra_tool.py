@@ -331,3 +331,19 @@ def test_prompt_style_rules_for_tone_jargon_and_repetition():
     for needle in ("해요체로 통일", "마크다운", "맺음말", "같은 내용을 요약과 목록에서 두 번"):
         assert needle in SYSTEM_PROMPT
     assert "식약처가 정한 병용금기" in CONTRA_PROMPT_ADDENDUM and "두 번 말하지 않습니다" in CONTRA_PROMPT_ADDENDUM
+
+
+def test_prompt_prioritizes_contraindications_and_blocks_unrelated_filler():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    for needle in ("복용하면 안 되는 경우", "직접 관련된 내용만", "관련 없는 주의사항을", "\"투여\" 대신 \"복용\""):
+        assert needle in SYSTEM_PROMPT
+
+
+def test_prompt_rules_for_style_changes_requested_after_swagger_review():
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM, SYSTEM_PROMPT
+
+    for needle in ("[범위밖]", "별도 문장을 덧붙이거나", "1인칭으로 답을 거절", "알려 달라는 권유는 하지 않습니다"):
+        assert needle in SYSTEM_PROMPT
+    for needle in ("한 번에 요약", "고시일(날짜)은 말하지 않습니다", "먹는 약, 바르는 약"):
+        assert needle in CONTRA_PROMPT_ADDENDUM

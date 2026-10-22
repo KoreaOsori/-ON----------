@@ -17,6 +17,12 @@ CRISIS_PATTERN = re.compile(
     r"(전부|한꺼번에|몽땅).{0,10}(먹|삼키|털어).{0,10}(죽|죽을)"
 )
 
+# 복용을 끊어도 되는지, 줄여도 되는지 묻는 질문. 이런 판단은 근거 검색 없이 전문가 상담 안내로 답한다.
+# "언제 복용을 중단해야 하나요" 같은 주의사항 질문은 잡지 않도록 허락·판단을 묻는 어미가 뒤따를 때만 본다.
+STOP_PATTERN = re.compile(
+    r"(끊|중단|멈추|멈춰|그만\s*(먹|복용|드)|먹지\s*않|안\s*먹|안\s*드시|안\s*드셔)[^?？.!]{0,12}?(돼|되|될|괜찮|상관|좋을까|할까|말까)"
+)
+
 
 def is_emergency(question: str) -> bool:
     return bool(EMERGENCY_PATTERN.search(question))
@@ -24,3 +30,7 @@ def is_emergency(question: str) -> bool:
 
 def is_crisis(question: str) -> bool:
     return bool(CRISIS_PATTERN.search(question))
+
+
+def is_stop_question(question: str) -> bool:
+    return bool(STOP_PATTERN.search(question))

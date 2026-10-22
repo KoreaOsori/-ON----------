@@ -41,14 +41,17 @@ from app.llm.v2.prompts import (
     ERROR_ANSWER,
     FORCED_FINAL_HINT,
     NO_EVIDENCE_ANSWER,
+    NON_DRUG_ANSWER,
+    OFF_TOPIC_MARKER,
     OUT_OF_SCOPE_ANSWER,
     SAFETY_FOOTER,
+    STOP_CONSULT_ANSWER,
     SYSTEM_PROMPT,
     TIMEOUT_ANSWER,
     build_clarification_answer,
     build_user_content,
 )
-from app.llm.v2.safety import is_crisis, is_emergency
+from app.llm.v2.safety import is_crisis, is_emergency, is_stop_question
 from app.llm.v2.tools import TOOL_NAME, DrugSearchTool, Evidence
 
 DEFAULT_CONTRA_DB = Path(__file__).resolve().parent / "dev_data" / "contraindication.sqlite"
@@ -63,7 +66,7 @@ class AgentAnswer:
     tools_used: list[str] = field(default_factory=list)
     rounds: int = 0
     grounded: bool = False  # 검색 근거가 있었는가
-    stop_reason: str = "done"  # done|no_evidence|needs_clarification|budget|timeout|error|refusal|crisis|empty
+    stop_reason: str = "done"  # done|no_evidence|needs_clarification|consult|budget|timeout|error|refusal|crisis|empty
     emergency: bool = False
     # needs_clarification 일 때 사용자에게 보여 줄 제품 후보. 사용자가 고르면 그 product_key 를 answer(product_key=...)로 넘긴다.
     candidates: list[dict[str, Any]] = field(default_factory=list)
@@ -193,6 +196,8 @@ class DrugInfoAgent:
             return AgentAnswer(CRISIS_ANSWER, stop_reason="crisis", emergency=True)
 
         emergency = is_emergency(question)
+        if not emergency and is_stop_question(question):  # 끊어도 되는지는 근거 검색 없이 상담 안내로 답한다(응급이면 아래 일반 경로의 119 안내가 우선)
+            return AgentAnswer(STOP_CONSULT_ANSWER, stop_reason="consult")
         budget = Budget(self._limits)
         messages: list[dict[str, Any]] = [{"role": "user", "content": build_user_content(question, profile_context, product_key)}]
         evidence: list[Evidence] = []
@@ -267,16 +272,26 @@ class DrugInfoAgent:
             text = ERROR_ANSWER
         elif not evidence and candidates:
             # 제품 후보가 여럿 → 되묻기. 모델 문장 대신 코드가 후보 목록으로 만든다(모델 지식이 섞이지 않게).
-            text, stop = build_clarification_answer(candidates), "needs_clarification"
+            food_combination = CONTRA_TOOL_NAME in tools_used and any(
+                str(c.get("product_key", "")).startswith("health_food:") for c in candidates
+            )
+            text, stop = build_clarification_answer(candidates, food_combination=food_combination), "needs_clarification"
         elif not evidence:
             # 근거가 하나도 없으면 모델의 문장은 쓰지 않는다. 도구를 한 번도 못 쓴 경우(약 이름 없음·범위 밖 질문)는 할 수 있는 일을 안내한다.
-            text, stop = (NO_EVIDENCE_ANSWER if tools_used else OUT_OF_SCOPE_ANSWER), "no_evidence"
+            if tools_used:
+                text = NO_EVIDENCE_ANSWER
+            elif final_text.strip().startswith(OFF_TOPIC_MARKER):  # 모델이 약과 무관한 질문이라고 표시했다
+                text = NON_DRUG_ANSWER
+            else:
+                text = OUT_OF_SCOPE_ANSWER
+            stop = "no_evidence"
         elif not final_text.strip():
             text, stop = ERROR_ANSWER, "error"
         else:
             text, grounded = f"{final_text.strip()}\n\n{SAFETY_FOOTER}", True
-        if emergency and stop == "no_evidence":
-            text = EMERGENCY_NOTICE  # 근거 없는 답에 범위 안내를 이어 붙이지 않는다 — 119 안내만
+        if emergency and stop in ("no_evidence", "needs_clarification"):
+            # 근거 없는 답이나 제품 되묻기를 응급 안내 뒤에 이어 붙이지 않는다 — 119 안내만. 되묻기는 후보도 내보내지 않는다.
+            text, stop = EMERGENCY_NOTICE, "no_evidence"
         elif emergency:
             text = f"{EMERGENCY_NOTICE}\n\n{text}"
         return AgentAnswer(
