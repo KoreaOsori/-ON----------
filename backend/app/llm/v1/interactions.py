@@ -1,6 +1,29 @@
 from itertools import combinations
 
 
+def ingredient_coverage(product, rows):
+    """Describe lookup coverage, not clinical safety or label completeness."""
+    total = len(rows)
+    coded = sum(bool(row['dur_ingr_code']) for row in rows)
+    name = product.get('product_name') or '해당 제품'
+    if not total:
+        state = 'missing'
+        explanation = f'{name}: 성분 자료를 찾지 못해 성분별 비교를 진행할 수 없어요.'
+    elif not coded:
+        state = 'none'
+        explanation = f'{name}: 조회된 성분 {total}개 중 병용금기 비교에 연결할 수 있는 성분은 0개예요.'
+    elif coded < total:
+        state = 'partial'
+        explanation = f'{name}: 조회된 성분 {total}개 중 {coded}개만 병용금기 비교에 연결할 수 있어요.'
+    else:
+        state = 'all_available'
+        explanation = f'{name}: 조회된 성분 {total}개 모두 병용금기 비교에 연결할 수 있어요.'
+    return {'ingredient_count': total, 'coded_count': coded,
+            'unmapped_names': [r.get('ingr_name') or r['ingr_key'] for r in rows if not r['dur_ingr_code']],
+            'missing_ingredient_rows': not bool(rows),
+            'mapping_state': state, 'explanation': explanation}
+
+
 def compare_gold(products, ingredients, rules, ingredient_rules=()):
     """Gold rows are product-specific: never extrapolate a code pair to other products.
 
@@ -41,12 +64,7 @@ def compare_gold(products, ingredients, rules, ingredient_rules=()):
                 ingredient_matches.append({**rule, 'scope': 'ingredient_only',
                     'verdict': 'ingredient_contraindication' if rule['item_rows'] else 'ingredient_caution',
                     'applicability': '제형·투여경로·복합제 조건은 해당 제품에 적용되는지 별도 확인 필요'})
-        coverage = {}
-        for key, rows in ((ak, a), (bk, b)):
-            coverage[key] = {'ingredient_count': len(rows),
-                            'coded_count': sum(bool(r['dur_ingr_code']) for r in rows),
-                            'unmapped_names': [r.get('ingr_name') or r['ingr_key'] for r in rows if not r['dur_ingr_code']],
-                            'missing_ingredient_rows': not bool(rows)}
+        coverage = {ak: ingredient_coverage(first, a), bk: ingredient_coverage(second, b)}
         checks.append({"first": ak, "second": bk, "status": status, "coverage_complete": complete,
                        "product_pair_result": 'contraindicated' if any(r['basis'] == '품목 DUR' for r in matches)
                            else 'ingredient_caution' if matches else 'not_found',
