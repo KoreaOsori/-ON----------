@@ -13,14 +13,13 @@
 - 금기 내용과 조건·비고는 원문 그대로 전한다. 해석·요약은 모델이 하되 원문에 없는 내용을 더하지 않도록 프롬프트가 막는다.
 - 이 도구는 DB 를 읽기만 하고(검색 DB 읽기 전용 트랜잭션), 병용금기 파일도 읽기 전용으로 연다.
 """
-import asyncio
 import logging
 import unicodedata
 from itertools import combinations
 from typing import Any
 
 from app.llm.v2.config import V2Settings
-from app.llm.v2.contra_store import ContraStore, LookupResult
+from app.llm.v2.contra_store import LookupResult
 from app.llm.v2.db import ReaderFactory, safe_error_name
 from app.llm.v2.names import short_name
 from app.llm.v2.search import PRODUCT_KEY_PATTERN, active_run_id, fetch_section_texts, find_by_key, find_products
@@ -66,9 +65,12 @@ def _fold(value: str) -> str:
 
 
 class ContraindicationTool:
-    """check_contraindication 실행기. 검색 DB 연결 팩토리와 병용금기 저장소를 주입받는다."""
+    """check_contraindication 실행기. 검색 DB 연결 팩토리와 병용금기 저장소를 주입받는다.
 
-    def __init__(self, settings: V2Settings, reader_factory: ReaderFactory, store: ContraStore) -> None:
+    저장소는 `async lookup_with_snapshot(reader, seqs) -> (LookupResult, 자료 기준일 | None)` 만 있으면 된다
+    (ContraStore=SQLite 파일, RdsContraStore=RDS gold.drug_contraindication)."""
+
+    def __init__(self, settings: V2Settings, reader_factory: ReaderFactory, store: Any) -> None:
         self._settings = settings
         self._reader_factory = reader_factory
         self._store = store
@@ -167,11 +169,10 @@ class ContraindicationTool:
                 for key in keys:
                     if by_key[key]["product_type"] == "health_food":  # 같은 읽기 전용 트랜잭션에서 한 번에 읽는다
                         precautions[key] = await fetch_section_texts(reader, run_id, key, "precautions")
-            drug_keys = [key for key in keys if by_key[key]["product_type"] == "drug"]
-            lookup = snapshot = None
-            if len(drug_keys) >= 2:  # 의약품이 둘 이상일 때만 병용금기 자료를 조회한다
-                lookup = await asyncio.to_thread(self._store.lookup, [key.split(":", 1)[1] for key in drug_keys])
-                snapshot = await asyncio.to_thread(self._store.meta, "snapshot")
+                drug_keys = [key for key in keys if by_key[key]["product_type"] == "drug"]
+                lookup = snapshot = None
+                if len(drug_keys) >= 2:  # 의약품이 둘 이상일 때만 병용금기 자료를 조회한다(RDS 저장소도 같은 읽기 전용 트랜잭션을 쓴다)
+                    lookup, snapshot = await self._store.lookup_with_snapshot(reader, [key.split(":", 1)[1] for key in drug_keys])
         except Exception as exc:  # noqa: BLE001 - 상세 메시지는 남기지 않는다.
             logger.error("check_contraindication 실패: %s", safe_error_name(exc))
             return ToolResult("[검색 오류] 지금은 병용금기 정보를 조회할 수 없습니다.", is_error=True)
@@ -205,6 +206,8 @@ def _rule_lines(pair_rules: list, limit: int) -> list[str]:
             lines.append(f"  제형: {rule.form_name}")
         if rule.notified:
             lines.append(f"  고시일: {rule.notified}")
+        if rule.basis:
+            lines.append(f"  규칙 종류: {rule.basis}")
     extra = len(seen) - shown
     if extra > 0:
         lines.append(f"- …이 밖에 같은 조합의 규칙이 {extra}건 더 있습니다.")
@@ -217,7 +220,8 @@ def format_lookup(
     """조회 결과 → LLM 에 줄 근거 문자열 + 근거 목록(Evidence)."""
     names = {seq: short_name(p["product_name"]) for seq, p in products_by_seq.items()}
     blocks: list[str] = list(notes or [])
-    blocks.append(f"[병용금기 확인 | 자료 기준일 {snapshot or '알 수 없음'} | 확인한 제품 {len(names)}개]")
+    when = f"자료 기준일 {snapshot} | " if snapshot else ""
+    blocks.append(f"[병용금기 확인 | {when}확인한 제품 {len(names)}개]")
     evidence: list[Evidence] = []
     for pair in lookup.pairs:
         label = f"{names[pair.first]} × {names[pair.second]}"
