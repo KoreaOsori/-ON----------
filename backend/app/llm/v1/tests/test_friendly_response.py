@@ -76,11 +76,14 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_excluded_question_product_is_not_looked_up(self):
         self.route.product_names = ['약A']
+        self.route.excluded_product_names = ['가짜약123']
         await self.service.ask(self.request(
             question='가짜약123은 복용하지 않아요. 약A 효능만 알려주세요.', products=[]))
         self.repo.resolve.assert_awaited_once_with('약A')
         self.assertEqual([p['product_name'] for p in self.payload()['products']], ['약A'])
         self.assertNotIn('unresolved', self.payload())
+        self.assertNotIn('가짜약123', self.bedrock.generate.call_args.args[2])
+        self.assertNotIn('가짜약123', self.bedrock.embed.call_args.args[0])
         self.assertIn('조회했다고 주장하지 마라', self.bedrock.generate.call_args.args[1])
 
     async def test_truncated_answer_rewritten_once_from_full_evidence(self):
