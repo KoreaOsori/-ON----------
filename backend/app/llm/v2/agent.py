@@ -21,6 +21,7 @@ from typing import Any
 from app.llm.v2.aws_auth import ensure_credentials
 from app.llm.v2.config import V2Settings
 from app.llm.v2.db import build_engine, reader_factory_for, safe_error_name
+from app.llm.v2.contra_rds import RdsContraStore
 from app.llm.v2.contra_store import ContraStore
 from app.llm.v2.contra_tool import CONTRA_TOOL_NAME, ContraindicationTool
 from app.llm.v2.embedder import QueryEmbedder
@@ -40,6 +41,7 @@ from app.llm.v2.prompts import (
     ERROR_ANSWER,
     FORCED_FINAL_HINT,
     NO_EVIDENCE_ANSWER,
+    OUT_OF_SCOPE_ANSWER,
     SAFETY_FOOTER,
     SYSTEM_PROMPT,
     TIMEOUT_ANSWER,
@@ -267,8 +269,8 @@ class DrugInfoAgent:
             # 제품 후보가 여럿 → 되묻기. 모델 문장 대신 코드가 후보 목록으로 만든다(모델 지식이 섞이지 않게).
             text, stop = build_clarification_answer(candidates), "needs_clarification"
         elif not evidence:
-            # 근거가 하나도 없으면 모델의 문장은 쓰지 않는다.
-            text, stop = NO_EVIDENCE_ANSWER, "no_evidence"
+            # 근거가 하나도 없으면 모델의 문장은 쓰지 않는다. 도구를 한 번도 못 쓴 경우(약 이름 없음·범위 밖 질문)는 할 수 있는 일을 안내한다.
+            text, stop = (NO_EVIDENCE_ANSWER if tools_used else OUT_OF_SCOPE_ANSWER), "no_evidence"
         elif not final_text.strip():
             text, stop = ERROR_ANSWER, "error"
         else:
@@ -304,13 +306,25 @@ def build_agent(settings: V2Settings | None = None) -> DrugInfoAgent:
 
 
 def _build_contra_tool(settings: V2Settings, open_reader: Any) -> ContraindicationTool | None:
-    """병용금기 인덱스가 있으면 도구를 켠다. 경로를 명시했는데 없으면 오류(설정 실수), 기본 경로에 없으면 조용히 끈다."""
+    """병용금기 도구를 켠다. 출처는 LLM_V2_CONTRA_SOURCE 로 고르고, 기본(auto)은 아래 순서다.
+
+    1) LLM_V2_CONTRA_DB 를 지정했으면 그 SQLite(없으면 오류: 설정 실수)  2) dev_data/contraindication.sqlite 가 있으면 그 파일
+    3) 둘 다 없으면 RDS 의 gold.drug_contraindication (EC2 처럼 파일 없이 DB 만 쓰는 환경).
+    sqlite 를 명시했는데 파일이 없으면 오류, off 면 끈다.
+    """
+    source = settings.contra_source
+    if source == "off":
+        logger.info("LLM_V2_CONTRA_SOURCE=off 라 check_contraindication 을 끕니다.")
+        return None
+    if source == "rds":
+        return ContraindicationTool(settings, open_reader, RdsContraStore())
+    if source == "sqlite":
+        return ContraindicationTool(settings, open_reader, ContraStore(settings.contra_db_path or DEFAULT_CONTRA_DB))
     if settings.contra_db_path:
         return ContraindicationTool(settings, open_reader, ContraStore(settings.contra_db_path))  # 없으면 ContraStoreError
     if DEFAULT_CONTRA_DB.is_file():
         return ContraindicationTool(settings, open_reader, ContraStore(DEFAULT_CONTRA_DB))
-    logger.info("병용금기 인덱스가 없어 check_contraindication 을 끕니다.")
-    return None
+    return ContraindicationTool(settings, open_reader, RdsContraStore())
 
 
 async def _get_agent() -> DrugInfoAgent:

@@ -110,6 +110,8 @@ class V2Settings:
     allow_global_search: bool = False
     # 병용금기 인덱스(SQLite, contra_index 로 만든 파일) 경로. 비우면 v2/dev_data/contraindication.sqlite 가 있을 때만 켠다.
     contra_db_path: str = ""
+    # 병용금기 자료 출처: auto(경로 지정 또는 dev_data 파일이 있으면 SQLite, 없으면 RDS gold.drug_contraindication) | rds | sqlite | off
+    contra_source: str = "auto"
 
     # --- HTTP API (api.py) ---
     # 비우면 키 없이 열린다(localhost 전용으로만 쓸 것). 값이 있으면 X-API-Key 헤더가 일치해야 한다. AWS 키와 무관하다.
@@ -165,6 +167,10 @@ class V2Settings:
         if default_model not in ("haiku", "sonnet"):
             raise ConfigError("LLM_V2_DEFAULT_MODEL 은 haiku 또는 sonnet 이어야 합니다.")
 
+        contra_source = (env.get("LLM_V2_CONTRA_SOURCE") or "auto").lower()
+        if contra_source not in ("auto", "rds", "sqlite", "off"):
+            raise ConfigError("LLM_V2_CONTRA_SOURCE 는 auto, rds, sqlite, off 중 하나여야 합니다.")
+
         return cls(
             region=REGION,
             embedding_model_id=model,
@@ -193,6 +199,7 @@ class V2Settings:
             max_distance=max_distance,
             allow_global_search=(env.get("LLM_V2_ALLOW_GLOBAL_SEARCH", "").lower() in ("1", "true", "yes")),
             contra_db_path=env.get("LLM_V2_CONTRA_DB") or "",
+            contra_source=contra_source,
             api_key=env.get("LLM_V2_API_KEY") or "",
             api_max_concurrency=max(1, _int(env, "LLM_V2_API_MAX_CONCURRENCY", 4)),
             api_queue_seconds=max(0.0, _float(env, "LLM_V2_API_QUEUE_SECONDS", 5.0)),
