@@ -21,7 +21,10 @@ from itertools import combinations
 from typing import Any
 
 from app.llm.v2.config import V2Settings
+<<<<<<< HEAD
 from app.llm.v2.contra_rds import ingredient_lookup_id
+=======
+>>>>>>> origin/master
 from app.llm.v2.contra_store import LookupResult
 from app.llm.v2.db import ReaderFactory, safe_error_name
 from app.llm.v2.names import short_name
@@ -216,10 +219,17 @@ class ContraindicationTool:
                 for key in keys:
                     if by_key[key]["product_type"] == "health_food":  # 같은 읽기 전용 트랜잭션에서 한 번에 읽는다
                         precautions[key] = await fetch_section_texts(reader, run_id, key, "precautions")
+<<<<<<< HEAD
                 drug_keys = [key for key in keys if by_key[key]["product_type"] in ("drug", INGREDIENT_TYPE)]
                 lookup = snapshot = None
                 if len(drug_keys) >= 2:  # 의약품(또는 성분)이 둘 이상일 때만 병용금기 자료를 조회한다(RDS 저장소도 같은 읽기 전용 트랜잭션을 쓴다)
                     lookup, snapshot = await self._store.lookup_with_snapshot(reader, [_lookup_id(by_key[key]) for key in drug_keys])
+=======
+                drug_keys = [key for key in keys if by_key[key]["product_type"] == "drug"]
+                lookup = snapshot = None
+                if len(drug_keys) >= 2:  # 의약품이 둘 이상일 때만 병용금기 자료를 조회한다(RDS 저장소도 같은 읽기 전용 트랜잭션을 쓴다)
+                    lookup, snapshot = await self._store.lookup_with_snapshot(reader, [key.split(":", 1)[1] for key in drug_keys])
+>>>>>>> origin/master
         except Exception as exc:  # noqa: BLE001 - 상세 메시지는 남기지 않는다.
             logger.error("check_contraindication 실패: %s", safe_error_name(exc))
             return ToolResult("[검색 오류] 지금은 병용금기 정보를 조회할 수 없습니다.", is_error=True)
@@ -274,8 +284,11 @@ def format_lookup(
     blocks: list[str] = list(notes or [])
     when = f"자료 기준일 {snapshot} | " if snapshot else ""
     blocks.append(f"[병용금기 확인 | {when}확인한 제품 {len(names)}개]")
+<<<<<<< HEAD
     if any(pair.level == "ingredient" for pair in lookup.pairs):
         blocks.append(INGREDIENT_CAVEAT)
+=======
+>>>>>>> origin/master
     evidence: list[Evidence] = []
     for pair in lookup.pairs:
         label = f"{names[pair.first]} × {names[pair.second]}"
