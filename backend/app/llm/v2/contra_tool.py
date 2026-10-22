@@ -114,21 +114,24 @@ class ContraindicationTool:
         return [next(i for i in items if i.lower() == key) for key in unique]
 
     # ------------------------------------------------------------------ 제품 확정
-    async def _resolve(self, reader: Any, run_id: str, text: str) -> tuple[dict[str, Any] | None, ToolResult | None, bool, bool]:
-        """(제품, 사용자에게 돌려줄 결과(문제가 있을 때), 근사 일치 여부, 이름으로 아무 제품도 못 찾았는지)."""
+    async def _resolve(self, reader: Any, run_id: str, text: str) -> tuple[dict[str, Any] | None, ToolResult | None, bool, str]:
+        """(제품, 사용자에게 돌려줄 결과(문제가 있을 때), 근사 일치 여부, 성분 이름으로 넘어갈 수 있는 상황).
+
+        마지막 값: "missing"=이름으로 아무 제품도 못 찾음, "ambiguous"=정확히 일치하는 제품은 없고 앞부분·일부만 맞는 제품이 여럿(또는 너무 많음),
+        ""=성분으로 넘어가면 안 되는 경우(product_key 입력, 이름이 정확히 같은 제품이 여럿, 그 밖의 문제)."""
         folded = _fold(text)
         if PRODUCT_KEY_PATTERN.match(folded):
             product = await find_by_key(reader, run_id, folded)
             if product is None:
-                return None, ToolResult(f"[검색 결과 없음] product_key '{folded}'에 해당하는 제품이 없습니다. 제품명을 다시 확인해 달라고 안내하세요."), False, False
+                return None, ToolResult(f"[검색 결과 없음] product_key '{folded}'에 해당하는 제품이 없습니다. 제품명을 다시 확인해 달라고 안내하세요."), False, ""
             approximate = False
         else:
             found = await find_products(reader, run_id, text)
             products = found["products"]
             if found["truncated"]:
-                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 제품이 너무 많습니다. 제품명을 더 구체적으로 알려 달라고 안내하세요."), False, False
+                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 제품이 너무 많습니다. 제품명을 더 구체적으로 알려 달라고 안내하세요."), False, ("" if found["mode"] == "exact" else "ambiguous")
             if not products:
-                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 의약품을 찾지 못했습니다. 제품명을 다시 확인해 달라고 안내하세요."), False, True
+                return None, ToolResult(f"[검색 결과 없음] '{text}'과(와) 일치하는 의약품을 찾지 못했습니다. 제품명을 다시 확인해 달라고 안내하세요."), False, "missing"
             if len(products) > 1:
                 shown = products[:10]
                 lines = [
@@ -143,14 +146,14 @@ class ContraindicationTool:
                 if len(products) > len(shown):
                     lines.append(f"- …외 {len(products) - len(shown)}개")
                 candidates = [{k: p[k] for k in ("product_key", "product_name", "manufacturer")} for p in products]
-                return None, ToolResult("\n".join(lines), candidates=candidates), False, False
+                return None, ToolResult("\n".join(lines), candidates=candidates), False, ("" if found["mode"] == "exact" else "ambiguous")
             product, approximate = products[0], bool(found["approximate"])
         if product["product_type"] not in ("drug", "health_food"):
             return None, ToolResult(
                 f"[확인 불가] '{short_name(product['product_name'])}'은(는) 이 도구로 확인할 수 없는 종류입니다. "
                 "약사·의사에게 확인하도록 안내하세요."
-            ), False, False
-        return product, None, approximate, False
+            ), False, ""
+        return product, None, approximate, ""
 
     async def _resolve_ingredient(self, reader: Any, text: str) -> tuple[dict[str, Any] | None, ToolResult | None]:
         """제품으로 못 찾은 이름을 성분 이름으로 찾는다. (성분 항목, 안내 결과). 둘 다 None 이면 성분으로도 없다."""
@@ -189,16 +192,18 @@ class ContraindicationTool:
                 if run_id is None:
                     return ToolResult("[검색 불가] 공개된 의약품 정보가 아직 없습니다.", is_error=True)
                 for text in requested:
-                    product, problem, approximate, not_found = await self._resolve(reader, run_id, text)
-                    if problem is not None and not_found:  # 제품명으로 아무것도 없으면 성분 이름으로 한 번 더 찾는다
+                    product, problem, approximate, fallback = await self._resolve(reader, run_id, text)
+                    if problem is not None and fallback:
+                        # 이름이 정확히 같은 제품이 없고(없거나, 앞부분·일부만 맞는 제품이 여럿) 성분 이름과는 정확히 같으면 성분으로 확인한다.
+                        # 예: '케토코나졸'은 '케토코나졸크림', '더마졸정(케토코나졸)'… 수십 개 제품에 걸리지만 사용자는 성분을 말한 것이다.
                         ingredient, ingredient_problem = await self._resolve_ingredient(reader, text)
                         if ingredient is not None:
                             notes.append(
-                                f"[참고] '{text}'은(는) 제품명으로 찾을 수 없어 성분 이름으로 확인했습니다. 답변에서 성분 기준 확인임을 밝히세요."
+                                f"[참고] '{text}'은(는) 정확히 일치하는 제품명이 없고 성분 이름과 일치해 성분 이름으로 확인했습니다. 답변에서 성분 기준 확인임을 밝히세요."
                             )
                             resolved.append(ingredient)
                             continue
-                        if ingredient_problem is not None:
+                        if ingredient_problem is not None and fallback == "missing":
                             return ingredient_problem
                     if problem is not None:
                         return problem

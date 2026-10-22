@@ -213,7 +213,7 @@ async def test_ingredient_name_is_used_when_no_product_matches_and_result_carrie
     result = await tool.run({"products": ["와파린정", "아세트아미노펜"]})
     text = result.text
     assert not result.is_error
-    assert "[참고] '아세트아미노펜'은(는) 제품명으로 찾을 수 없어 성분 이름으로 확인했습니다" in text
+    assert "[참고] '아세트아미노펜'은(는) 정확히 일치하는 제품명이 없고 성분 이름과 일치해 성분 이름으로 확인했습니다" in text
     assert "[성분 기준 조회]" in text and "제형 등 제품별 조건은 반영되지 않았고" in text
     assert "■ 와파린정 × 아세트아미노펜(성분) — 병용금기 규칙 있음" in text
     assert "금기 내용: 출혈 위험 증가" in text and "조건·비고: 고용량 병용 시" in text and "규칙 종류: 품목 DUR" in text
@@ -260,11 +260,42 @@ async def test_drug_without_ingredient_code_is_marked_unresolved_instead_of_no_r
     assert sorted(e.section_type for e in result.evidence) == ["contraindication", "contraindication_none"]
 
 
-async def test_product_name_wins_over_ingredient_lookup_and_ambiguity_is_not_hidden():
-    tool, reader = _ingredient_tool([_crow("D000001", "D000147")])
-    result = await tool.run({"products": ["와파린정", "타이레놀"]})  # 제품이 여럿 → 되묻기. 성분으로 넘어가지 않는다
-    assert result.text.startswith("[확인 필요]")
-    assert not any("gold.drug_ingredient" in sql for sql, _ in reader.calls)
+async def test_ambiguous_product_name_that_is_not_an_ingredient_still_asks_which_product():
+    tool, _ = _ingredient_tool([_crow("D000001", "D000147")])
+    result = await tool.run({"products": ["와파린정", "타이레놀"]})  # 타이레놀은 성분 이름이 아니다 → 제품 되묻기
+    assert result.text.startswith("[확인 필요]") and {c["product_key"] for c in result.candidates} == {"drug:300", "drug:310"}
+
+
+async def test_name_that_equals_an_ingredient_is_used_as_ingredient_even_when_many_products_contain_it():
+    INGREDIENT_NAMES.append({"item_seq": "999", "ingr_name": "타이레놀", "dur_ingr_code": "D000555"})
+    try:
+        tool, reader = _ingredient_tool([_crow("D000001", "D000555", names=("와파린", "타이레놀"))])
+        result = await tool.run({"products": ["와파린정", "타이레놀"]})  # 제품은 타이레놀정500…/타이레놀8시간정 두 개(앞부분만 일치)
+    finally:
+        INGREDIENT_NAMES.pop()
+    assert not result.is_error and "타이레놀(성분)" in result.text
+    assert "정확히 일치하는 제품명이 없고 성분 이름과 일치해" in result.text and "[성분 기준 조회]" in result.text
+    assert result.candidates == []
+
+
+async def test_exact_duplicate_product_names_are_never_turned_into_an_ingredient():
+    INGREDIENT_NAMES.append({"item_seq": "999", "ingr_name": "중복정", "dur_ingr_code": "D000556"})
+
+    def duplicated(sql, params):
+        if "SELECT DISTINCT product_key" in sql and "= :value" in sql and params.get("value") == "중복정":
+            return [
+                {"product_key": "drug:1", "product_name": "중복정", "manufacturer": "A사", "product_type": "drug"},
+                {"product_key": "drug:2", "product_name": "중복정", "manufacturer": "B사", "product_type": "drug"},
+            ]
+        return _db(sql, params)
+
+    reader = FakeReader(_ingredient_handler([], base=duplicated))
+    tool = ContraindicationTool(make_settings(), FakeReaderFactory(reader), RdsContraStore())
+    try:
+        result = await tool.run({"products": ["와파린정", "중복정"]})
+    finally:
+        INGREDIENT_NAMES.pop()
+    assert result.text.startswith("[확인 필요]") and {c["product_key"] for c in result.candidates} == {"drug:1", "drug:2"}
 
 
 async def test_ingredient_and_health_food_combination_keeps_the_food_policy():
