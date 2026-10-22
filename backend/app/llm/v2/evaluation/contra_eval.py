@@ -34,7 +34,7 @@ def outcome_of(result: ToolResult) -> str:
     if result.text.startswith("[검색 결과 없음]") or result.text.startswith("[확인 불가]"):
         return "not_found"
     kinds = {e.section_type for e in result.evidence}
-    if "contraindication" in kinds:
+    if kinds & {"contraindication", "contraindication_ingredient"}:
         return "found"
     if kinds == {"contraindication_none"}:
         return "none"

@@ -76,6 +76,7 @@ def test_assertive_safe_detection_ignores_negated_sentences():
     assert assertive_safe_sentences("문제없어요. 걱정하지 마세요.")
     assert assertive_safe_sentences("규칙이 없다고 해서 안전하다는 뜻은 아니에요.") == []
     assert assertive_safe_sentences("안전하다고 말씀드릴 수 없어요.") == []
+    assert assertive_safe_sentences("나에게 맞는지는 약사나 의사와 상담해 보시는 것이 가장 안전해요.") == []  # 상담을 권하는 문장은 단정이 아니다
     assert assertive_safe_sentences("") == []
 
 
