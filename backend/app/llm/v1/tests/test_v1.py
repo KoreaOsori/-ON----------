@@ -69,6 +69,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.settings = Settings(_env_file=None)
         self.repo = MagicMock(run_id="run-1")
         self.repo.start = AsyncMock()
+        self.repo.prepare_vectors = AsyncMock(return_value=False)
+        self.repo.vector_warning = None
         self.repo.resolve = AsyncMock(return_value=([product()], True))
         self.repo.documents = AsyncMock(return_value=[{"chunk_id": "c1", "product_key": "drug:1",
                                                        "content": "fixture benefits"}])

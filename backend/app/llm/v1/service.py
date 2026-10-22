@@ -22,45 +22,88 @@ class Service:
 
     async def ask(self, request):
         started = perf_counter()
-        await self.repo.start()
-        selected, questions = [], []
-        for index, name in enumerate(request.products):
-            candidates, confirmed = await self.repo.resolve(name, request.selections.get(index))
-            if not confirmed:
-                questions.append({'index': index, 'name': name, 'candidates': candidates,
-                    'question': '제품명·제조사·함량을 확인하세요. 후보 선택 시 selections에 위치와 product_key를 넣어주세요.'})
-            elif candidates[0]['product_key'] not in {p['product_key'] for p in selected}:
-                selected.append(candidates[0])
-        base = {'products': selected, 'run_id': self.repo.run_id}
-        if questions:
-            return AskResponse(status='needs_clarification', answer='제품을 먼저 확인해 주세요.',
-                               clarifications=questions, **base)
         model_id = self.settings.model_id(request.model)
         route, routing_usage = await classify(self.bedrock, model_id, request.question)
-        base.update(detected_intent=route.intent, model_id=model_id, usage={'routing': routing_usage})
-        if route.intent == 'clarify':
-            return AskResponse(status='needs_clarification', answer='제품 정보 또는 함께 복용할 때의 주의사항 중 궁금한 내용을 구체적으로 알려주세요.', **base)
+        # OCR entries keep their indices; question mentions follow in textual order.
+        names, choices = [], {}
+        def normalized(name):
+            return "".join(name.split()).casefold()
+        for index, name in enumerate(request.products):
+            token = normalized(name)
+            if token not in {normalized(n) for n in names}:
+                names.append(name)
+            if index in request.selections:
+                choices[token] = request.selections[index]
+        for name in route.product_names:
+            if normalized(name) not in {normalized(n) for n in names}:
+                names.append(name)
+        for name, key in request.name_selections.items():
+            if normalized(name) in {normalized(n) for n in names}:
+                choices[normalized(name)] = key
+        base = {'model_id': model_id, 'usage': {'routing': routing_usage},
+                'detected_intent': route.intent, 'merged_product_names': names}
+        if route.intent == 'clarify' or not names:
+            return AskResponse(status='needs_clarification', answer='확인할 제품명과 궁금한 내용을 구체적으로 알려주세요.', **base)
+        if len(names) > 8:
+            return AskResponse(status='needs_clarification', answer='질문과 목록을 합쳐 제품을 8개 이하로 입력하세요.', **base)
+        await self.repo.start()
+        vector_ready = await self.repo.prepare_vectors()
+        selected, questions = [], []
+        for index, name in enumerate(names):
+            candidates, confirmed = await self.repo.resolve(name, choices.get(normalized(name)))
+            if not confirmed:
+                if vector_ready:
+                    vector = await self.bedrock.embed(name)
+                    similar = await self.repo.vector_candidates(vector)
+                    candidates = list({p['product_key']: p for p in candidates + similar}.values())[:10]
+                questions.append({'index': index, 'name': name, 'candidates': candidates,
+                    'question': '제품명·제조사·함량을 확인하세요. name_selections에 이 이름과 선택한 product_key를 넣어주세요.'})
+            elif candidates[0]['product_key'] not in {p['product_key'] for p in selected}:
+                selected.append(candidates[0])
+        base.update(products=selected, run_id=self.repo.run_id)
+        vector_warnings = [self.repo.vector_warning] if self.repo.vector_warning else []
+        if questions:
+            descriptions = []
+            for q in questions:
+                options = ', '.join(f"{c['product_name']} ({c.get('manufacturer') or '제조사 미상'})" for c in q['candidates'])
+                descriptions.append(f"{q['name']}: {options or '후보 없음 — 정확한 제품명을 알려주세요.'}")
+            return AskResponse(status='needs_clarification', answer='제품을 선택해 주세요.\n' + '\n'.join(descriptions),
+                               clarifications=questions, warnings=vector_warnings, **base)
         interactions = route.intent in ('interactions', 'both')
         if interactions and len(selected) < 2:
             return AskResponse(status='needs_clarification', answer='함께 확인할 서로 다른 제품을 2개 이상 입력하세요.', **base)
         checks, evidence, missing = [], [], []
+        keys = []
         if interactions:
             keys = [p['product_key'] for p in selected if p['product_type'] == 'drug']
             if len(keys) >= 2:
                 ingredients, rules = await self.repo.safety(keys)
                 checks = compare_gold(selected, ingredients, rules)
+        query_vector = None
+        if vector_ready and (route.intent in ('information', 'both') or len(keys) >= 2):
+            query_vector = await self.bedrock.embed(request.question)
         for product in selected:
+            if interactions and len(keys) >= 2 and product['product_type'] == 'drug' and query_vector is not None:
+                # Supplementary label text cannot change the deterministic DUR result.
+                for doc in await self.repo.vector_documents(product['product_key'], 'interactions', query_vector):
+                    evidence.append({**doc, 'id': f'E{len(evidence) + 1}'})
             sections = list(dict.fromkeys(route.sections)) if route.intent in ('information', 'both') else []
             if interactions and product['product_type'] == 'health_food' and 'precautions' not in sections:
                 sections.append('precautions')
             for section in sections:
+                # Full gold precautions remain mandatory, especially for mixed drug/health-food use.
                 docs = await self.repo.documents(product['product_key'], section)
+                if query_vector is not None and section != 'precautions':
+                    ranked = await self.repo.vector_documents(product['product_key'], section, query_vector)
+                    # Scoped vector chunks reduce long information prompts; gold is the fallback.
+                    if ranked:
+                        docs = ranked
                 if not docs:
                     missing.append(f"{product['product_name']} ({section})")
                 for doc in docs:
                     evidence.append({**doc, 'id': f'E{len(evidence) + 1}'})
         base.update(evidence=evidence, interaction_checks=checks)
-        warnings = []
+        warnings = vector_warnings
         if interactions:
             warnings.append('금기 미발견은 병용 안전을 의미하지 않습니다. 복용 전 약사·의사에게 확인하세요.')
         if missing:
