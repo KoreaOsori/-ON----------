@@ -18,7 +18,7 @@ langchain/langgraph 없이 anthropic SDK의 `tools` 기능으로 루프를 직�
 | `harness.py` | `Limits`(라운드/호출/시간), `Budget`, `ALLOWED_TOOLS` | `harness.py` |
 | `tools.py` | `search_drug_info` 도구 정의·실행·`[출처 \| 제품명 \| 섹션]` 포매터 | `tools/rag_tools.py` |
 | `search.py` | 제품명 식별(이름 변형·`product_key`) + 제품 범위 exact 벡터 검색 (`CAST(:q AS vector)`) | `retrieval.py` |
-| `contra_tool.py`, `contra_store.py`, `contra_index.py` | 병용금기 도구 `check_contraindication`(정확 조회), 읽기 전용 SQLite 조회, parquet→SQLite 변환 | — |
+| `contra_tool.py`, `contra_rds.py`, `contra_store.py`, `contra_index.py` | 병용금기 도구 `check_contraindication`(정확 조회), RDS(`gold.drug_contraindication`) 조회, 읽기 전용 SQLite 조회, parquet→SQLite 변환 | — |
 | `names.py` | 제품명 입력 변형(전각/공백/괄호 제거)과 표시용 줄임(`(수출명:…)` 제거) | — |
 | `embedder.py` | 질문 임베딩(Titan V2 · 1024 · normalize), `asyncio.to_thread` | Bedrock 임베딩 호출 |
 | `db.py` | 읽기 전용 연결, 연결마다 시크릿 조회, 엔진/Reader | `db.py` |
@@ -39,7 +39,7 @@ langchain/langgraph 없이 anthropic SDK의 `tools` 기능으로 루프를 직�
 | 비밀값 비노출 | 비밀번호는 `repr`에서 제외. 시크릿/DB/임베딩/도구 오류는 **클래스 이름(+SQLSTATE)만** 로그·응답에 남기고 원인 체인은 끊는다(`from None`). 질문·답변·도구 인자는 로그에 남기지 않는다. |
 | 마스터 시크릿 회전 | `RDS_SECRET_ARN`이 있으면 **새 연결을 만들 때마다** Secrets Manager에서 읽는다(`db.open_connection`). 인증 실패(`InvalidPasswordError` 등)면 다시 읽어 한 번 더 시도한다. 풀 연결은 10분 뒤 재생성되고 `pool_pre_ping`을 켠다. |
 | 관련 없는 근거 차단 | 거리 임계값(`LLM_V2_MAX_DISTANCE`)을 넘는 문단은 모델에 주지 않는다(`search.retrieve`). 전부 걸러지면 아래 "근거 없음" 규칙이 적용된다. 모델이 고른 정보 유형(`section`)에 문단이 없으면 도구가 같은 임계값으로 모든 유형에 한 번만 넓혀 찾고, 결과에 `[참고]`를 붙여 어느 항목에서 찾았는지 밝히게 한다(`tools.DrugSearchTool.run`). |
-| 근거 없으면 모른다 | 검색 근거가 하나도 없으면 모델이 뭐라 답했든 `NO_EVIDENCE_ANSWER`로 대체한다(`agent._assemble`). |
+| 근거 없으면 모른다 | 검색 근거가 하나도 없으면 모델이 뭐라 답했든 고정 문구로 대체한다(`agent._assemble`). 도구로 찾아봤지만 없으면 `NO_EVIDENCE_ANSWER`("등록된 정보에서 확인할 수 없어요…"), 도구를 한 번도 못 쓴 경우(약 이름이 없거나 증상별 약 추천·성분으로 약 찾기 같은 범위 밖 질문)는 `OUT_OF_SCOPE_ANSWER`로 "약 이름을 알려주시면 약 정보와 병용 주의사항을 안내해 드려요"를 알린다. 둘 다 `status`는 `no_evidence`다. |
 | 허용 도구·한도 | 허용 목록 밖 도구 이름은 실행하지 않고 오류 결과를 돌려준다. 라운드 4·호출 6·60초 기본값(환경변수로 조정). 라운드를 다 쓰면 마지막 호출은 최종 답변을 요구하고, 그래도 도구를 또 부르면 `BUDGET_ANSWER`로 끝낸다. |
 | 의료 안전 문구 | 근거 있는 답변 끝에 면책 문구를 코드가 붙인다. 응급 표현이면 119 안내를 앞에 붙이고(모델이 실패해도 나간다), 자해·고의 과다복용 표현이면 약 정보 없이 도움 연결만 한다. |
 
@@ -81,12 +81,14 @@ cd backend
 app\llm\v2\dev_data\pipeline-venv\Scripts\python -m app.llm.v2.contra_index --parquet app\llm\v2\data\contraindication\data.parquet --out app\llm\v2\dev_data\contraindication.sqlite
 ```
 
-- **켜는 방법**: `dev_data/contraindication.sqlite`가 있으면 자동으로 켜지고, 다른 위치는 `LLM_V2_CONTRA_DB`로 지정합니다(지정했는데 파일이 없으면 오류). 파일이 없으면 도구도 시스템 프롬프트의 안내도 빠집니다.
+- **자료 출처** (`LLM_V2_CONTRA_SOURCE`, 기본 `auto`): ① `LLM_V2_CONTRA_DB`를 지정했으면 그 SQLite(파일이 없으면 오류) ② `dev_data/contraindication.sqlite`가 있으면 그 파일 ③ 둘 다 없으면 **RDS의 `gold.drug_contraindication`**을 읽습니다(EC2는 파일이 없으므로 환경변수 없이 이쪽). 값을 `rds`/`sqlite`로 고정하거나 `off`로 끌 수 있습니다(`off`면 도구도 시스템 프롬프트의 안내도 빠짐). 로컬 개발 DB에 `gold` 스키마가 없으면 `off`로 두세요(켜 두면 병용금기 질문에 "조회할 수 없다"는 안내가 나갑니다).
+- **RDS 읽기** (`contra_rds.py`): 검색과 같은 읽기 전용 트랜잭션에서 SELECT만 하고 값은 모두 바인딩합니다. 테이블에는 `품목 DUR`(약 79.5만 행, SQLite 쌍 수와 거의 같음)과 `성분 규칙`(약 31.5만 행, 성분 단위 규칙이 제품 쌍으로 풀린 것)이 함께 있고, 한 쌍이 양방향으로 저장돼 있어 `item_seq=앞 제품 AND mixture_item_seq=뒤 제품`으로 조회합니다(한쪽만 있는 쌍을 위해 비면 반대 방향도 조회). 결과에 `규칙 종류`(품목 DUR / 성분 규칙)가 붙고, 품목 DUR이 먼저 나옵니다. 판정은 데이터 담당 쪽 기준을 따릅니다: **품목 DUR이 하나라도 있으면 '병용금기'**(식약처가 제품에 적용), **성분 규칙만 있으면 '성분 기준 주의'**(헤더·출처 라벨·모델 지시가 달라지고 '병용금기'라고 단정하지 않음). 이 테이블에는 적재 기준일이 없어 "자료 기준일"은 표시하지 않습니다. `gold` 스키마는 데이터 파이프라인 소유라 읽기만 하며, 느리면 `(item_seq, mixture_item_seq)` 인덱스를 그쪽에 요청합니다.
+- **성분 이름도 받습니다 (RDS 저장소일 때)**: 제품명으로 정확히 찾지 못한 이름은 `gold.drug_ingredient`에서 성분 이름으로 한 번 더 찾아 DUR 성분 코드(D코드)로 바꿉니다("아세트아미노펜 × 와파린정" 같은 입력). 제품 × 제품은 지금처럼 `item_seq` 쌍으로, 성분이 하나라도 낀 조합은 `drug_contraindication`의 `ingr_code`/`mixture_ingr_code`로 조회합니다(제품 쪽 코드는 `drug_ingredient`에서 가져옴). 이름이 정확히 같은 제품이 있으면 제품이 먼저입니다. 정확히 같은 제품이 없고(없거나, 앞부분·일부만 맞는 제품이 여럿이거나 너무 많을 때) 성분 이름과는 정확히 같으면 성분으로 확인합니다(예: '케토코나졸'은 '케토코나졸크림', '더마졸정(케토코나졸)' 등 20개가 넘는 제품에 걸리지만 성분으로 처리). 정확히 같은 이름의 제품이 여럿이면 성분으로 넘어가지 않고 되묻습니다. 성분 단위라 **제형 같은 제품별 조건은 반영되지 않고 복합제 규칙은 정확히 맞지 않을 수 있어**, 결과에 `[성분 기준 조회]` 안내를 코드가 붙이고 모델이 답변에서 밝히게 합니다. 이름은 있으나 D코드가 없는 성분, 성분 코드를 찾지 못한 제품은 "규칙 없음"이 아니라 `[확인 불가]`로 알립니다. 판정 기준(품목 DUR이 있으면 금기, 성분 규칙만이면 성분 기준 주의)은 제품 조회와 같습니다. "이 성분이 든 약 목록" 찾기는 하지 않습니다. 조회 SQL은 임시 PostgreSQL 16에서 문법과 결과를 확인했지만 RDS에서 돌려 본 것은 아닙니다. `(ingr_code, mixture_ingr_code)` 인덱스는 `pipeline/gold/schema.sql`에 추가됐고 다음 적재부터 생깁니다(그 전에는 전체 스캔이라 느릴 수 있음). SQLite 저장소는 성분 조회를 지원하지 않습니다.
 - **안전 규칙(코드)**: 이름이 여러 제품으로 갈리면 임의로 고르지 않고 `[확인 필요]`로 되묻습니다(사용자가 고르면 `products`에 `product_key`를 넣어 다시 호출). 규칙이 없으면 "병용금기 규칙 없음 — 안전하다는 뜻이 아님"으로 전달하고, 근거 목록에는 "병용금기 자료 조회(해당 규칙 없음)"으로만 남깁니다.
   조건·비고(예: "48시간 이내", "methotrexate 15mg 이상")는 반드시 함께 전합니다.
 - **건강기능식품이 섞인 조합**: 병용금기(DUR) 자료는 의약품 전용이라 판정하지 않습니다(v1과 같은 정책). 대신 건강기능식품의 **섭취 주의사항(`precautions`)을 문단 단위로 전부** 돌려주고(임베딩 순위 없이 `fetch_section_texts`로 읽음), 모델에게는 "적힌 내용만 전하고 상호작용을 추정하거나 안전하다고 말하지 말 것"을 도구 결과와 프롬프트로 지시합니다. 의약품이 둘 이상이면 의약품끼리는 평소처럼 병용금기를 조회합니다. 글자 예산은 전체 6,000자(제품 수로 나눔, 제품당 최소 1,500자)이며 **문단 중간에서 자르지 않고**, 첫 문단은 항상 담습니다. 예산을 넘겨 못 담은 문단이 있으면 결과에 "일부 문단을 생략했습니다"를 적어 모델이 그 사실을 밝히게 합니다. 등록된 주의사항이 없는 제품은 "[확인 불가]"로 알립니다.
 - **한계**: 이 자료에 한 번도 등장하지 않는 제품은 "규칙 없음"과 "자료에 없음"을 구분할 수 없어, 결과에 "이 자료에 규칙이 하나도 등록돼 있지 않은 제품"을 표시합니다. 용량·질환 조건별 주의, 효능군 중복 등은 다루지 않습니다.
-- **운영 반영 시 결정 필요**: 지금은 로컬 파일입니다. 운영(EC2/RDS)에서는 이 인덱스를 배포물에 포함할지, RDS 테이블로 옮길지(그러면 `vector_pipeline` 쪽 적재가 필요) 팀에서 정해야 합니다.
+- **운영(EC2/RDS)**: 파일을 배포하지 않고 RDS 테이블을 읽습니다(월 1회 데이터 파이프라인 적재로 갱신). SQLite 인덱스는 로컬 개발·평가(`contra_eval`)용으로 남아 있으며, RDS 쪽은 `성분 규칙`이 더해져 범위가 더 넓습니다.
 - **확인**: `uv run python -m app.llm.v2.evaluation.contra_eval --limit 100` — DB에 적재된 의약품 중 실제 병용금기 쌍(양성)과 규칙 없는 쌍(대조군)을 도구로 확인해, 양성은 key로 100% 규칙 있음·대조군은 100% 규칙 없음인지 봅니다(Bedrock 불필요).
 
 ## HTTP API (FastAPI)
@@ -98,7 +100,7 @@ cd backend
 uv run python -m uvicorn app.llm.v2.api:app --host 127.0.0.1 --port 8012
 ```
 
-Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변수로 설정을 읽고 에이전트를 만듭니다(설정 오류나, `LLM_V2_CONTRA_DB`를 지정했는데 파일이 없으면 시작이 실패합니다).
+Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는 새로고침해도 유지됩니다(`persistAuthorization` — 브라우저 localStorage 에 저장되므로 공용 PC 에서는 쓰지 마세요). 앱이 시작될 때 환경변수로 설정을 읽고 에이전트를 만듭니다(설정 오류나, `LLM_V2_CONTRA_DB`를 지정했는데 파일이 없으면 시작이 실패합니다).
 
 | 엔드포인트 | 설명 |
 |---|---|
@@ -152,8 +154,35 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변�
 - `LLM_V2_API_KEY`를 설정하면 `X-API-Key`가 일치해야 합니다(상수 시간 비교, ASCII 문자열 권장). 설정하지 않으면 인증 없이 열리므로 **localhost로만** 띄우고(시작 때 경고 로그), 외부에 열 때는 키와 HTTPS 프록시·보안그룹으로 접근을 제한하세요. 이 키는 AWS 키와 무관합니다.
 - 오류 응답에는 내부 메시지를 담지 않고, 로그에는 질문·프로필·비밀값을 남기지 않습니다.
 - 동시에 처리하는 질문은 `LLM_V2_API_MAX_CONCURRENCY`(기본 4)개입니다. 나머지는 `LLM_V2_API_QUEUE_SECONDS`(기본 5초)까지 기다리고, 넘으면 503입니다(DB 연결 풀과 Bedrock 호출 보호).
-- EC2에서는 **환경변수 없이** v1과 같은 RDS 설정(호스트·DB·시크릿·CA)으로 연결하고, 인스턴스 역할 자격증명이 아니면 시작을 막습니다(아래 "AWS 자격증명과 DB 연결"). 병용금기 파일(`LLM_V2_CONTRA_DB`)과 Bedrock·Secrets Manager 권한은 따로 필요합니다. v1의 `iam/` 정책 템플릿을 참고하세요.
+- EC2에서는 **환경변수 없이** v1과 같은 RDS 설정(호스트·DB·시크릿·CA)으로 연결하고, 인스턴스 역할 자격증명이 아니면 시작을 막습니다(아래 "AWS 자격증명과 DB 연결"). 병용금기는 파일 없이 RDS(`gold.drug_contraindication`)를 읽으므로 DB 계정에 그 테이블의 SELECT 권한이 있어야 합니다(현재 마스터 계정으로 확인함). Bedrock·Secrets Manager 권한은 따로 필요합니다. v1의 `iam/` 정책 템플릿을 참고하세요.
 - 백엔드는 이 서버를 HTTP로 호출하거나(권장), `from app.llm.v2.agent import answer`로 직접 호출합니다. 라우터만 다른 앱에 붙이면 시작 때 설정되는 `app.state`가 없어 동작하지 않습니다.
+
+### 응답 코드와 화면 처리
+
+정책에 따른 안내(근거 없음·되묻기·위기·응급 등)는 **오류가 아니라 항상 200 + `status`** 로 옵니다. 서비스 문제만 HTTP 오류로 나가고, 오류 본문은 모두 `{"detail": "<한국어 문장>"}` 모양입니다(Swagger의 `/ask`에도 표시됩니다).
+
+| HTTP | 뜻 | 화면에서 |
+|---|---|---|
+| 401 | `X-API-Key` 없음/틀림(서버 설정 문제) | 사용자에게 보이지 않음. 개발자 로그로만 남김 |
+| 422 | 질문이 비었거나 너무 길거나 형식 위반. `fields`에 문제 필드 이름(입력값은 돌려주지 않음) | `detail` 문장을 그대로 보여 줌 |
+| 503 | 동시 요청 초과(`Retry-After`초 뒤 재시도), 내부 오류, v2 초기화 실패 | `detail` 문장을 보여 주고 다시 시도하게 함 |
+| 504 | 답변 시간 초과 | `detail` 문장을 보여 주고 다시 시도하게 함 |
+
+화면(프론트) 처리 예시 — 200이면 `status`로, 아니면 HTTP 코드로 나눕니다.
+
+```js
+const res = await fetch("/api/llm/v2/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": KEY }, body: JSON.stringify({ question, product_key }) });
+if (res.ok) {
+  const { status, answer, sources, emergency, candidates } = await res.json();
+  // status === "needs_clarification" 이면 candidates 로 제품 선택 버튼을 보여 주고, 고른 product_key 로 같은 질문을 다시 보낸다.
+  return render(answer, { status, sources, emergency, candidates });
+}
+const { detail } = await res.json().catch(() => ({ detail: "지금은 답변을 만들기 어려워요. 잠시 후 다시 시도해 주세요." }));
+if (res.status === 401) { console.error("LLM v2 API 키 설정 확인 필요"); return render("지금은 답변을 만들기 어려워요. 잠시 후 다시 시도해 주세요."); }
+return render(detail); // 422 / 503 / 504 는 detail 이 사용자용 문장이다
+```
+
+키(`X-API-Key`)는 브라우저 코드에 넣지 말고 **백엔드가 대신 호출**하게 하세요(브라우저에 키가 노출됨).
 
 ### 공개 주소에 붙이기 (`/api/llm/v2`)
 
@@ -214,7 +243,8 @@ LLM_V2_AUTH_MODE=ec2_role
 | `LLM_V2_PROVIDER` | `bedrock`(InvokeModel, EC2 역할로 가능) / `mantle`(IAM에 `bedrock-mantle:CreateInference` 필요) | bedrock |
 | `LLM_V2_MAX_TOOL_ROUNDS`, `LLM_V2_MAX_TOOL_CALLS`, `LLM_V2_MAX_SECONDS` | 하니스 한도 | 4 / 6 / 60 |
 | `LLM_V2_SEARCH_TOP_K` | 도구 한 번에 가져올 근거 수 | 5 |
-| `LLM_V2_CONTRA_DB` | 병용금기 인덱스(SQLite) 경로. 비우면 `dev_data/contraindication.sqlite`가 있을 때만 병용금기 도구를 켬 | (없음) |
+| `LLM_V2_CONTRA_DB` | 병용금기 인덱스(SQLite) 경로. 비우면 `dev_data/contraindication.sqlite`가 있을 때 그 파일을 쓰고, 없으면 RDS를 읽음 | (없음) |
+| `LLM_V2_CONTRA_SOURCE` | 병용금기 자료 출처: `auto` / `rds` / `sqlite` / `off` | `auto` |
 | `LLM_V2_API_KEY` | HTTP API의 `X-API-Key` 값. 비우면 인증 없이 열림(localhost 전용) | (없음) |
 | `LLM_V2_API_MAX_CONCURRENCY`, `LLM_V2_API_QUEUE_SECONDS` | HTTP API 동시 처리 질문 수 / 자리가 날 때까지 기다리는 시간(초) | 4 / 5 |
 | `LLM_V2_MAX_DISTANCE` | 코사인 거리가 이 값보다 큰 근거는 버림(0~2). 전부 버려지면 "근거 없음" 처리. 기본값은 `retrieval_eval --mode calibrate` 결과로 정함(정답 95% 통과·무관 질문 99% 차단). 데이터·임베딩 모델이 바뀌면 다시 보정 | 0.80 |
@@ -352,7 +382,7 @@ $env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.In
 3. 위의 점검 명령을 실행합니다. 이 계정은 팀이 공유하는 마스터 계정이므로, v2가 하는 읽기 전용 조회 외에는 아무것도 하지 않도록 주의하세요. 끝나면 `Remove-Item Env:PGPASSWORD`로 지웁니다.
 
 - 연결은 `localhost`라서 인증서 호스트명 검사(`verify-full`)가 맞지 않아 `PGSSLMODE=require`를 씁니다. 이 설정은 이 방식(터널)에서만 쓰세요.
-- 병용금기는 `dev_data/contraindication.sqlite`가 있으면 로컬에서도 켜집니다.
+- 병용금기는 `dev_data/contraindication.sqlite`가 있으면 그 파일로, 없으면 RDS `gold.drug_contraindication`으로 켜집니다(로컬 DB에 `gold`가 없으면 `LLM_V2_CONTRA_SOURCE=off`).
 
 ## 테스트
 

@@ -11,6 +11,7 @@ from app.llm.v2.prompts import (
     ERROR_ANSWER,
     FORCED_FINAL_HINT,
     NO_EVIDENCE_ANSWER,
+    OUT_OF_SCOPE_ANSWER,
     SAFETY_FOOTER,
     TIMEOUT_ANSWER,
 )
@@ -75,7 +76,7 @@ async def test_grounded_answer_gets_footer_and_sources_from_evidence():
 async def test_no_tool_call_means_no_evidence_answer_regardless_of_model_text():
     model = ScriptedModel(response(text_block("타이레놀은 하루 4000mg까지 드셔도 됩니다.")))
     result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 얼마나 먹어도 돼?")
-    assert result.answer == NO_EVIDENCE_ANSWER and not result.grounded and result.stop_reason == "no_evidence"
+    assert result.answer == OUT_OF_SCOPE_ANSWER and not result.grounded and result.stop_reason == "no_evidence"
     assert "4000" not in result.answer and result.sources == []
 
 
@@ -95,7 +96,7 @@ async def test_disallowed_tool_is_never_executed():
     assert tool.calls == [] and result.tools_used == []
     blocked = model.calls[1]["messages"][2]["content"][0]
     assert blocked["is_error"] is True and blocked["tool_use_id"] == "t1"
-    assert result.answer == NO_EVIDENCE_ANSWER
+    assert result.answer == OUT_OF_SCOPE_ANSWER  # 허용되지 않은 도구는 실행되지 않았으므로 '찾아봤지만 없음'이 아니다
 
 
 async def test_parallel_tool_uses_all_get_results():
@@ -162,6 +163,16 @@ async def test_refusal_stop_reason():
     model = ScriptedModel(response(text_block("거절"), stop_reason="refusal"))
     result = await make_agent(model, FakeTool(FOUND)).run("질문")
     assert result.answer == ERROR_ANSWER and result.stop_reason == "refusal"
+
+
+async def test_emergency_without_evidence_is_only_the_119_notice():
+    model = ScriptedModel(response(text_block("어떤 약이에요?")))
+    result = await make_agent(model, FakeTool(FOUND)).run("약을 먹었는데 숨이 안 쉬어지고 얼굴이 부어요")
+    assert result.emergency and result.stop_reason == "no_evidence" and not result.grounded
+    assert result.answer == EMERGENCY_NOTICE  # 범위 안내 문구를 붙이지 않는다
+    model = ScriptedModel(response(search_call()), response(text_block("x")))
+    result = await make_agent(model, FakeTool(MISSING)).run("타이레놀 먹고 호흡곤란이 와요")
+    assert result.answer == EMERGENCY_NOTICE and result.stop_reason == "no_evidence"
 
 
 async def test_emergency_notice_is_prepended():
@@ -309,7 +320,7 @@ async def test_contra_tool_is_off_when_not_configured():
     assert "check_contraindication" not in SYSTEM_PROMPT
     tool_result = model.calls[1]["messages"][2]["content"][0]
     assert tool_result["is_error"] and "사용할 수 없는 도구" in tool_result["content"]
-    assert result.answer == NO_EVIDENCE_ANSWER and not result.grounded and CONTRA_TOOL_NAME not in result.tools_used
+    assert result.answer == OUT_OF_SCOPE_ANSWER and not result.grounded and CONTRA_TOOL_NAME not in result.tools_used
 
 
 def test_build_contra_tool_follows_explicit_path_and_default_location():
@@ -317,20 +328,29 @@ def test_build_contra_tool_follows_explicit_path_and_default_location():
     from pathlib import Path
 
     from app.llm.v2.contra_index import build_index
-    from app.llm.v2.contra_store import ContraStoreError
+    from app.llm.v2.contra_rds import RdsContraStore
+    from app.llm.v2.contra_store import ContraStore, ContraStoreError
 
     tmp = Path(tempfile.mkdtemp())
     settings = make_settings()
     original = agent_module.DEFAULT_CONTRA_DB
     try:
         agent_module.DEFAULT_CONTRA_DB = tmp / "none.sqlite"
-        assert agent_module._build_contra_tool(settings, object()) is None  # 기본 위치에 파일이 없으면 조용히 끈다
+        # 기본 위치에 파일이 없으면 RDS(gold.drug_contraindication)를 읽는다
+        assert isinstance(agent_module._build_contra_tool(settings, object())._store, RdsContraStore)
         index = tmp / "contra.sqlite"
         build_index([], index)
         agent_module.DEFAULT_CONTRA_DB = index
-        assert agent_module._build_contra_tool(settings, object()) is not None  # 기본 위치에 있으면 켠다
+        assert isinstance(agent_module._build_contra_tool(settings, object())._store, ContraStore)  # 기본 위치에 있으면 SQLite
         with raises(ContraStoreError):  # 경로를 명시했는데 없으면 설정 실수 → 오류
             agent_module._build_contra_tool(make_settings(contra_db_path=str(tmp / "missing.sqlite")), object())
+        # 출처를 명시하면 파일 유무와 상관없이 그대로 따른다
+        assert isinstance(agent_module._build_contra_tool(make_settings(contra_source="rds"), object())._store, RdsContraStore)
+        assert agent_module._build_contra_tool(make_settings(contra_source="off"), object()) is None
+        assert isinstance(agent_module._build_contra_tool(make_settings(contra_source="sqlite"), object())._store, ContraStore)
+        agent_module.DEFAULT_CONTRA_DB = tmp / "none.sqlite"
+        with raises(ContraStoreError):  # sqlite 를 명시했는데 파일이 없으면 오류
+            agent_module._build_contra_tool(make_settings(contra_source="sqlite"), object())
     finally:
         agent_module.DEFAULT_CONTRA_DB = original
 
@@ -370,3 +390,10 @@ async def test_answer_entrypoint_reports_error_when_credential_policy_fails():
         agent_module.ensure_credentials = original
         agent_module._agent = None
     assert result.stop_reason == "error" and result.answer == ERROR_ANSWER  # 서버가 정책을 어기면 답하지 않는다
+
+
+def test_fixed_no_evidence_messages_explain_what_the_bot_can_do():
+    for text in (NO_EVIDENCE_ANSWER, OUT_OF_SCOPE_ANSWER):
+        assert "약 이름" in text and "병용 주의사항" in text and "약사나 의사" in text
+    assert "등록된 정보에서 확인할 수 없어요" in NO_EVIDENCE_ANSWER  # 없는 제품 시나리오(S10)가 기대하는 문구
+    assert "지원하지 않아요" in OUT_OF_SCOPE_ANSWER and "증상" in OUT_OF_SCOPE_ANSWER and "성분" in OUT_OF_SCOPE_ANSWER

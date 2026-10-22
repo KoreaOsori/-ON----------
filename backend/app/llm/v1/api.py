@@ -5,6 +5,9 @@ from contextlib import asynccontextmanager
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.security import APIKeyHeader
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -36,7 +39,8 @@ async def models(request: Request):
         "sonnet": settings.sonnet_model_id, "haiku": settings.haiku_model_id}}
 
 
-@router.post("/ask", response_model=AskResponse)
+@router.post("/ask", response_model=AskResponse,
+             responses={401: {"model": AskResponse}, 422: {"model": AskResponse}, 503: {"model": AskResponse}})
 async def ask(body: AskRequest, request: Request):
     settings = request.app.state.llm_settings
     try:
@@ -76,6 +80,20 @@ def create_app(*, route_prefix: str = "") -> FastAPI:
         title="약·건강기능식품 LLM v1 테스트", version="1.0.0", lifespan=lifespan,
         docs_url="/docs", openapi_url="/openapi.json", redoc_url=None,
     )
+    @application.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, error: StarletteHTTPException):
+        messages = {401: "접근 인증을 확인한 뒤 다시 시도해 주세요.",
+                    404: "요청하신 주소를 찾지 못했어요.",
+                    405: "요청 방식을 확인해 주세요."}
+        body = AskResponse(status="error", answer=messages.get(error.status_code,
+            "지금은 정보를 확인하는 데 문제가 있어요. 잠시 후 다시 시도해 주세요."))
+        return JSONResponse(status_code=error.status_code, content=body.model_dump(), headers=error.headers)
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, error: RequestValidationError):
+        return JSONResponse(status_code=422, content=AskResponse(status="error",
+            answer="질문과 제품명 목록의 입력 형식을 확인해 주세요. 제품명은 문자열 목록으로 입력해 주세요.").model_dump())
+
     application.include_router(router, prefix=route_prefix)
     return application
 

@@ -137,6 +137,7 @@ CREATE TABLE gold.load_info (
 
 -- INDEXES
 CREATE INDEX drug_contraindication_pair_idx ON gold.drug_contraindication (item_seq, mixture_item_seq);
+CREATE INDEX drug_contraindication_ingr_idx ON gold.drug_contraindication (ingr_code, mixture_ingr_code);  -- 성분 코드 기준 병용금기 판정용
 CREATE INDEX drug_dur_caution_item_idx ON gold.drug_dur_caution (item_seq, caution_type);
 CREATE INDEX drug_ingredient_key_idx ON gold.drug_ingredient (ingr_key);
 CREATE INDEX dur_ingredient_rule_code_idx ON gold.dur_ingredient_rule (ingr_code, caution_type);

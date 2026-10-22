@@ -216,6 +216,7 @@ def test_contra_prompt_forbids_unsourced_stop_or_continue_advice():
 
     assert "이미 함께 쓰고 있다고 해도 중단하라거나 계속하라는 말은 하지 않고" in CONTRA_PROMPT_ADDENDUM
     assert "안전하다, 괜찮다, 문제없다고 말하지 않고" in CONTRA_PROMPT_ADDENDUM
+    assert "제형·투여 경로, 용도, 성분 설명 등)는 제품명에서 짐작되더라도 말하지 않습니다" in CONTRA_PROMPT_ADDENDUM
 
 
 # ----------------------------------------------------------------------------- 건강기능식품 섭취 주의사항
@@ -322,3 +323,11 @@ def test_prompt_and_spec_describe_food_handling():
     assert "건강기능식품이 포함된 조합은 병용금기 판정을 하지 않습니다" in CONTRA_PROMPT_ADDENDUM
     assert "섭취 주의사항만" in build_contra_spec()["description"]
 
+
+
+def test_prompt_style_rules_for_tone_jargon_and_repetition():
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM, SYSTEM_PROMPT
+
+    for needle in ("해요체로 통일", "마크다운", "맺음말", "같은 내용을 요약과 목록에서 두 번"):
+        assert needle in SYSTEM_PROMPT
+    assert "식약처가 정한 병용금기" in CONTRA_PROMPT_ADDENDUM and "두 번 말하지 않습니다" in CONTRA_PROMPT_ADDENDUM

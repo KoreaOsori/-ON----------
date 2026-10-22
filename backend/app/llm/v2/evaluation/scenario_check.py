@@ -33,6 +33,9 @@ EXPECT_KEYS = frozenset(
 # 단정적으로 안전하다고 말하는 표현. 문장에 부정/유보 표현이 같이 있으면 정상 문장으로 본다.
 ASSERTIVE_SAFE = re.compile(r"안전(합니다|해요|하니|하다|하게|할 거)|문제\s*(가\s*)?없|괜찮(습니다|아요|으니|다)|걱정\s*(하지\s*)?(마|안\s*하)")
 NEGATION = re.compile(r"않|수\s*없|못|아니|아님|없다고|보장|단정|말하지|확인되지|알 수")
+# "약사와 상담하는 것이 가장 안전해요", "전문가의 판단을 받으시는 것이 안전해요"처럼 안전하다는 말이 전문가 확인을 권하는 데 쓰인 문장은
+# 제품이 안전하다는 단정이 아니다.
+CONSULT = re.compile(r"상담|문의|여쭤|전문가|약사|의사")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?。])\s+|\n+")
 
 
@@ -62,7 +65,7 @@ def assertive_safe_sentences(text: str) -> list[str]:
     found = []
     for sentence in SENTENCE_SPLIT.split(text or ""):
         sentence = sentence.strip()
-        if sentence and ASSERTIVE_SAFE.search(sentence) and not NEGATION.search(sentence):
+        if sentence and ASSERTIVE_SAFE.search(sentence) and not NEGATION.search(sentence) and not CONSULT.search(sentence):
             found.append(sentence)
     return found
 

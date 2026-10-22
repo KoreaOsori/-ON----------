@@ -3,6 +3,7 @@
 contra_index.py 가 만든 파일을 조회한다. 키는 item_seq(품목기준코드) 문자열이며, 검색 DB 의 product_key 'drug:<item_seq>' 에서
 접두어를 뗀 값이다. 모든 값은 파라미터로 바인딩한다.
 """
+import asyncio
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ class ContraRule:
     form_name: str | None
     notified: str | None  # 고시일 YYYY-MM-DD
     dur_seq: str | None = None
+    basis: str | None = None  # RDS 의 규칙 종류('품목 DUR' | '성분 규칙'). SQLite 인덱스에는 없다.
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,8 @@ class PairCheck:
     first: str
     second: str
     rules: list[ContraRule]
+    level: str = "product"  # product=제품 쌍(item_seq) 조회 | ingredient=성분 코드(D코드) 조회
+    unresolved: tuple[str, ...] = ()  # level=ingredient 에서 성분 코드를 찾지 못해 판정하지 못한 쪽(조회 키)
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,12 @@ class ContraStore:
         with closing(self._connect()) as connection:
             row = connection.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
+
+    async def lookup_with_snapshot(self, reader: object, seqs: list[str]) -> tuple[LookupResult, str | None]:
+        """도구가 쓰는 공통 진입점(RdsContraStore 와 같은 모양). SQLite 는 reader 를 쓰지 않는다."""
+        lookup = await asyncio.to_thread(self.lookup, seqs)
+        snapshot = await asyncio.to_thread(self.meta, "snapshot")
+        return lookup, snapshot
 
     def lookup(self, seqs: list[str], max_rules_per_pair: int = 20) -> LookupResult:
         """seqs 의 모든 조합(앞→뒤 순서)에 대한 규칙과, 제품별 규칙 보유 여부."""

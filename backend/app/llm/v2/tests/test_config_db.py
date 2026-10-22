@@ -176,6 +176,14 @@ def test_contra_db_path_from_env():
     assert V2Settings.from_env({"LLM_V2_CONTRA_DB": "/x/contra.sqlite"}).contra_db_path == "/x/contra.sqlite"
 
 
+def test_contra_source_from_env():
+    assert V2Settings.from_env({}).contra_source == "auto"
+    for value in ("rds", "SQLite", "off", "auto"):
+        assert V2Settings.from_env({"LLM_V2_CONTRA_SOURCE": value}).contra_source == value.lower()
+    with raises(ConfigError):
+        V2Settings.from_env({"LLM_V2_CONTRA_SOURCE": "csv"})
+
+
 def test_api_settings_from_env():
     defaults = V2Settings.from_env({})
     assert (defaults.api_key, defaults.api_max_concurrency, defaults.api_queue_seconds) == ("", 4, 5.0)
