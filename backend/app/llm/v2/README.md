@@ -100,7 +100,7 @@ cd backend
 uv run python -m uvicorn app.llm.v2.api:app --host 127.0.0.1 --port 8012
 ```
 
-Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변수로 설정을 읽고 에이전트를 만듭니다(설정 오류나, `LLM_V2_CONTRA_DB`를 지정했는데 파일이 없으면 시작이 실패합니다).
+Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는 새로고침해도 유지됩니다(`persistAuthorization` — 브라우저 localStorage 에 저장되므로 공용 PC 에서는 쓰지 마세요). 앱이 시작될 때 환경변수로 설정을 읽고 에이전트를 만듭니다(설정 오류나, `LLM_V2_CONTRA_DB`를 지정했는데 파일이 없으면 시작이 실패합니다).
 
 | 엔드포인트 | 설명 |
 |---|---|
@@ -156,6 +156,33 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. 앱이 시작될 때 환경변�
 - 동시에 처리하는 질문은 `LLM_V2_API_MAX_CONCURRENCY`(기본 4)개입니다. 나머지는 `LLM_V2_API_QUEUE_SECONDS`(기본 5초)까지 기다리고, 넘으면 503입니다(DB 연결 풀과 Bedrock 호출 보호).
 - EC2에서는 **환경변수 없이** v1과 같은 RDS 설정(호스트·DB·시크릿·CA)으로 연결하고, 인스턴스 역할 자격증명이 아니면 시작을 막습니다(아래 "AWS 자격증명과 DB 연결"). 병용금기는 파일 없이 RDS(`gold.drug_contraindication`)를 읽으므로 DB 계정에 그 테이블의 SELECT 권한이 있어야 합니다(현재 마스터 계정으로 확인함). Bedrock·Secrets Manager 권한은 따로 필요합니다. v1의 `iam/` 정책 템플릿을 참고하세요.
 - 백엔드는 이 서버를 HTTP로 호출하거나(권장), `from app.llm.v2.agent import answer`로 직접 호출합니다. 라우터만 다른 앱에 붙이면 시작 때 설정되는 `app.state`가 없어 동작하지 않습니다.
+
+### 응답 코드와 화면 처리
+
+정책에 따른 안내(근거 없음·되묻기·위기·응급 등)는 **오류가 아니라 항상 200 + `status`** 로 옵니다. 서비스 문제만 HTTP 오류로 나가고, 오류 본문은 모두 `{"detail": "<한국어 문장>"}` 모양입니다(Swagger의 `/ask`에도 표시됩니다).
+
+| HTTP | 뜻 | 화면에서 |
+|---|---|---|
+| 401 | `X-API-Key` 없음/틀림(서버 설정 문제) | 사용자에게 보이지 않음. 개발자 로그로만 남김 |
+| 422 | 질문이 비었거나 너무 길거나 형식 위반. `fields`에 문제 필드 이름(입력값은 돌려주지 않음) | `detail` 문장을 그대로 보여 줌 |
+| 503 | 동시 요청 초과(`Retry-After`초 뒤 재시도), 내부 오류, v2 초기화 실패 | `detail` 문장을 보여 주고 다시 시도하게 함 |
+| 504 | 답변 시간 초과 | `detail` 문장을 보여 주고 다시 시도하게 함 |
+
+화면(프론트) 처리 예시 — 200이면 `status`로, 아니면 HTTP 코드로 나눕니다.
+
+```js
+const res = await fetch("/api/llm/v2/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": KEY }, body: JSON.stringify({ question, product_key }) });
+if (res.ok) {
+  const { status, answer, sources, emergency, candidates } = await res.json();
+  // status === "needs_clarification" 이면 candidates 로 제품 선택 버튼을 보여 주고, 고른 product_key 로 같은 질문을 다시 보낸다.
+  return render(answer, { status, sources, emergency, candidates });
+}
+const { detail } = await res.json().catch(() => ({ detail: "지금은 답변을 만들기 어려워요. 잠시 후 다시 시도해 주세요." }));
+if (res.status === 401) { console.error("LLM v2 API 키 설정 확인 필요"); return render("지금은 답변을 만들기 어려워요. 잠시 후 다시 시도해 주세요."); }
+return render(detail); // 422 / 503 / 504 는 detail 이 사용자용 문장이다
+```
+
+키(`X-API-Key`)는 브라우저 코드에 넣지 말고 **백엔드가 대신 호출**하게 하세요(브라우저에 키가 노출됨).
 
 ### 공개 주소에 붙이기 (`/api/llm/v2`)
 
