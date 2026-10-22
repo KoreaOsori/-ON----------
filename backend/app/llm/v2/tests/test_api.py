@@ -249,3 +249,23 @@ def test_module_app_builds_agent_lazily_from_env():
     # import 만으로는 환경변수·DB·AWS 에 접근하지 않는다(앱이 시작될 때만 에이전트를 만든다).
     assert api_module.app.title == "약온 LLM v2"
     assert not hasattr(api_module.app.state, "llm_agent")
+
+
+def test_validation_errors_use_the_same_detail_shape_and_never_echo_the_input():
+    client, _ = client_for()
+    with client:
+        response = client.post("/llm/v2/ask", json={"question": "   ", "profile_context": "비밀 병력 " * 200})
+    body = response.json()
+    assert response.status_code == 422 and isinstance(body["detail"], str) and body["detail"].startswith("요청 형식이")
+    assert set(body["fields"]) == {"question", "profile_context"}
+    assert "비밀 병력" not in response.text  # 입력값은 돌려주지 않는다
+
+
+def test_openapi_documents_the_error_responses_of_ask():
+    client, _ = client_for()
+    with client:
+        schema = client.get("/openapi.json").json()
+    responses = schema["paths"]["/llm/v2/ask"]["post"]["responses"]
+    assert {"200", "401", "422", "503", "504"} <= set(responses)
+    assert "Retry-After" in responses["503"]["headers"]
+    assert responses["422"]["content"]["application/json"]["schema"]["$ref"].endswith("ValidationErrorBody")
