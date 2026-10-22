@@ -31,6 +31,7 @@ SECTION_LABELS = {
     "storage": "보관법",
     "additional": "기타 정보",
     "contraindication": "병용금기(DUR)",
+    "contraindication_ingredient": "병용 주의(성분 기준)",
     "contraindication_none": "병용금기 자료 조회(해당 규칙 없음)",
 }
 

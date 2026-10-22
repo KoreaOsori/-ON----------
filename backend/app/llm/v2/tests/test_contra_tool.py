@@ -216,6 +216,7 @@ def test_contra_prompt_forbids_unsourced_stop_or_continue_advice():
 
     assert "이미 함께 쓰고 있다고 해도 중단하라거나 계속하라는 말은 하지 않고" in CONTRA_PROMPT_ADDENDUM
     assert "안전하다, 괜찮다, 문제없다고 말하지 않고" in CONTRA_PROMPT_ADDENDUM
+    assert "제형·투여 경로, 용도, 성분 설명 등)는 제품명에서 짐작되더라도 말하지 않습니다" in CONTRA_PROMPT_ADDENDUM
 
 
 # ----------------------------------------------------------------------------- 건강기능식품 섭취 주의사항

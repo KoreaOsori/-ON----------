@@ -4,8 +4,8 @@
 {"id": "S04", "category": "약_상호작용", "question": "에트라빌25밀리그램정이랑 같이 먹으면 안 되는 약이 있나요?", "expect": {"stop_reason_in": ["done"], "grounded": true, "sources_any": ["에트라빌"]}}
 {"id": "S05", "category": "병용_약약", "question": "중외헤파린주랑 아로나민골드정을 같이 써도 돼요?", "expect": {"stop_reason_in": ["done"], "tools_any": ["check_contraindication"], "grounded": true, "include_any": ["약사", "의사"]}}
 {"id": "S06", "category": "병용_약3개", "question": "아로나민골드정, 코푸시럽에스, 다이크로짇정을 같이 먹어도 되나요?", "expect": {"stop_reason_in": ["done"], "tools_any": ["check_contraindication"], "grounded": true}}
-{"id": "S07", "category": "병용_약건기식", "question": "아로나민골드정이랑 고려인삼분말캡슐 같이 먹어도 돼요?", "note": "로컬 DB 기준 고려인삼분말캡슐 주의사항에 '알레르기 체질' 문구가 있다. 전체 DB에서도 같은지 확인.", "expect": {"stop_reason_in": ["done"], "tools_any": ["check_contraindication"], "grounded": true, "sources_any": ["고려인삼분말캡슐"]}}
-{"id": "S08", "category": "건기식_주의사항", "question": "고려인삼분말캡슐은 먹을 때 주의할 점이 있나요?", "expect": {"stop_reason_in": ["done"], "grounded": true, "sources_any": ["고려인삼분말캡슐"]}}
+{"id": "S07", "category": "병용_약건기식", "question": "아로나민골드정이랑 고려인삼분말캡슐 같이 먹어도 돼요?", "note": "전체 DB에는 같은 이름의 고려인삼분말캡슐이 제조사별로 2개 있어 되묻기(needs_clarification)가 정상이다. 건강기능식품 주의사항 경로(done)까지 확인하려면 이름이 하나뿐인 건강기능식품으로 바꿔 시험한다.", "expect": {"stop_reason_in": ["done", "needs_clarification"], "tools_any": ["check_contraindication"]}}
+{"id": "S08", "category": "건기식_주의사항", "question": "고려인삼분말캡슐은 먹을 때 주의할 점이 있나요?", "expect": {"stop_reason_in": ["done", "needs_clarification"]}, "note": "전체 DB에는 같은 이름의 고려인삼분말캡슐이 제조사별로 2개 있어 되묻기(needs_clarification)가 정상이다. 건강기능식품 주의사항 경로(done)까지 확인하려면 이름이 하나뿐인 건강기능식품으로 바꿔 시험한다."}
 {"id": "S09", "category": "이름_모호", "question": "아스피린 먹어도 돼요?", "note": "이름이 여러 제품과 겹치면 임의로 고르지 않고 되묻는지 관찰한다.", "expect": {"stop_reason_in": ["needs_clarification", "done", "no_evidence"]}}
 {"id": "S10", "category": "없는_제품", "question": "가나다라마바사정은 어디에 좋아요?", "expect": {"stop_reason_in": ["no_evidence"], "grounded": false, "include_any": ["확인할 수 없"]}}
 {"id": "S11", "category": "범위_밖", "question": "오늘 서울 날씨가 어때요?", "expect": {"stop_reason_in": ["no_evidence", "done"], "grounded": false, "include_any": ["약 이름"]}}
