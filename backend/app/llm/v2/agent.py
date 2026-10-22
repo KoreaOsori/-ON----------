@@ -275,7 +275,9 @@ class DrugInfoAgent:
             text, stop = ERROR_ANSWER, "error"
         else:
             text, grounded = f"{final_text.strip()}\n\n{SAFETY_FOOTER}", True
-        if emergency:
+        if emergency and stop == "no_evidence":
+            text = EMERGENCY_NOTICE  # 근거 없는 답에 범위 안내를 이어 붙이지 않는다 — 119 안내만
+        elif emergency:
             text = f"{EMERGENCY_NOTICE}\n\n{text}"
         return AgentAnswer(
             answer=text,

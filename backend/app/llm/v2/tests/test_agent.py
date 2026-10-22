@@ -165,6 +165,16 @@ async def test_refusal_stop_reason():
     assert result.answer == ERROR_ANSWER and result.stop_reason == "refusal"
 
 
+async def test_emergency_without_evidence_is_only_the_119_notice():
+    model = ScriptedModel(response(text_block("어떤 약이에요?")))
+    result = await make_agent(model, FakeTool(FOUND)).run("약을 먹었는데 숨이 안 쉬어지고 얼굴이 부어요")
+    assert result.emergency and result.stop_reason == "no_evidence" and not result.grounded
+    assert result.answer == EMERGENCY_NOTICE  # 범위 안내 문구를 붙이지 않는다
+    model = ScriptedModel(response(search_call()), response(text_block("x")))
+    result = await make_agent(model, FakeTool(MISSING)).run("타이레놀 먹고 호흡곤란이 와요")
+    assert result.answer == EMERGENCY_NOTICE and result.stop_reason == "no_evidence"
+
+
 async def test_emergency_notice_is_prepended():
     model = ScriptedModel(response(search_call()), response(text_block("복용법이에요.")))
     result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 먹었는데 호흡곤란이 와요")
