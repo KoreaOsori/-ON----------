@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -11,10 +11,11 @@ from app.llm.v1.config import Settings
 from app.llm.v1.interactions import compare
 from app.llm.v1.schemas import AskRequest, SafetyBundle
 from app.llm.v1.service import Service
+from app.llm.v1.routing import Route
 
 
 def product(key="drug:1", kind="drug"):
-    return {"product_key": key, "product_name": key, "product_type": kind, "manufacturer": "test"}
+    return {"product_key": key, "product_name": key, "product_type": kind, "manufacturer": "test", "sale_status": "판매"}
 
 
 def rule(left=None, right=None, conditions=""):
@@ -71,16 +72,25 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.repo.resolve = AsyncMock(return_value=([product()], True))
         self.repo.documents = AsyncMock(return_value=[{"chunk_id": "c1", "product_key": "drug:1",
                                                        "content": "fixture benefits"}])
-        self.repo.safety = AsyncMock(return_value=({}, [], False))
+        self.repo.safety = AsyncMock(return_value=({}, []))
         self.bedrock = MagicMock()
         self.bedrock.embed = AsyncMock(return_value=[0.1])
         self.bedrock.generate = AsyncMock(return_value={"answer": "fixture [E1]", "stop_reason": "end_turn",
                                                        "usage": {"inputTokens": 10, "outputTokens": 5}})
         self.service = Service(self.repo, self.bedrock, self.settings)
+        self.route = Route(intent="information", sections=["benefits"])
+        patcher = patch("app.llm.v1.service.classify", new_callable=AsyncMock)
+        self.classifier = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.classifier.return_value = (self.route, {})
 
     def request(self, **kw):
-        return AskRequest.model_validate({"question": "효능?", "intent": "efficacy",
-                                          "products": [{"name": "test"}], **kw})
+        intent = kw.pop("intent", "efficacy")
+        self.route.intent = "interactions" if intent == "interactions" else "information"
+        self.route.sections = [] if intent == "interactions" else ["benefits"]
+        if "products" in kw:
+            kw["products"] = [p["name"] if isinstance(p, dict) else p for p in kw["products"]]
+        return AskRequest.model_validate({"question": "효능?", "products": ["test"], **kw})
 
     async def test_similar_candidate_requires_confirmation_without_bedrock(self):
         self.repo.resolve.return_value = ([product()], False)
@@ -98,7 +108,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         result = await self.service.ask(self.request(model="sonnet"))
         self.assertEqual(result.model_id, self.settings.sonnet_model_id)
         self.assertEqual(result.status, "answered")
-        self.assertEqual(result.usage["inputTokens"], 10)
+        self.assertEqual(result.usage["answer"]["inputTokens"], 10)
         prompt = json.loads(self.bedrock.generate.call_args.args[2])
         self.assertEqual(prompt["evidence"][0]["id"], "E1")
 
@@ -125,21 +135,23 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_food_uses_full_precautions_no_embedding(self):
         self.repo.resolve.side_effect = [([product()], True), ([product("health_food:2", "health_food")], True)]
         result = await self.service.ask(self.request(intent="interactions", products=[{"name": "a"}, {"name": "b"}]))
-        self.repo.documents.assert_awaited_once_with("health_food:2", "precautions", None)
+        self.repo.documents.assert_awaited_once_with("health_food:2", "precautions")
         self.bedrock.embed.assert_not_called()
         self.repo.safety.assert_not_called()
         self.assertEqual(result.interaction_checks, [])
 
     async def test_drug_rules_go_to_prompt_without_vector_lookup(self):
         self.repo.resolve.side_effect = [([product()], True), ([product("drug:2")], True)]
-        self.repo.safety.return_value = ({"drug:1": {"codes": ["A"], "complete": True},
-                                        "drug:2": {"codes": ["B"], "complete": True}}, [rule()], True)
+        self.repo.safety.return_value = ({"drug:1": [{"dur_ingr_code": "A", "ingr_key": "A"}],
+                                        "drug:2": [{"dur_ingr_code": "B", "ingr_key": "B"}]},
+            [{"id": 1, "item_seq": "1", "mixture_item_seq": "2", "basis": "품목 DUR", "source_key": "s1",
+              "ingr_code": "A", "mixture_ingr_code": "B", "prohbt_content": "fixture", "remark": "조건"}])
         result = await self.service.ask(self.request(intent="interactions", products=[{"name": "a"}, {"name": "b"}]))
         self.assertEqual(result.interaction_checks[0]["status"], "contraindicated")
         self.bedrock.embed.assert_not_called()
         self.repo.documents.assert_not_called()
         prompt = json.loads(self.bedrock.generate.call_args.args[2])
-        self.assertEqual(prompt["checks"][0]["rules"][0]["source"], "fixture")
+        self.assertEqual(prompt["checks"][0]["rules"][0]["source"], "gold.drug_contraindication")
 
     async def test_duplicate_products_reprompt(self):
         result = await self.service.ask(self.request(intent="interactions", products=[{"name": "a"}, {"name": "a"}]))
