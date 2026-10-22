@@ -5,6 +5,9 @@
 - 엔드포인트: POST /llm/v2/ask (질문), GET /llm/v2/models (설정 확인, 인증), GET /llm/v2/health (생존 확인, 인증 없음).
 - 서버는 대화 상태를 저장하지 않는다. 제품 후보가 여럿이라 status 가 needs_clarification 이면 candidates 를 사용자에게 보여 주고,
   사용자가 고른 product_key 를 넣어 같은 질문을 다시 보낸다.
+- 응답 코드: 정책에 따른 안내(근거 없음·되묻기·위기 등)는 항상 200 + status 로, 서비스 문제는 HTTP 오류로 나간다. 오류 본문은 모두
+  {"detail": "<사용자에게 보여 줘도 되는 한국어 문장>"} 이다(422 는 fields 가 더 붙는다). 401 만 사용자에게 보이면 안 되는 설정 문제다.
+  401=키 없음/틀림, 422=요청 형식·길이 위반, 503=동시 요청 초과·내부 오류·v2 초기화 실패(Retry-After 가 올 수 있음), 504=답변 시간 초과.
 - 보안: LLM_V2_API_KEY 가 있으면 X-API-Key 헤더가 일치해야 한다(상수 시간 비교). 없으면 키 없이 열리므로 localhost 로만 띄운다.
   질문·프로필 내용과 비밀값은 로그에 남기지 않는다. 오류 응답에는 내부 메시지를 담지 않는다.
 - 독립 앱으로 실행하거나(위 명령), 백엔드 앱에 v1 처럼 mount 한다: `create_app(route_prefix="", require_api_key=True)` 를
@@ -20,6 +23,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -33,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 MAX_QUESTION_FIELD = 1000  # 스키마 상한. 실제 허용 길이는 설정(max_question_chars)이 정한다.
 BUSY_MESSAGE = "지금 요청이 많아 바로 답변드리기 어려워요. 잠시 후 다시 시도해 주세요."
+INVALID_REQUEST_MESSAGE = "요청 형식이 올바르지 않아요. 질문을 확인해 주세요."
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -67,6 +73,27 @@ class Candidate(BaseModel):
 class Usage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+class ErrorBody(BaseModel):
+    detail: str = Field(description="사용자에게 보여 줘도 되는 한국어 안내 문장(401 은 개발자용이라 보여 주지 않는다)")
+
+
+class ValidationErrorBody(ErrorBody):
+    fields: list[str] = Field(default_factory=list, description="형식·길이를 어긴 요청 필드 이름(입력값은 돌려주지 않는다)")
+
+
+# /ask 의 오류 응답 규격(Swagger 에 표시). 정책 안내(근거 없음·되묻기 등)는 오류가 아니라 200 + status 다.
+ASK_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorBody, "description": "X-API-Key 가 없거나 틀림. 서버 설정 문제이므로 사용자 화면에는 보여 주지 않는다."},
+    422: {"model": ValidationErrorBody, "description": "질문이 비었거나 너무 길거나 형식을 어김. detail 문장을 그대로 보여 줘도 된다."},
+    503: {
+        "model": ErrorBody,
+        "description": "동시 요청 초과(Retry-After 초 후 재시도), 내부 오류, v2 초기화 실패. detail 문장을 보여 주고 다시 시도하게 한다.",
+        "headers": {"Retry-After": {"description": "동시 요청 초과일 때 다시 시도할 때까지 기다릴 초", "schema": {"type": "integer"}}},
+    },
+    504: {"model": ErrorBody, "description": "답변 시간 초과. detail 문장을 보여 주고 다시 시도하게 한다."},
+}
 
 
 class AskResponse(BaseModel):
@@ -123,7 +150,7 @@ async def models(request: Request) -> dict[str, Any]:
     }
 
 
-@router.post("/ask", response_model=AskResponse)
+@router.post("/ask", response_model=AskResponse, responses=ASK_ERROR_RESPONSES)
 async def ask(body: AskRequest, request: Request) -> AskResponse:
     state = request.app.state
     settings: V2Settings = state.llm_settings
@@ -172,6 +199,12 @@ async def ask(body: AskRequest, request: Request) -> AskResponse:
     )
 
 
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 본문을 다른 오류와 같은 {"detail": 문장} 모양으로 맞춘다. 입력값(질문·프로필)은 돌려주지 않고 필드 이름만 알려 준다."""
+    fields = sorted({str(error["loc"][-1]) for error in exc.errors() if error.get("loc")})
+    return JSONResponse(status_code=422, content={"detail": INVALID_REQUEST_MESSAGE, "fields": fields})
+
+
 def create_app(
     settings: V2Settings | None = None,
     agent: DrugInfoAgent | None = None,
@@ -203,7 +236,10 @@ def create_app(
     app = FastAPI(
         title="약온 LLM v2", version="2.0.0", lifespan=lifespan,
         docs_url="/docs", openapi_url="/openapi.json", redoc_url=None,
+        # Authorize 에 넣은 API 키를 브라우저(localStorage)에 저장해 새로고침해도 유지한다. 공용 PC 에서는 쓰지 말 것.
+        swagger_ui_parameters={"persistAuthorization": True},
     )
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.include_router(public_router, prefix=route_prefix)
     app.include_router(router, prefix=route_prefix)
     return app

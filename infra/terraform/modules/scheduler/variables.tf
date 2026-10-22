@@ -10,7 +10,7 @@ variable "instance_id" {
 variable "schedule_expression" {
   description = "실행 시각 (EventBridge Scheduler cron: 분 시 일 월 요일 년)"
   type        = string
-  default     = "cron(0 2 10 * ? *)" # 매월 10일 02:00
+  default     = "cron(0 2 20 * ? *)" # 매월 20일 02:00
 }
 
 variable "timezone" {

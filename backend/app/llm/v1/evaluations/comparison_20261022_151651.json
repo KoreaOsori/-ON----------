@@ -1,0 +1,121 @@
+{
+  "url": "http://ec2-54-197-92-156.compute-1.amazonaws.com/api/llm/v1/ask",
+  "results": [
+    {
+      "id": "01_invalid_mixed",
+      "request": {
+        "question": "코푸시럽, 셉트린정, 코데농정12345 제품을 함께 먹어도 되나요?",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "잘못된 이름을 특정하고 병용 확답 금지",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.038
+    },
+    {
+      "id": "01_invalid_mixed",
+      "request": {
+        "question": "코푸시럽, 셉트린정, 코데농정12345 제품을 함께 먹어도 되나요?",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "잘못된 이름을 특정하고 병용 확답 금지",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    },
+    {
+      "id": "04_unmapped",
+      "request": {
+        "question": "이 두 제품을 함께 먹어도 되나요?",
+        "products": [
+          "용각산",
+          "원비디"
+        ],
+        "model": "haiku"
+      },
+      "expectation": "제품 금기 미발견과 성분 매핑 누락 구별",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    },
+    {
+      "id": "04_unmapped",
+      "request": {
+        "question": "이 두 제품을 함께 먹어도 되나요?",
+        "products": [
+          "용각산",
+          "원비디"
+        ],
+        "model": "sonnet"
+      },
+      "expectation": "제품 금기 미발견과 성분 매핑 누락 구별",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    },
+    {
+      "id": "06_single_caution",
+      "request": {
+        "question": "코푸시럽을 먹을 때 주의할 점과 부작용을 알려주세요.",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "단일 제품 주의 질문; 두 제품 요구 금지",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    },
+    {
+      "id": "06_single_caution",
+      "request": {
+        "question": "코푸시럽을 먹을 때 주의할 점과 부작용을 알려주세요.",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "단일 제품 주의 질문; 두 제품 요구 금지",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.002
+    },
+    {
+      "id": "07_health_ambiguous",
+      "request": {
+        "question": "코푸시럽과 오메가3를 같이 먹어도 되나요?",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "정확한 건기식 불명확 시 이름 확인; 성분 금기 추정 금지",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    },
+    {
+      "id": "07_health_ambiguous",
+      "request": {
+        "question": "코푸시럽과 오메가3를 같이 먹어도 되나요?",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "정확한 건기식 불명확 시 이름 확인; 성분 금기 추정 금지",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    },
+    {
+      "id": "09_negated_product",
+      "request": {
+        "question": "코데농정12345는 복용하지 않아요. 용각산의 효능만 알려주세요.",
+        "products": [],
+        "model": "haiku"
+      },
+      "expectation": "부정한 제품 제외; 용각산 효능 처리",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    },
+    {
+      "id": "09_negated_product",
+      "request": {
+        "question": "코데농정12345는 복용하지 않아요. 용각산의 효능만 알려주세요.",
+        "products": [],
+        "model": "sonnet"
+      },
+      "expectation": "부정한 제품 제외; 용각산 효능 처리",
+      "error": "<urlopen error [Errno 11001] getaddrinfo failed>",
+      "seconds": 0.003
+    }
+  ]
+}

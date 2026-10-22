@@ -15,4 +15,5 @@ async def check_interactions(
     repository: Annotated[MedicineRepository, Depends(get_medicine_repository)],
 ):
     pairs = await service.check_pairs(repository, payload.medicine_ids)
-    return InteractionCheckResponse(pairs=pairs)
+    duplicates = await service.check_duplicates(repository, payload.medicine_ids)
+    return InteractionCheckResponse(pairs=pairs, duplicates=duplicates)

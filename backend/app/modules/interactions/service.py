@@ -10,7 +10,12 @@ TODO
 
 from itertools import combinations
 
-from app.modules.interactions.schemas import ContraindicationDetail, InteractionPair
+from app.modules.interactions.schemas import (
+    ContraindicationDetail,
+    DuplicateCaution,
+    DuplicateMedicine,
+    InteractionPair,
+)
 from app.modules.medicines.service import MedicineRepository
 
 LEVEL_BY_BASIS = {"품목 DUR": "금기", "성분 규칙": "성분 기준 주의"}
@@ -54,3 +59,43 @@ async def check_pairs(repository: MedicineRepository, medicine_ids: list[str]) -
             )
         )
     return pairs
+
+
+async def check_duplicates(repository: MedicineRepository, medicine_ids: list[str]) -> list[DuplicateCaution]:
+    """같은 성분 또는 같은 효능군 계열이 2개 이상의 약에 있으면 주의로 알린다 (병용금기 아님)"""
+    medicine_ids = list(dict.fromkeys(medicine_ids))
+    names = {}
+    for medicine_id in medicine_ids:
+        medicine = await repository.get(medicine_id)
+        names[medicine_id] = medicine.name if medicine else medicine_id
+    rows = await repository.ingredients(medicine_ids)
+    daily_max = {row.ingr_key: row.daily_max for row in rows}
+    ingredient_name = {row.ingr_key: row.ingr_name for row in rows}
+
+    def caution(kind, name, matched):
+        keys = list(dict.fromkeys(row.ingr_key for row in matched))
+        return DuplicateCaution(
+            kind=kind,
+            name=name,
+            medicines=[
+                DuplicateMedicine(
+                    name=names[item],
+                    ingredients=list(dict.fromkeys(row.ingr_name for row in matched if row.item_seq == item)),
+                )
+                for item in medicine_ids
+                if any(row.item_seq == item for row in matched)
+            ],
+            daily_max=[text for key in keys for text in daily_max[key]],
+        )
+
+    cautions = []
+    for key in dict.fromkeys(row.ingr_key for row in rows):
+        matched = [row for row in rows if row.ingr_key == key]
+        if len({row.item_seq for row in matched}) >= 2:
+            cautions.append(caution("같은 성분", ingredient_name[key], matched))
+    for group in dict.fromkeys(row.efficacy_group for row in rows if row.efficacy_group):
+        matched = [row for row in rows if row.efficacy_group == group]
+        # 같은 성분만 겹친 경우는 위에서 이미 알렸다. 계열 안에서 성분이 서로 다를 때만
+        if len({row.item_seq for row in matched}) >= 2 and len({row.ingr_key for row in matched}) >= 2:
+            cautions.append(caution("같은 계열", group, matched))
+    return cautions

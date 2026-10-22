@@ -36,6 +36,7 @@ def test_mounted_paths_docs_schema_and_auth():
     with TestClient(parent_for(child)) as client:
         docs = client.get("/api/llm/v2/docs")
         assert docs.status_code == 200 and "/api/llm/v2/openapi.json" in docs.text
+        assert "persistAuthorization" in docs.text  # Authorize 의 키를 새로고침해도 유지(브라우저 저장)
         schema = client.get("/api/llm/v2/openapi.json").json()
         assert schema["servers"] == [{"url": "/api/llm/v2"}]
         assert {"/ask", "/models", "/health"} <= set(schema["paths"])

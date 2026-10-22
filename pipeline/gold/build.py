@@ -1,7 +1,7 @@
 """S3 Silver → S3 Gold 빌드 (명세: docs/gold_table_spec.md, 테이블 정의: schema.sql). RDS 적재는 load.py.
 
 s3://{버킷}/silver/_latest.json 의 스냅샷(과 "이전 수집 유지"에 쓰는 이전 병용금기 스냅샷 최대 3개)을 임시 폴더로 받아
-gold 테이블 5개를 parquet 로 만들고, 검사를 통과하면 S3 에 올린다.
+gold 테이블 6개를 parquet 로 만들고, 검사를 통과하면 S3 에 올린다.
 
   python pipeline/gold/build.py            # 이미 만든 silver(written_at 같음)면 건너뜀
   python pipeline/gold/build.py --force    # 코드를 바꿨을 때 다시 만들기
@@ -50,7 +50,7 @@ RULE_VALUE_FIELDS = ["grade", "age_base", "max_qty", "max_dosage_term"]
 DRUG_COLUMNS = [
     ("item_seq", "text"), ("item_name", "text"), ("item_eng_name", "text"), ("entp_name", "text"),
     ("sale_status", "text"), ("etc_otc_name", "text"), ("class_code", "text"), ("class_name", "text"),
-    ("atc_code", "text"), ("main_item_ingr", "text"), ("chart", "text"), ("image_url", "text"),
+    ("atc_code", "text"), ("main_item_ingr", "text"), ("chart", "text"), ("route", "text"), ("image_url", "text"),
     ("item_permit_date", "date"),
     ("easy_efcy", "text"), ("easy_use_method", "text"), ("easy_atpn_warn", "text"), ("easy_atpn", "text"),
     ("easy_intrc", "text"), ("easy_se", "text"), ("easy_deposit_method", "text"),
@@ -69,6 +69,11 @@ DUR_CAUTION_COLUMNS = [
     ("grade", "text"), ("age_base", "text"), ("max_qty", "text"), ("max_dosage_term", "text"),
     ("effect_name", "text"), ("sers_name", "text"), ("rule_prohbt_content", "text"), ("rule_remark", "text"),
 ]
+INGREDIENT_RULE_COLUMNS = [
+    ("ingr_code", "text"), ("caution_type", "text"), ("ingr_name", "text"), ("mix_type", "text"),
+    ("mix_ingr", "text"), ("form_name", "text"), ("route", "text"), ("max_qty", "text"), ("sers_name", "text"),
+    ("prohbt_content", "text"), ("remark", "text"), ("notification_date", "date"), ("source_key", "text"),
+]
 HEALTH_FOOD_COLUMNS = [
     ("prdlst_report_no", "text"), ("prdlst_nm", "text"), ("bssh_nm", "text"), ("permit_date", "date"),
     ("prdt_shap_cd_nm", "text"), ("dispos", "text"), ("primary_fnclty", "text"), ("ntk_mthd", "text"),
@@ -76,7 +81,8 @@ HEALTH_FOOD_COLUMNS = [
 ]
 TABLE_COLUMNS = {
     "drug": DRUG_COLUMNS, "drug_contraindication": CONTRAINDICATION_COLUMNS, "drug_dur_caution": DUR_CAUTION_COLUMNS,
-    "drug_ingredient": DRUG_INGREDIENT_COLUMNS, "health_food": HEALTH_FOOD_COLUMNS,
+    "drug_ingredient": DRUG_INGREDIENT_COLUMNS, "dur_ingredient_rule": INGREDIENT_RULE_COLUMNS,
+    "health_food": HEALTH_FOOD_COLUMNS,
 }
 TABLES = list(TABLE_COLUMNS)  # RDS 적재 순서 (FK: drug 먼저)
 ARROW_TYPES = {"text": pa.string(), "date": pa.date32(), "text[]": pa.list_(pa.string())}
@@ -84,8 +90,17 @@ ARROW_TYPES = {"text": pa.string(), "date": pa.date32(), "text[]": pa.list_(pa.s
 DRUG_SOURCE_COLUMNS = [
     "item_seq", "item_name", "item_eng_name", "entp_name", "sale_status", "etc_otc_name", "prduct_type",
     "atc_code", "main_item_ingr", "chart", "big_prdt_img_url", "pills", "item_permit_date", "easy_info",
-    "doc_efficacy", "doc_dosage", "doc_precautions",
+    "doc_efficacy", "doc_dosage", "doc_precautions", *CAUTION_COLUMNS,
 ]
+
+# 복용 경로 (경구 / 경구 외). 경구 외를 먼저 본다: '질정'·'정주'처럼 '정' 이 들어가도 경구가 아닌 것이 있다
+NON_ORAL = re.compile(r"주사|수액|주$|주\d|주\[|바이알|앰플|연고|크림|피부|겔제|겔$|첩부|패취|패치|플라스타|"
+                      r"카타플라스마|경피|점안|점이|점비|안약|분무|흡입|에어로|에어졸|좌제|좌약|질정|질용|질좌|질서방|"
+                      r"관장|로션|외용|가글|스프레이|폼|직장|이식|파스|양치|구강용액|구강세정|프리필드|펜$|의료용")
+ORAL = re.compile(r"정|캡슐|캅셀|캅슐|시럽|경구|내복|산제|과립|세립|트로키|츄어블|저작|현탁|엘릭서|액상|환|"
+                  r"스팬슐|드링크|내용액|구강붕해|구강용해|연조엑스|산$")
+# 제형·이름·성상으로 모를 때 경구 외로 보는 약효분류: 외피용약 026xx, 안과용제, 이비과용제, 치과구강용약, 치질용제
+LOCAL_USE_CLASSES = ("01310", "01320", "02310", "02560")
 RULE_COLUMNS = [  # 성분 규칙에서 쓰는 컬럼
     "rule_key", "ingr_code", "ingr_names", "mix_type", "ori_codes", "mixture_ingr_code", "mixture_ingr_names",
     "mixture_mix_type", "mixture_ori_codes", "prohbt_content", "remark", "notification_date",
@@ -153,14 +168,51 @@ def first_image(product):
     return None
 
 
-def drug_row(p):
+def route_of(text):
+    if not text:
+        return None
+    if "경구" in text:  # '경구용겔' 처럼 경구라고 적힌 것은 경구
+        return "경구"
+    if NON_ORAL.search(text):
+        return "경구 외"
+    if ORAL.search(text):
+        return "경구"
+    return None
+
+
+def product_route(p, class_code, item_form):
+    """제품의 복용 경로. 제형(낱알식별·DUR 주의·품목 병용금기) → 제품명(괄호 뺌) → 성상 순으로 처음 판단되는 것.
+    모두 모르면 국소 외용 약효분류는 경구 외, 그 밖은 None (모름).
+    로컬 확인(2026-10-22): 제형으로 정한 제품의 제품명·성상 판단과 일치 99% 이상."""
+    forms = [x["form_code_name"] for x in p["pills"] or []]
+    forms += [x.get("form_name") for column in CAUTION_COLUMNS for x in p[column] or []]
+    # 성상의 '결정성 분말' 은 정제가 아니다
+    chart = (p["chart"] or "").replace("결정", "")
+    for text in (*forms, item_form, re.sub(r"\(.*?\)", "", p["item_name"] or ""), chart):
+        route = route_of(text)
+        if route:
+            return route
+    if class_code and (class_code.startswith("026") or class_code in LOCAL_USE_CLASSES):
+        return "경구 외"
+    return None
+
+
+def rule_route(form_name):
+    """용량주의 규칙의 제형 → 경로. 제형이 여럿이면 ('정제/캡슐/용액주사제') 하나라도 경구면 경구.
+    제형이 없으면 None."""
+    routes = {route_of(part.strip()) for part in re.split(r"[/,]", form_name or "")}
+    return "경구" if "경구" in routes else "경구 외" if "경구 외" in routes else None
+
+
+def drug_row(p, item_forms):
     class_code, class_name = split_class(p["prduct_type"])
     easy = p["easy_info"] or {}
     return {
         "item_seq": p["item_seq"], "item_name": p["item_name"], "item_eng_name": p["item_eng_name"],
         "entp_name": p["entp_name"], "sale_status": p["sale_status"], "etc_otc_name": p["etc_otc_name"],
         "class_code": class_code, "class_name": class_name, "atc_code": p["atc_code"],
-        "main_item_ingr": p["main_item_ingr"], "chart": p["chart"], "image_url": first_image(p),
+        "main_item_ingr": p["main_item_ingr"], "chart": p["chart"],
+        "route": product_route(p, class_code, item_forms.get(p["item_seq"])), "image_url": first_image(p),
         "item_permit_date": p["item_permit_date"],
         "easy_efcy": easy.get("efcy"), "easy_use_method": easy.get("use_method"),
         "easy_atpn_warn": easy.get("atpn_warn"), "easy_atpn": easy.get("atpn"), "easy_intrc": easy.get("intrc"),
@@ -170,9 +222,25 @@ def drug_row(p):
     }
 
 
-def iter_drug_rows(root, snapshot):
+def read_item_forms(root, snapshot):
+    """품목 병용금기에 적힌 제품별 제형 {item_seq: 제형} (양쪽 제품 모두, 처음 나온 값)."""
+    t = pq.read_table(silver_path(root, "dur_contraindication", snapshot),
+                      columns=["item_seq", "form_name", "mixture_item_seq", "mixture_form_name"],
+                      filters=[("level", "=", "품목")])
+    forms = {}
+    for side in ("", "mixture_"):
+        pairs = t.select([f"{side}item_seq", f"{side}form_name"]).group_by(
+            [f"{side}item_seq"]).aggregate([(f"{side}form_name", "min")])
+        for item_seq, form in zip(pairs[f"{side}item_seq"].to_pylist(), pairs[f"{side}form_name_min"].to_pylist()):
+            if form:
+                forms.setdefault(item_seq, form)
+    return forms
+
+
+def iter_drug_rows(root, snapshot, contraindication_snapshot):
+    item_forms = read_item_forms(root, contraindication_snapshot)
     for batch in iter_batches(silver_path(root, "drug_product", snapshot), DRUG_SOURCE_COLUMNS):
-        yield from (drug_row(p) for p in batch)
+        yield from (drug_row(p, item_forms) for p in batch)
 
 
 def dur_caution_rows(p):
@@ -388,11 +456,28 @@ def parse_main_ingredients(text):
     return dict(re.findall(r"\[(M\d+)\]([^|]+)", text or ""))
 
 
-def iter_drug_ingredient_rows(root, snapshot, product_snapshot):
+def read_ingredient_rules(root, snapshot):
+    """유효한 성분 규칙 효능군중복·용량주의 (silver dur_ingredient_rule)."""
+    t = pq.read_table(silver_path(root, "dur_ingredient_rule", snapshot))
+    return t.filter(pc.fill_null(t["is_rule_valid"], False)).to_pylist()
+
+
+def ingredient_rule_table(rules):
+    return pa.Table.from_pylist([{
+        "ingr_code": r["ingr_code"], "caution_type": r["type_name"], "ingr_name": r["ingr_name"],
+        "mix_type": r["mix_type"], "mix_ingr": r["mix_ingr"], "form_name": r["form_name"],
+        "route": rule_route(r["form_name"]), "max_qty": r["max_qty"],
+        "sers_name": r["sers_name"], "prohbt_content": r["prohbt_content"], "remark": r["remark"],
+        "notification_date": r["notification_date"], "source_key": r["dur_seq"],
+    } for r in rules], pa.schema([(name, ARROW_TYPES[type_]) for name, type_ in INGREDIENT_RULE_COLUMNS]))
+
+
+def iter_drug_ingredient_rows(root, snapshot, product_snapshot, rule_snapshot):
     """제품별 성분 (동일 성분 중복 판정용).
 
     같은 성분 키: DUR 성분 코드(D코드). 원료 코드(M코드)가 D코드로 매핑되지 않으면 정리한 원료 이름.
-    매핑 출처: 성분 병용금기 규칙의 원료 코드 + 단일 성분 제품의 품목 병용금기·DUR 주의 (제품 M코드 1개 ↔ 규칙 D코드).
+    매핑 출처: 성분 병용금기 규칙·성분 규칙(효능군중복·용량주의)의 단일 성분 원료 코드
+    + 단일 성분 제품의 품목 병용금기·DUR 주의 (제품 M코드 1개 ↔ 규칙 D코드).
     아세트아미노펜처럼 원료 코드가 제형별로 여러 개인 성분은, 매핑된 원료와 정리한 이름이 같으면 같은 D코드로 본다.
     """
     rules = read_valid_rules(root, snapshot)
@@ -402,6 +487,10 @@ def iter_drug_ingredient_rows(root, snapshot, product_snapshot):
         for side in ("", "mixture_"):
             if r[f"{side}ingr_names"]:
                 d_names.setdefault(r[f"{side}ingr_code"], r[f"{side}ingr_names"][0])
+    ingredient_rules = [r for r in read_ingredient_rules(root, rule_snapshot) if r["mix_type"] == "단일"]
+    for r in ingredient_rules:
+        for m in r["ori_ingr_codes"] or []:
+            m_to_d.setdefault(m, set()).add(r["ingr_code"])
 
     columns = ["item_seq", "ingredients", "main_item_ingr", *CAUTION_COLUMNS]
     product_m = {}  # item_seq → {M코드: 원료 이름}
@@ -429,6 +518,10 @@ def iter_drug_ingredient_rows(root, snapshot, product_snapshot):
         names = product_m.get(item_seq, {})
         if len(names) == 1:
             m_to_d.setdefault(next(iter(names)), set()).add(d)
+    # 성분 규칙(효능군중복·용량주의)의 이름은 다른 출처에 이름이 없는 D코드에만 쓴다 (기존 성분 이름이 바뀌지 않게)
+    for r in ingredient_rules:
+        if r["ingr_name"]:
+            d_names.setdefault(r["ingr_code"], r["ingr_name"])
 
     # 이름으로 보완: 매핑된 원료의 정리한 이름 → D코드
     all_names = {m: n for names in product_m.values() for m, n in names.items()}
@@ -518,7 +611,7 @@ def check_gold(root, snapshot):
 
 
 def build(root, latest):
-    """root/silver 로 root/gold 에 테이블 5개를 만든다. gold/_latest.json 내용을 돌려준다."""
+    """root/silver 로 root/gold 에 테이블 6개를 만든다. gold/_latest.json 내용을 돌려준다."""
     snapshots = latest["tables"]
     snapshot = latest["snapshot"]
     counts = {}
@@ -526,7 +619,8 @@ def build(root, latest):
     def out(table):
         return gold_path(root, table, snapshot)
 
-    counts["drug"] = write_table(out("drug"), DRUG_COLUMNS, iter_drug_rows(root, snapshots["drug_product"]))
+    counts["drug"] = write_table(out("drug"), DRUG_COLUMNS, iter_drug_rows(
+        root, snapshots["drug_product"], snapshots["dur_contraindication"]))
     log(f"  drug {counts['drug']:,}행")
 
     sale = pq.read_table(silver_path(root, "drug_product", snapshots["drug_product"]), columns=["item_seq", "sale_status"])
@@ -551,8 +645,13 @@ def build(root, latest):
     log(f"  drug_dur_caution {counts['drug_dur_caution']:,}행")
 
     counts["drug_ingredient"] = write_table(out("drug_ingredient"), DRUG_INGREDIENT_COLUMNS, iter_drug_ingredient_rows(
-        root, snapshots["dur_contraindication"], snapshots["drug_product"]))
+        root, snapshots["dur_contraindication"], snapshots["drug_product"], snapshots["dur_ingredient_rule"]))
     log(f"  drug_ingredient {counts['drug_ingredient']:,}행")
+
+    counts["dur_ingredient_rule"] = write_table(out("dur_ingredient_rule"), INGREDIENT_RULE_COLUMNS,
+                                                ingredient_rule_table(read_ingredient_rules(
+                                                    root, snapshots["dur_ingredient_rule"])))
+    log(f"  dur_ingredient_rule {counts['dur_ingredient_rule']:,}행")
 
     counts["health_food"] = write_table(out("health_food"), HEALTH_FOOD_COLUMNS,
                                         health_food_table(root, snapshots["health_food_product"]))

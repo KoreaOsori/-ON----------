@@ -28,3 +28,13 @@ class ContraindicationRow(CamelModel):
     mixture_ingr_names: list[str]
     prohbt_content: str | None
     remark: str | None
+
+
+class IngredientRow(CamelModel):
+    """약 하나의 성분 하나 (gold.drug_ingredient) + 그 성분의 효능군·1일 최대 용량 (gold.dur_ingredient_rule)"""
+
+    item_seq: str
+    ingr_key: str  # DUR 성분 코드(D코드), 없으면 성분 이름
+    ingr_name: str
+    efficacy_group: str | None  # 효능군중복의 계열 (예: 비스테로이드성 소염제)
+    daily_max: list[str]  # 용량주의 1일 최대 (단일 성분 기준, 값이 여럿이면 모두)
