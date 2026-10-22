@@ -98,7 +98,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             route, usage = await classify(bedrock, "model", "질문")
             self.assertEqual(route.intent, intent)
             self.assertEqual(usage["inputTokens"], 10)
-            self.assertEqual(bedrock.generate.call_args.kwargs["max_tokens"], 200)
+            self.assertEqual(bedrock.generate.call_args.kwargs["max_tokens"], 500)
 
     async def test_invalid_classifier_response_requires_question(self):
         for answer in ('not json', '{"intent":"information","sections":[]}',

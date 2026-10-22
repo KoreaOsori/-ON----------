@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import text
 
 
@@ -26,6 +28,9 @@ class Repository:
     def __init__(self, connection, settings):
         self.conn, self.settings = connection, settings
         self.run_id = None
+        self.vector_run = None
+        self.vector_warning = None
+        self.has_trigram = False
 
     async def rows(self, sql, **params):
         return [dict(r) for r in (await self.conn.execute(text(sql), params)).mappings()]
@@ -35,19 +40,48 @@ class Repository:
         if len(rows) != 1:
             raise DataUnavailable('gold 적재 기록을 확인하세요.')
         self.run_id = f"gold:{rows[0]['silver_snapshot']}:{rows[0]['gold_written_at']}"
+        self.gold_snapshot = rows[0]['silver_snapshot']
 
-    async def resolve(self, name, selected_key=None):
-        if selected_key:
-            rows = await self.rows(f'SELECT * FROM ({CATALOG}) p WHERE product_key=:key', key=selected_key)
-            return rows, bool(rows)
+    async def prepare_vectors(self):
+        available = await self.rows("""SELECT to_regclass('product_search.pipeline_config') AS config,
+            to_regclass('product_search.active_snapshot') AS active,
+            to_regclass('product_search.ingestion_runs') AS runs,
+            to_regclass('product_search.product_links') AS links,
+            to_regclass('product_search.product_vectors') AS vectors,
+            EXISTS(SELECT 1 FROM pg_extension WHERE extname='pg_trgm') AS trgm""")
+        self.has_trigram = available[0]['trgm']
+        if not all(available[0][key] for key in ('config', 'active', 'runs', 'links', 'vectors')):
+            self.vector_warning = '벡터 DB 미준비: gold 조회만 사용했습니다.'
+            return False
+        config = await self.rows('SELECT * FROM product_search.pipeline_config WHERE singleton')
+        if not config or (config[0]['schema_version'], config[0]['embedding_version'], config[0]['dimensions']) != (
+                2, self.settings.embedding_version, self.settings.embedding_dimensions):
+            self.vector_warning = '벡터 모델/차원 설정 불일치: gold 조회만 사용했습니다.'
+            return False
+        active = await self.rows('''SELECT r.run_id,r.snapshot FROM product_search.active_snapshot a
+            JOIN product_search.ingestion_runs r USING(run_id) WHERE a.singleton AND r.status='complete' ''')
+        if not active or str(active[0]['snapshot']) != str(self.gold_snapshot):
+            self.vector_warning = 'gold와 벡터 snapshot 불일치 또는 미공개: gold 조회만 사용했습니다.'
+            return False
+        self.vector_run = active[0]['run_id']
+        return True
+
+    async def resolve(self, name):
+        # No fuzzy matches or candidate selection: only one exact catalog name is accepted.
         rows = await self.rows(f'SELECT * FROM ({CATALOG}) p WHERE lower(product_name)=lower(:name) '
-                               'ORDER BY product_key LIMIT 11', name=name)
-        if rows:
-            return rows[:10], len(rows) == 1
-        escaped = name.lower().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        rows = await self.rows(f'SELECT * FROM ({CATALOG}) p WHERE lower(product_name) LIKE :pattern '
-                               'ORDER BY product_key LIMIT 10', pattern=f'%{escaped}%')
-        return rows, False
+                               'ORDER BY product_key LIMIT 2', name=name)
+        return rows, len(rows) == 1
+
+    async def vector_documents(self, key, section, vector):
+        rows = await self.rows('''WITH candidates AS MATERIALIZED (
+            SELECT l.chunk_id,l.product_key,l.section_type,l.source_refs,l.snapshot,v.content,
+                   v.embedding <=> CAST(:vector AS vector) AS distance
+            FROM product_search.product_links l JOIN product_search.product_vectors v USING(content_hash)
+            WHERE l.run_id=:run AND l.product_key=:key AND l.section_type=:section)
+            SELECT * FROM candidates WHERE distance <= :threshold
+            ORDER BY distance,chunk_id LIMIT :limit''', run=self.vector_run, key=key, section=section,
+            vector=json.dumps(vector), threshold=self.settings.max_distance, limit=self.settings.top_k)
+        return [{**r, 'source': 'product_search.product_vectors', 'vector_run_id': self.vector_run} for r in rows]
 
     async def documents(self, key, section, vector=None):
         kind, source_id = key.split(':', 1)
