@@ -53,12 +53,17 @@ def bronze_snapshots(store):
 
 
 def table_snapshots(store, layer, tables, latest_date):
-    """silver·gold: 완성 = 모든 테이블에 data.parquet 이 있고 _latest.json 이 가리키는 날짜 이하."""
+    """silver·gold: 완성 = 그 날짜에 있어야 할 테이블에 모두 data.parquet 이 있고 _latest.json 이 가리키는 날짜 이하.
+
+    있어야 할 테이블 = 그 날짜 이전에 스냅샷이 하나라도 있는 테이블.
+    나중에 추가한 테이블이 없다고 이전 스냅샷을 덜 만든 것으로 보지 않는다 (2026-10 silver dur_ingredient_rule 추가).
+    """
     dates = {t: snapshot_dates(store, f"{layer}/{t}/") for t in tables}
     result = {}
     for date in set().union(*dates.values()):
+        required = [t for t in tables if dates[t] and min(dates[t]) <= date]
         complete = latest_date is not None and date <= latest_date and all(
-            date in dates[t] and store.list(f"{layer}/{t}/snapshot={date}/data.parquet") for t in tables)
+            date in dates[t] and store.list(f"{layer}/{t}/snapshot={date}/data.parquet") for t in required)
         result[date] = (complete, [f"{layer}/{t}/snapshot={date}/" for t in tables if date in dates[t]])
     return result
 

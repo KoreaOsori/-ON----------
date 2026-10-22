@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.integrations import public_data
 from app.modules.medicines.mock_data import MOCK_CONTRAINDICATED_PAIRS, MOCK_MEDICINES
-from app.modules.medicines.schemas import ContraindicationRow, MedicineDetail, MedicineSummary
+from app.modules.medicines.schemas import ContraindicationRow, IngredientRow, MedicineDetail, MedicineSummary
 
 SEARCH_LIMIT = 50
 
@@ -22,6 +22,7 @@ class MedicineRepository(Protocol):
     async def get(self, medicine_id: str) -> MedicineDetail | None: ...
     async def find_in_text(self, text: str) -> MedicineDetail | None: ...
     async def contraindications(self, medicine_ids: list[str]) -> list[ContraindicationRow]: ...
+    async def ingredients(self, medicine_ids: list[str]) -> list[IngredientRow]: ...
 
 
 class MockMedicineRepository:
@@ -61,6 +62,9 @@ class MockMedicineRepository:
                     )
         return rows
 
+    async def ingredients(self, medicine_ids: list[str]) -> list[IngredientRow]:
+        return []  # 가상 약에는 성분 정보가 없다
+
 
 class PublicApiMedicineRepository:
     """식약처 e약은요 API. 분류(category)·전문/일반 구분은 별도 데이터 매핑이 필요하다."""
@@ -97,6 +101,11 @@ class PublicApiMedicineRepository:
     async def contraindications(self, medicine_ids: list[str]) -> list[ContraindicationRow]:
         raise NotImplementedError(
             "공공데이터 API 모드는 병용금기(DUR)를 연동하지 않았습니다. DRUG_DATA_SOURCE=gold 를 사용하세요."
+        )
+
+    async def ingredients(self, medicine_ids: list[str]) -> list[IngredientRow]:
+        raise NotImplementedError(
+            "공공데이터 API 모드는 성분(DUR)을 연동하지 않았습니다. DRUG_DATA_SOURCE=gold 를 사용하세요."
         )
 
 
@@ -189,6 +198,44 @@ class GoldMedicineRepository:
                 mixture_ingr_names=row.mixture_ingr_names or [],
                 prohbt_content=row.prohbt_content,
                 remark=row.remark,
+            )
+            for row in result
+        ]
+
+    async def ingredients(self, medicine_ids: list[str]) -> list[IngredientRow]:
+        # 먹는 약만 비교한다: 경구 외(파스·안약·주사 등) 제품은 빼고, 경로를 모르는 제품(null)은 넣는다.
+        # 성분 규칙(gold.dur_ingredient_rule)의 단일 성분 규칙만 쓴다. 복합 규칙은 특정 복합제 조합에만 해당한다.
+        # 1일 최대도 경구 외 제형에만 정해진 규칙(주사 등)은 뺀다
+        result = await self.session.execute(
+            text(
+                "WITH ingredient AS (SELECT i.item_seq, i.ingr_key, i.ingr_name, i.dur_ingr_code "
+                "FROM gold.drug_ingredient i JOIN gold.drug d USING (item_seq) "
+                "WHERE i.item_seq = ANY(:ids) AND d.route IS DISTINCT FROM '경구 외'), "
+                "rule AS (SELECT * FROM gold.dur_ingredient_rule WHERE mix_type = '단일' "
+                "AND ingr_code IN (SELECT dur_ingr_code FROM ingredient)), "
+                "efficacy AS (SELECT ingr_code, min(sers_name) AS sers_name FROM rule "
+                "WHERE caution_type = '효능군중복' GROUP BY ingr_code), "
+                "dose AS (SELECT ingr_code, array_agg(max_qty ORDER BY source_key) AS max_qty, "
+                "array_agg(coalesce(form_name, '') ORDER BY source_key) AS form_name FROM rule "
+                "WHERE caution_type = '용량주의' AND max_qty IS NOT NULL AND route IS DISTINCT FROM '경구 외' "
+                "GROUP BY ingr_code) "
+                "SELECT i.item_seq, i.ingr_key, i.ingr_name, e.sers_name, d.max_qty, d.form_name FROM ingredient i "
+                "LEFT JOIN efficacy e ON e.ingr_code = i.dur_ingr_code LEFT JOIN dose d ON d.ingr_code = i.dur_ingr_code "
+                "ORDER BY i.item_seq, i.ingr_name"
+            ),
+            {"ids": medicine_ids},
+        )
+        return [
+            IngredientRow(
+                item_seq=row.item_seq,
+                ingr_key=row.ingr_key,
+                ingr_name=row.ingr_name,
+                efficacy_group=row.sers_name,
+                # "600밀리그램" 처럼 숫자만 있으면 성분 이름을 붙이고, 제형이 정해진 규칙은 제형을 붙인다
+                daily_max=[
+                    (f"{row.ingr_name} {qty}" if qty[0].isdigit() else qty) + (f" ({form})" if form else "")
+                    for qty, form in zip(row.max_qty or [], row.form_name or [], strict=True)
+                ],
             )
             for row in result
         ]

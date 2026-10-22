@@ -2,17 +2,26 @@
 
 import { useEffect, useState } from "react"
 import Notice from "@/components/ui/Notice"
-import { checkInteractions, type InteractionPair, type MedicineSummary } from "../api"
+import {
+  checkInteractions,
+  type DuplicateCaution,
+  type InteractionPair,
+  type MedicineSummary,
+} from "../api"
 import { slotLabels } from "./InteractionSelection"
 
 // 판정 기준: gold.drug_contraindication (품목 DUR = 금기, 성분 규칙 = 성분 기준 주의). 어떤 경우에도 "안전"이라고 표시하지 않는다.
 export default function InteractionResult({ selected }: { selected: MedicineSummary[] }) {
   const [pairs, setPairs] = useState<InteractionPair[] | null>(null)
+  const [duplicates, setDuplicates] = useState<DuplicateCaution[]>([])
   const [error, setError] = useState(false)
 
   useEffect(() => {
     checkInteractions(selected.map((drug) => drug.id))
-      .then((response) => setPairs(response.pairs))
+      .then((response) => {
+        setPairs(response.pairs)
+        setDuplicates(response.duplicates)
+      })
       .catch(() => setError(true))
   }, [selected])
 
@@ -78,6 +87,37 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
           )}
         </div>
       ))}
+      {/* 중복 주의: 병용금기가 아니므로 금지가 아닌 주의로만 표시한다 */}
+      {duplicates.length > 0 && (
+        <div className="space-y-3 rounded-2xl border border-amber-200 p-5">
+          <div>
+            <h3 className="font-bold text-amber-800">중복 주의</h3>
+            <p className="mt-1 text-sm text-slate-500">병용금기는 아니지만 확인이 필요해요.</p>
+          </div>
+          {duplicates.map((duplicate) => (
+            <div key={`${duplicate.kind}-${duplicate.name}`} className="rounded-xl bg-amber-50 p-4 leading-7">
+              <b className="text-amber-800">
+                {duplicate.kind} 중복 · {duplicate.name}
+              </b>
+              <p className="text-sm text-slate-600">
+                {duplicate.medicines
+                  .map((medicine) =>
+                    duplicate.kind === "같은 계열"
+                      ? `${medicine.name} (${medicine.ingredients.join(", ")})`
+                      : medicine.name,
+                  )
+                  .join(" · ")}
+              </p>
+              {duplicate.dailyMax.map((text) => (
+                <p key={text} className="text-sm text-slate-700">
+                  1일 최대 {text}
+                </p>
+              ))}
+            </div>
+          ))}
+          <p className="text-xs text-slate-500">먹는 약끼리만 비교해요 · 식약처 DUR 효능군중복 · 용량주의 기준</p>
+        </div>
+      )}
       {others.length > 0 && (
         <details className="rounded-xl border p-4">
           <summary className="cursor-pointer leading-7">

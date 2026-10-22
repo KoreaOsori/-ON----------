@@ -37,13 +37,20 @@ export type InteractionPair = {
   easyExplanation: string | null
 }
 
+export type DuplicateCaution = {
+  kind: string // 같은 성분 | 같은 계열
+  name: string
+  medicines: { name: string; ingredients: string[] }[]
+  dailyMax: string[]
+}
+
 export const searchMedicines = (query: string, type?: MedicineType) =>
   apiFetch<MedicineSummary[]>("/medicines", { query: { q: query, type } })
 
 export const getMedicine = (id: string) => apiFetch<MedicineDetail>(`/medicines/${id}`)
 
 export const checkInteractions = (medicineIds: string[]) =>
-  apiFetch<{ pairs: InteractionPair[]; notice: string }>("/interactions/check", {
+  apiFetch<{ pairs: InteractionPair[]; duplicates: DuplicateCaution[]; notice: string }>("/interactions/check", {
     method: "POST",
     body: { medicineIds },
   })
