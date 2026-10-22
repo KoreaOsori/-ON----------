@@ -33,11 +33,14 @@ class Bedrock:
         return await asyncio.to_thread(invoke)
 
     async def generate(self, model_id: str, system: str, prompt: str, *, max_tokens: int | None = None) -> dict:
+        # Sonnet 5.5 rejects "disabled". Match the configured ID so custom
+        # inference profile ARNs for the Sonnet slot receive the same option.
+        thinking_type = "between_tools" if model_id == self.settings.sonnet_model_id else "disabled"
         response = await asyncio.to_thread(
             self.client.converse, modelId=model_id, system=[{"text": system}],
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             inferenceConfig={"maxTokens": max_tokens or self.settings.max_output_tokens},
-            additionalModelRequestFields={"thinking": {"type": "disabled"}})
+            additionalModelRequestFields={"thinking": {"type": thinking_type}})
         reason = response.get("stopReason")
         answer = "".join(block.get("text", "") for block in
                          response.get("output", {}).get("message", {}).get("content", []))
