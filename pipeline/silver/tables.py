@@ -1,7 +1,8 @@
 """원본 오퍼레이션별 정리 명세 (docs/silver_table_spec.md 의 코드 버전).
 
 여기 Table 은 API 오퍼레이션 하나를 정리한 결과다. 대부분은 build.py 가 drug_product 로 합치는 재료로만 쓰고,
-병용금기 2개는 dur_contraindication 하나로 합치고, 건강기능식품은 그대로 silver 테이블이 된다 (OUTPUT_TABLES).
+병용금기 2개는 dur_contraindication 하나로, 성분 규칙 효능군중복·용량주의는 dur_ingredient_rule 하나로 합치고,
+건강기능식품은 그대로 silver 테이블이 된다 (OUTPUT_TABLES).
 컬럼 순서·이름·타입·필수 여부를 여기서 고정한다. 바꾸면 SPEC_VERSION 을 올리고 명세 문서도 같이 고친다.
 rule_key 정체성 컬럼은 바꾸면 모든 키가 바뀌므로 RAG팀에 미리 알린다.
 """
@@ -9,7 +10,7 @@ rule_key 정체성 컬럼은 바꾸면 모든 키가 바뀌므로 RAG팀에 미�
 import re
 from dataclasses import dataclass, field
 
-SPEC_VERSION = "0.2"
+SPEC_VERSION = "0.3"
 
 
 @dataclass(frozen=True)
@@ -306,4 +307,6 @@ HEALTH_FOOD_PRODUCT = Table(
 OUTPUT_TABLES = [HEALTH_FOOD_PRODUCT]
 DRUG_PRODUCT_TABLE = "drug_product"
 CONTRAINDICATION_TABLE = "dur_contraindication"  # 성분 병용금기 + 품목 병용금기 (level 컬럼으로 구분)
-ALL_TABLE_NAMES = [DRUG_PRODUCT_TABLE, CONTRAINDICATION_TABLE] + [t.name for t in OUTPUT_TABLES]
+INGREDIENT_RULE_TABLE = "dur_ingredient_rule"  # 성분 규칙 효능군중복 + 용량주의 (type_name 으로 구분)
+INGREDIENT_RULE_SOURCES = ["dur_ingr_efcy_dplct", "dur_ingr_cpcty"]  # DUR_INGR_TABLES 중 이 테이블에 넣는 것
+ALL_TABLE_NAMES = [DRUG_PRODUCT_TABLE, CONTRAINDICATION_TABLE, INGREDIENT_RULE_TABLE] + [t.name for t in OUTPUT_TABLES]

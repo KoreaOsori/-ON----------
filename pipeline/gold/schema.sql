@@ -4,8 +4,8 @@
 
 CREATE SCHEMA IF NOT EXISTS gold;
 
-DROP TABLE IF EXISTS gold.drug_contraindication, gold.drug_dur_caution, gold.drug_ingredient, gold.drug, gold.health_food,
-    gold.load_info;
+DROP TABLE IF EXISTS gold.drug_contraindication, gold.drug_dur_caution, gold.drug_ingredient, gold.dur_ingredient_rule,
+    gold.drug, gold.health_food, gold.load_info;
 
 -- 의약품 제품 1개 = 1행 (판매 + 판매중지). 판매중지 약은 공식 DUR 판정이 없다 (병용금기는 성분 규칙으로만 나옴)
 CREATE TABLE gold.drug (
@@ -20,6 +20,7 @@ CREATE TABLE gold.drug (
     atc_code            text,
     main_item_ingr      text,                           -- 주성분 원문
     chart               text,                           -- 성상 (모양·색 설명)
+    route               text CHECK (route IN ('경구', '경구 외')),  -- 복용 경로 (제형·제품명·성상으로 판단). null = 모름
     image_url           text,
     item_permit_date    date,
     -- e약은요 (일반인용 쉬운 설명, 일부 제품만)
@@ -88,6 +89,24 @@ CREATE TABLE gold.drug_ingredient (
     PRIMARY KEY (item_seq, ingr_key)
 );
 
+-- DUR 성분 규칙 효능군중복·용량주의 (유효한 것만). drug_ingredient.dur_ingr_code 로 연결한다
+-- 효능군중복: 조합한 약의 성분끼리 sers_name 이 같으면 효능군중복. 용량주의: 성분(제형)별 1일 최대용량
+CREATE TABLE gold.dur_ingredient_rule (
+    ingr_code           text NOT NULL,                  -- DUR 성분 코드 (D코드)
+    caution_type        text NOT NULL CHECK (caution_type IN ('효능군중복', '용량주의')),
+    ingr_name           text,
+    mix_type            text NOT NULL,                  -- 단일 / 복합 (복합은 mix_ingr 성분과 함께 든 복합제에만 해당)
+    mix_ingr            text,
+    form_name           text,                           -- 용량주의 제형 (없으면 제형 구분 없음)
+    route               text CHECK (route IN ('경구', '경구 외')),  -- 제형 중 하나라도 경구면 경구. 제형 없으면 null
+    max_qty             text,                           -- 용량주의 1일 최대용량
+    sers_name           text,                           -- 효능군중복 계열
+    prohbt_content      text,
+    remark              text,
+    notification_date   date,
+    source_key          text NOT NULL                   -- silver dur_ingredient_rule 의 dur_seq
+);
+
 -- 건강기능식품 1개 = 1행 (식품안전나라 C003)
 CREATE TABLE gold.health_food (
     prdlst_report_no    text PRIMARY KEY,               -- 품목제조번호
@@ -120,3 +139,4 @@ CREATE TABLE gold.load_info (
 CREATE INDEX drug_contraindication_pair_idx ON gold.drug_contraindication (item_seq, mixture_item_seq);
 CREATE INDEX drug_dur_caution_item_idx ON gold.drug_dur_caution (item_seq, caution_type);
 CREATE INDEX drug_ingredient_key_idx ON gold.drug_ingredient (ingr_key);
+CREATE INDEX dur_ingredient_rule_code_idx ON gold.dur_ingredient_rule (ingr_code, caution_type);

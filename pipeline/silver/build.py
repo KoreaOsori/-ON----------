@@ -1,8 +1,9 @@
 """Bronze → Silver 빌드 (명세: docs/silver_table_spec.md, 원본별 정리 명세: tables.py).
 
-silver 테이블 3개:
+silver 테이블 4개:
   drug_product            의약품 통합 (제품 1개 = 1행, 판매·판매중지만). 허가·e약은요·낱알식별·DUR 주의·허가 문서
   dur_contraindication    병용금기 (gold 판정용). level = 성분(성분 A × B 규칙) / 품목(제품 A × B 쌍)
+  dur_ingredient_rule     DUR 성분 규칙 효능군중복·용량주의 (gold 중복 주의용). 성분 1개 규칙 = 1행
   health_food_product     건강기능식품 (식품안전나라 C003)
 
   python pipeline/silver/build.py                       # S3 bronze 에서 모든 원본에 공통인 최신 스냅샷으로 전체 빌드
@@ -46,7 +47,7 @@ from s3store import DEFAULT_BUCKET, Store  # noqa: E402
 from tables import (  # noqa: E402
     ALL_TABLE_NAMES, CONTRAINDICATION_TABLE, DOC_SOURCE_COLUMNS, DRUG_PRODUCT_TABLE, DUR_INGR_TABLES,
     DUR_INGR_USJNT, DUR_ITEM_CAUTION_TABLES, DUR_ITEM_EFCY_DPLCT, DUR_ITEM_MASTER, DUR_ITEM_SEOBANGJEONG,
-    DUR_ITEM_USJNT, EASY_DRUG, EASY_TEXT_FIELDS, OUTPUT_TABLES,
+    DUR_ITEM_USJNT, EASY_DRUG, EASY_TEXT_FIELDS, INGREDIENT_RULE_SOURCES, INGREDIENT_RULE_TABLE, OUTPUT_TABLES,
     PERMIT_DETAIL, PERMIT_INGREDIENT, PERMIT_ITEM, PILL_IDENTIFICATION, SPEC_VERSION,
 )
 
@@ -919,6 +920,32 @@ def build_contraindication(root, snapshot):
     return out, meta, ingr_rejects + item_rejects
 
 
+# ---------------------------------------------------------------- 성분 규칙
+
+def build_ingredient_rule(root, snapshot):
+    """성분 규칙 효능군중복·용량주의를 한 테이블로. 삭제된 규칙도 그대로 두고 is_rule_valid 로 구분한다.
+    그 유형에 없는 컬럼은 null 이다 (효능군중복: form_name·max_qty, 용량주의: effect_code·sers_name)."""
+    parts, sources, rejects = [], {}, []
+    for table in (t for t in DUR_INGR_TABLES if t.name in INGREDIENT_RULE_SOURCES):
+        out, meta, r = prepare(root, table, snapshot)
+        parts.append(out)
+        sources[table.name] = meta
+        rejects += r
+    order = []
+    for part in parts:
+        order += [name for name in part.column_names if name not in order and name != "snapshot"]
+    out = pa.concat_tables(parts, promote_options="permissive").select(order + ["snapshot"])
+    validate(out, INGREDIENT_RULE_TABLE, ("type_name", "dur_seq"),
+             ["dur_seq", "type_name", "mix_type", "ingr_code", "notification_date", "del_yn", "snapshot"])
+    meta = {
+        "table": INGREDIENT_RULE_TABLE, "snapshot": snapshot, "spec_version": SPEC_VERSION,
+        "primary_key": ["type_name", "dur_seq"], "rows": out.num_rows,
+        "type_rows": {name: part.num_rows for name, part in zip(sources, parts)},
+        "rejected_values": sum(m["rejected_values"] for m in sources.values()), "sources": sources,
+    }
+    return out, meta, rejects
+
+
 # ---------------------------------------------------------------- 저장
 
 def table_dir(root, name, snapshot):
@@ -987,6 +1014,18 @@ def build(root, snapshot, selected):
         out = None  # 저장한 테이블을 붙잡고 있으면 다음 테이블을 만드는 동안 메모리에 남는다
         gc.collect()
         pa.default_memory_pool().release_unused()
+
+    if INGREDIENT_RULE_TABLE in selected:
+        started = time.time()
+        try:
+            out, meta, rejects = build_ingredient_rule(root, snapshot)
+            save(root, snapshot, INGREDIENT_RULE_TABLE, out, meta, rejects)
+            print(f"[{INGREDIENT_RULE_TABLE}] {meta['rows']:,}행 {meta['type_rows']} {time.time() - started:.0f}초",
+                  flush=True)
+        except BuildError as error:
+            failures.append(str(error))
+            print(f"실패 {error}", flush=True)
+        out = None
 
     if DRUG_PRODUCT_TABLE in selected:
         try:

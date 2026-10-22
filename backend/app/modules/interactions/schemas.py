@@ -25,6 +25,21 @@ class InteractionPair(CamelModel):
     easy_explanation: str | None = None
 
 
+class DuplicateMedicine(CamelModel):
+    name: str
+    ingredients: list[str]  # 이 중복에 해당하는 이 약의 성분
+
+
+class DuplicateCaution(CamelModel):
+    """병용금기는 아니지만 겹쳐 먹으면 주의가 필요한 경우 (금지가 아니라 주의)"""
+
+    kind: str  # 같은 성분 | 같은 계열 (식약처 DUR 효능군중복의 계열)
+    name: str  # 성분 이름 또는 계열 이름
+    medicines: list[DuplicateMedicine]
+    daily_max: list[str]  # 해당 성분의 1일 최대 (식약처 DUR 용량주의, 단일 성분 기준). 없으면 비움
+
+
 class InteractionCheckResponse(CamelModel):
     pairs: list[InteractionPair]
+    duplicates: list[DuplicateCaution] = []
     notice: str = "3개 이상 동시 복용 시의 복합 상호작용은 확인할 수 없으며, 2개씩 비교한 결과만 제공합니다."
