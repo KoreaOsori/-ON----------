@@ -1,7 +1,7 @@
 from itertools import combinations
 
 
-def compare_gold(products, ingredients, rules):
+def compare_gold(products, ingredients, rules, ingredient_rules=()):
     """Gold rows are product-specific: never extrapolate a code pair to other products.
 
     Codes are compared for provenance, but an exact official product DUR row remains
@@ -33,7 +33,26 @@ def compare_gold(products, ingredients, rules):
                         and first.get("sale_status") == "판매" and second.get("sale_status") == "판매")
         status = ("contraindicated" if any(r["basis"] == "품목 DUR" for r in matches)
                   else "ingredient_caution" if matches else "not_found" if complete else "unknown")
+        ingredient_matches = []
+        for rule in ingredient_rules:
+            left, right = rule['ingr_code'], rule['mixture_ingr_code']
+            # Only cross-product combinations: not two ingredients from one product.
+            if (left in ac and right in bc) or (left in bc and right in ac):
+                ingredient_matches.append({**rule, 'scope': 'ingredient_only',
+                    'verdict': 'ingredient_contraindication' if rule['item_rows'] else 'ingredient_caution',
+                    'applicability': '제형·투여경로·복합제 조건은 해당 제품에 적용되는지 별도 확인 필요'})
+        coverage = {}
+        for key, rows in ((ak, a), (bk, b)):
+            coverage[key] = {'ingredient_count': len(rows),
+                            'coded_count': sum(bool(r['dur_ingr_code']) for r in rows),
+                            'unmapped_names': [r.get('ingr_name') or r['ingr_key'] for r in rows if not r['dur_ingr_code']],
+                            'missing_ingredient_rows': not bool(rows)}
         checks.append({"first": ak, "second": bk, "status": status, "coverage_complete": complete,
+                       "product_pair_result": 'contraindicated' if any(r['basis'] == '품목 DUR' for r in matches)
+                           else 'ingredient_caution' if matches else 'not_found',
+                       "ingredient_pair_result": 'matched' if ingredient_matches else 'not_found_in_mapped_codes'
+                           if ac and bc else 'not_checkable',
+                       "ingredient_matches": ingredient_matches, "mapping_coverage": coverage,
                        "rules": matches, "ingredients": {ak: a, bk: b},
                        "duplicate_ingredients": sorted({r["ingr_key"] for r in a} & {r["ingr_key"] for r in b}),
                        "ingredient_sources": ["gold.drug_ingredient"]})

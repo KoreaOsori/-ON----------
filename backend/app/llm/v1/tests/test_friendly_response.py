@@ -25,6 +25,7 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.repo.documents = AsyncMock(return_value=[{'product_key': 'drug:1', 'content': '효능 원문'}])
         self.repo.vector_documents = AsyncMock(return_value=[])
         self.repo.safety = AsyncMock(return_value=({}, []))
+        self.repo.ingredient_rules = AsyncMock(return_value=[])
         self.bedrock = MagicMock()
         self.bedrock.embed = AsyncMock(return_value=[0.1])
         self.bedrock.generate = AsyncMock(return_value={'answer': '친절한 모델 답변', 'usage': {'outputTokens': 20}, 'stop_reason': 'end_turn'})
@@ -100,6 +101,18 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 'answered')
         self.assertEqual(self.payload()['checks'][0]['status'], 'contraindicated')
         self.assertEqual(self.payload()['checks'][0]['rules'][0]['remark'], '예외 원문')
+
+    async def test_no_product_rule_is_explained_even_with_missing_codes(self):
+        self.route.intent, self.route.sections = 'interactions', []
+        self.repo.resolve.side_effect = [([product()], True), ([product('drug:2', '약B')], True)]
+        self.repo.documents.return_value = []
+        self.repo.prepare_vectors.return_value = False
+        self.repo.vector_warning = 'vector not ready'
+        response = await self.service.ask(self.request(products=['약A', '약B']))
+        self.assertEqual(response.status, 'answered')
+        self.assertEqual(self.payload()['checks'][0]['product_pair_result'], 'not_found')
+        self.assertTrue(self.payload()['checks'][0]['mapping_coverage']['drug:1']['missing_ingredient_rows'])
+        self.assertNotIn('vector not ready', self.bedrock.generate.call_args.args[2])
 
     async def test_over_budget_asks_llm_for_narrower_scope(self):
         self.repo.documents.return_value[0]['content'] = 'x' * 20000

@@ -16,7 +16,7 @@ CATALOG = """SELECT 'drug:'||item_seq AS product_key, item_seq AS source_id,
 FIELDS = {
     'drug': {'benefits': ['doc_efficacy', 'easy_efcy'], 'usage': ['doc_dosage', 'easy_use_method'],
              'precautions': ['doc_precautions', 'easy_atpn_warn', 'easy_atpn', 'easy_intrc', 'easy_se'],
-             'ingredients': ['main_item_ingr'], 'storage': ['easy_deposit_method']},
+             'ingredients': ['main_item_ingr'], 'storage': ['easy_deposit_method'], 'interactions': ['easy_intrc']},
     'health_food': {'benefits': ['primary_fnclty'], 'usage': ['ntk_mthd'],
                     'precautions': ['iftkn_atnt_matr_cn'], 'ingredients': ['rawmtrl_nm'],
                     'storage': ['cstdy_mthd', 'pog_daycnt']},
@@ -74,7 +74,7 @@ class Repository:
 
     async def vector_documents(self, key, section, vector):
         rows = await self.rows('''WITH candidates AS MATERIALIZED (
-            SELECT l.chunk_id,l.product_key,l.section_type,l.source_refs,l.snapshot,v.content,
+            SELECT l.chunk_id,l.product_key,l.source_product_id,l.section_type,l.source_refs,l.snapshot,v.content,
                    v.embedding <=> CAST(:vector AS vector) AS distance
             FROM product_search.product_links l JOIN product_search.product_vectors v USING(content_hash)
             WHERE l.run_id=:run AND l.product_key=:key AND l.section_type=:section)
@@ -110,6 +110,19 @@ class Repository:
         ids = [k.split(':', 1)[1] for k in keys]
         ingredients = await self.rows('''SELECT item_seq,ingr_key,ingr_name,dur_ingr_code
             FROM gold.drug_ingredient WHERE item_seq=ANY(CAST(:ids AS text[])) ORDER BY item_seq,ingr_key''', ids=ids)
+        missing_names = sorted({r['ingr_name'] for r in ingredients if not r['dur_ingr_code'] and r.get('ingr_name')})
+        if missing_names:
+            mappings = await self.rows('''SELECT ingr_name, array_agg(DISTINCT dur_ingr_code) AS codes
+                FROM gold.drug_ingredient WHERE ingr_name=ANY(CAST(:names AS text[]))
+                AND dur_ingr_code IS NOT NULL GROUP BY ingr_name''', names=missing_names)
+            by_name = {r['ingr_name']: r['codes'] for r in mappings}
+            for row in ingredients:
+                codes = by_name.get(row.get('ingr_name'), [])
+                if not row['dur_ingr_code'] and len(codes) == 1:
+                    row['dur_ingr_code'] = codes[0]
+                    row['mapping_source'] = 'gold.drug_ingredient exact unique ingredient name'
+                elif not row['dur_ingr_code'] and len(codes) > 1:
+                    row['mapping_issue'] = '동일 성분명에 여러 DUR 코드가 있어 자동 선택하지 않음'
         # Product scope preserves route/form restrictions and composite-code mappings from gold.
         rules = await self.rows('''SELECT * FROM gold.drug_contraindication
             WHERE item_seq=ANY(CAST(:ids AS text[])) AND mixture_item_seq=ANY(CAST(:ids AS text[]))
@@ -118,3 +131,19 @@ class Repository:
         for row in ingredients:
             grouped[f"drug:{row['item_seq']}"].append(row)
         return grouped, rules
+
+    async def ingredient_rules(self, ingredients):
+        """Supplement product DUR with code-pair aggregation; never erase product scope."""
+        codes = sorted({r['dur_ingr_code'] for rows in ingredients.values() for r in rows if r['dur_ingr_code']})
+        if not codes:
+            return []
+        return await self.rows('''SELECT ingr_code,mixture_ingr_code,
+            count(*) FILTER (WHERE basis='품목 DUR') AS item_rows,
+            count(*) FILTER (WHERE basis='성분 규칙') AS rule_rows,
+            array_agg(DISTINCT prohbt_content) FILTER (WHERE prohbt_content IS NOT NULL) AS contents,
+            array_agg(DISTINCT remark) FILTER (WHERE remark IS NOT NULL) AS remarks
+            FROM gold.drug_contraindication
+            WHERE ingr_code=ANY(CAST(:codes AS text[]))
+              AND mixture_ingr_code=ANY(CAST(:codes AS text[]))
+              AND ingr_code <= mixture_ingr_code
+            GROUP BY ingr_code,mixture_ingr_code ORDER BY ingr_code,mixture_ingr_code''', codes=codes)
