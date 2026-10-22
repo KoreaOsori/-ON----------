@@ -106,6 +106,7 @@ def test_policy_outcomes_are_200_with_status():
                     {"product_key": "drug:2", "product_name": "라식스정", "manufacturer": None}],
     )
     for result, status in ((clarify, "needs_clarification"), (AgentAnswer("근거 없음", stop_reason="no_evidence"), "no_evidence"),
+                           (AgentAnswer("상담 안내", stop_reason="consult"), "consult"),
                            (AgentAnswer("위기 안내", stop_reason="crisis", emergency=True), "crisis")):
         client, _ = client_for(FakeAgent(result))
         with client:

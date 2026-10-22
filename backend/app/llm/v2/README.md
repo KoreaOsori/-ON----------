@@ -52,7 +52,7 @@ result = await answer("타이레놀 하루에 몇 번 먹어요?", profile_conte
 result.answer      # 사용자에게 보여줄 문장 (근거가 있으면 면책 문구 포함)
 result.sources     # ["타이레놀정500밀리그램 · 용법·용량", ...]  실제 검색 결과 기반
 result.grounded    # 검색 근거가 있었는가
-result.stop_reason # done | no_evidence | needs_clarification | budget | timeout | error | refusal | crisis | empty
+result.stop_reason # done | no_evidence | needs_clarification | consult | budget | timeout | error | refusal | crisis | empty
 result.candidates  # needs_clarification 일 때 [{product_key, product_name, manufacturer}, ...]
 ```
 
@@ -144,6 +144,7 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
 | `done` | 200 | 근거가 있는 답변 |
 | `no_evidence` | 200 | 근거 없음(고정 안내, 모델 문장 폐기) |
 | `needs_clarification` | 200 | 제품 후보가 여럿. `candidates`(`product_key`, `product_name`, `manufacturer`)를 보여 주고 다시 질문 |
+| `consult` | 200 | 약을 끊거나 줄여도 되는지 묻는 질문. 근거 검색 없이 "의사·약사와 상담" 고정 안내 |
 | `crisis` / `refusal` / `budget` / `empty` | 200 | 위기 안내 / 모델 거절 / 한도 초과 / 빈 질문(고정 안내) |
 | (오류) | 503 | 모델·DB 오류, 또는 동시 요청이 많아 대기 시간 초과(`Retry-After` 헤더) |
 | (시간 초과) | 504 | 전체 시간(`LLM_V2_MAX_SECONDS`) 초과 |

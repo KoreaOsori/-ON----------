@@ -97,8 +97,8 @@ ASK_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 
 class AskResponse(BaseModel):
-    status: Literal["done", "no_evidence", "needs_clarification", "crisis", "empty", "refusal", "budget"] = Field(
-        description="done=근거 있는 답변, no_evidence=근거 없음(고정 안내), needs_clarification=제품 확인 필요, "
+    status: Literal["done", "no_evidence", "needs_clarification", "consult", "crisis", "empty", "refusal", "budget"] = Field(
+        description="done=근거 있는 답변, no_evidence=근거 없음(고정 안내), needs_clarification=제품 확인 필요, consult=복용 중단·감량 여부는 전문가 상담 안내(고정), "
         "crisis=위기 안내, empty=빈 질문, refusal/budget=모델 거절·한도 초과(고정 안내)"
     )
     answer: str
