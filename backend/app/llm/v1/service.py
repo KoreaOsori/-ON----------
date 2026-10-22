@@ -14,6 +14,14 @@ JSON, 내부 상태값, 코드, product_key, E1 같은 근거 식별자는 답�
 병용은 Python checks 결과만 설명하고 성분 비교·판정 변경을 하지 마라.
 contraindicated=품목 DUR 금기 확인. ingredient_caution=성분 기준 주의, 공식 품목 금기로 단정 금지.
 unknown=확인 자료 부족. not_found=조회한 자료에서 금기 미발견, 안전 보장 아님. 동일 성분 중복은 금기와 구분.
+checks가 있으면 먼저 product_pair_result로 해당 제품쌍의 금기 조회 결과를 명확히 말한다.
+제품쌍 미발견이면 '등록된 제품 간 병용금기 정보는 찾지 못했어요'라고 말하고, 곧바로 안전 보장은 아니라고 설명한다.
+성분 코드 누락만으로 '아무것도 확인하지 못했다'고 말하지 마라. mapping_coverage의 제품별 조회 성분 수,
+코드 매핑 수와 unmapped_names를 사용해 확인된 범위와 추가 확인이 필요한 성분을 짧게 구분한다.
+ingredient_matches는 다른 제품들의 성분 조합에서 모은 결과다. 성분 단위 금기/주의로 설명하되
+현재 제품에 공식 금기가 적용된다고 단정하지 말고 제형·투여경로·복합제 조건 확인 필요성을 알린다.
+D코드 없음은 성분이 없거나 위험/안전하다는 뜻이 아니다. 완전한 성분표를 대조했다고 단정하지 마라.
+이미 DB에서 성분을 찾았다면 전체 성분표를 무조건 다시 요구하지 말고 미확인 부분만 안내한다.
 code_match=false여도 정확한 제품쌍의 공식 DUR를 취소하지 마라. 원문의 조건·예외·비고를 빠뜨리지 마라.
 건강기능식품 병용은 제공된 섭취 주의사항만 설명한다. 건강기능식품의 질병 치료효과·상호작용을 추정하지 마라.
 주의사항/근거 누락 등 limitations를 쉬운 말로 반드시 전달한다. DB·임베딩·snapshot 같은 운영 용어는 말하지 마라.
@@ -79,13 +87,18 @@ class Service:
             keys = [p['product_key'] for p in selected if p['product_type'] == 'drug']
             if len(keys) >= 2:
                 ingredients, rules = await self.repo.safety(keys)
-                checks = compare_gold(selected, ingredients, rules)
+                ingredient_rules = await self.repo.ingredient_rules(ingredients)
+                checks = compare_gold(selected, ingredients, rules, ingredient_rules)
         query_vector = None
         if vector_ready and (route.intent in ('information', 'both') or len(keys) >= 2):
             query_vector = await self.bedrock.embed(request.question)
         for product in selected:
-            if interactions and len(keys) >= 2 and product['product_type'] == 'drug' and query_vector is not None:
-                evidence.extend(await self.repo.vector_documents(product['product_key'], 'interactions', query_vector))
+            if interactions and len(keys) >= 2 and product['product_type'] == 'drug':
+                label_docs = await self.repo.documents(product['product_key'], 'interactions')
+                evidence.extend(label_docs)
+                if query_vector is not None:
+                    ranked = await self.repo.vector_documents(product['product_key'], 'interactions', query_vector)
+                    evidence.extend(d for d in ranked if d['content'] not in {e['content'] for e in label_docs})
             sections = list(dict.fromkeys(route.sections)) if route.intent in ('information', 'both') else []
             if interactions and product['product_type'] == 'health_food' and 'precautions' not in sections:
                 sections.append('precautions')
@@ -101,12 +114,12 @@ class Service:
         limitations = []
         if missing:
             limitations.append({'missing_information': missing})
-        if any(not c['coverage_complete'] for c in checks):
-            limitations.append('성분 확인 자료가 불완전하거나 판매중지 제품이 있어 전체 병용 여부를 확정할 수 없음')
-        if self.repo.vector_warning:
-            limitations.append('추가 검색 자료는 사용할 수 없어 확인된 제품 원문만 참고함')
-        has_evidence = bool(evidence or any(c['rules'] or c['duplicate_ingredients'] for c in checks))
-        status = 'insufficient_data' if not has_evidence or missing or any(not c['coverage_complete'] for c in checks) else 'answered'
+        if checks:
+            limitations.append('성분 집계는 제품 제형 조건과 일부 복합제 규칙을 완전히 반영하지 않으며 금기 미발견은 안전 보장이 아님')
+        # A completed product-pair query is an explainable result even if no row matched.
+        # Vector absence does not invalidate deterministic gold DUR results.
+        has_evidence = bool(evidence or checks)
+        status = 'insufficient_data' if not has_evidence or missing else 'answered'
         payload.update(evidence=[{'product_key': e['product_key'], 'text': e['content']} for e in evidence],
                        checks=checks, limitations=limitations)
         if not has_evidence:
