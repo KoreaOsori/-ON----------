@@ -66,33 +66,11 @@ class Repository:
         self.vector_run = active[0]['run_id']
         return True
 
-    async def resolve(self, name, selected_key=None):
-        if selected_key:
-            rows = await self.rows(f'SELECT * FROM ({CATALOG}) p WHERE product_key=:key', key=selected_key)
-            return rows, bool(rows)
+    async def resolve(self, name):
+        # No fuzzy matches or candidate selection: only one exact catalog name is accepted.
         rows = await self.rows(f'SELECT * FROM ({CATALOG}) p WHERE lower(product_name)=lower(:name) '
-                               'ORDER BY product_key LIMIT 11', name=name)
-        if rows:
-            return rows[:10], len(rows) == 1
-        escaped = name.lower().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        rows = await self.rows(f'SELECT * FROM ({CATALOG}) p WHERE lower(product_name) LIKE :pattern '
-                               'ORDER BY product_key LIMIT 10', pattern=f'%{escaped}%')
-        if self.has_trigram:
-            fuzzy = await self.rows(f'''SELECT * FROM ({CATALOG}) p
-                WHERE similarity(lower(product_name),lower(:name)) >= 0.2
-                ORDER BY similarity(lower(product_name),lower(:name)) DESC,product_key LIMIT 10''', name=name)
-            rows = list({r['product_key']: r for r in rows + fuzzy}.values())[:10]
-        return rows, False
-
-    async def vector_candidates(self, vector):
-        # Similarity suggests candidates only; always rejoin gold before returning an identity.
-        return await self.rows(f'''WITH ranked AS MATERIALIZED (
-            SELECT l.product_key, min(v.embedding <=> CAST(:vector AS vector)) AS distance
-            FROM product_search.product_links l JOIN product_search.product_vectors v USING(content_hash)
-            WHERE l.run_id=:run AND l.section_type='overview' GROUP BY l.product_key)
-            SELECT p.*, r.distance FROM ranked r JOIN ({CATALOG}) p USING(product_key)
-            WHERE r.distance <= :threshold ORDER BY r.distance,p.product_key LIMIT 10''',
-            run=self.vector_run, vector=json.dumps(vector), threshold=self.settings.max_distance)
+                               'ORDER BY product_key LIMIT 2', name=name)
+        return rows, len(rows) == 1
 
     async def vector_documents(self, key, section, vector):
         rows = await self.rows('''WITH candidates AS MATERIALIZED (

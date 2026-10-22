@@ -24,36 +24,13 @@ class AskRequest(StrictModel):
     products: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
         default_factory=list, max_length=8, description="OCR 제품명 목록. 질문에 제품명이 있으면 생략 가능합니다.")
     model: Literal["sonnet", "haiku"] | None = None
-    selections: dict[int, str] = Field(default_factory=dict,
-        description="재확인할 때만 사용: products의 0부터 시작하는 위치 → 선택한 후보 product_key")
-    name_selections: dict[str, str] = Field(default_factory=dict,
-        description="질문 추출명 포함 후보 선택: clarifications의 name → 선택한 product_key")
-
-    @model_validator(mode="after")
-    def check_selections(self):
-        if any(i < 0 or i >= len(self.products) or len(key) > 200 for i, key in self.selections.items()):
-            raise ValueError("잘못된 후보 선택")
-        if len(self.name_selections) > 8 or any(not k.strip() or not v.strip() or len(k) > 200 or len(v) > 200
-                                               for k, v in self.name_selections.items()):
-            raise ValueError("잘못된 이름별 후보 선택")
-        return self
-
 
 
 class AskResponse(BaseModel):
-    status: Literal["answered", "needs_clarification", "insufficient_data", "refused"]
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["answered", "needs_clarification", "insufficient_data", "refused", "error"]
     answer: str
-    products: list[dict] = Field(default_factory=list)
-    clarifications: list[dict] = Field(default_factory=list)
-    evidence: list[dict] = Field(default_factory=list)
-    interaction_checks: list[dict] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    model_id: str | None = None
     usage: dict = Field(default_factory=dict)
-    latency_ms: int = 0
-    run_id: str | None = None
-    detected_intent: str | None = None
-    merged_product_names: list[str] = Field(default_factory=list)
 
 
 class IngredientProduct(StrictModel):

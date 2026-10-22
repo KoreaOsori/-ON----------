@@ -36,20 +36,23 @@ EC2에서도 같은 명령을 사용하고 SSH 터널로 접속할 수 있다: `
 }
 ```
 
-서버가 질문에서 제품명을 추출해 OCR 목록과 합치고 공백·대소문자 기준으로 중복을 제거한 뒤 gold에서 의약품/건기식과 제품 ID를 확인한다. 질문 원문에 없는 모델 추정 제품명이 나오면 재질문한다. 정확한 이름이 하나만 있으면 선택하며, 부분 일치·동일 이름 복수 후보·미등록은 `needs_clarification`으로 반환한다. 부분 이름, pg_trgm 철자 유사도(확장 설치 시), 벡터 의미 유사도로 후보를 검색한다. 벡터 후보도 gold에 실제 존재하는 제품만 반환한다. 유사 제품은 자동 확정하지 않으며 후보가 없으면 제품명을 다시 요청한다. 후보는 제조사·함량·제품명을 확인해야 하며 자동 선택하지 않는다. 후속 요청은 같은 질문/이름 목록과 함께 `clarifications`의 name을 키로 선택한 product_key를 `name_selections`에 보낸다. 처음에는 이 필드를 생략한다.
+서버는 질문 속 제품명과 OCR 제품명을 합쳐 중복을 제거한다. 이름은 gold에서 정확 일치로만 확인한다. 미등록/모호한 이름이 있으면 후보 검색·선택 목록을 제공하지 않고, 해당 원래 이름들을 LLM에 전달하여 정확한 제품명·제조사·함량을 부드럽게 다시 요청한다. 다른 제품을 추측해서 설명하지 않는다. 이전 `selections`, `name_selections` 입력은 제거했다.
+
+응답은 아래 세 필드만 반환한다. 아래 answer는 문체 예시이며 실제 문장은 LLM이 생성한다.
 
 ```json
 {
-  "question": "이 제품의 효능을 알려주세요.",
-  "products": ["OCR에서 받은 이름"],
-  "name_selections": {"OCR에서 받은 이름": "drug:응답에서_선택한_실제_ID"},
-  "model": "haiku"
+  "status": "needs_clarification",
+  "answer": "‘입력하신 이름’만으로는 정확한 제품을 확인하기 어려워요. 포장에 적힌 전체 제품명과 제조사, 함량을 알려주시면 다시 확인해 드릴게요.",
+  "usage": {"routing": {}}
 }
 ```
 
-`name_selections`는 질문에서 추출된 제품에도 사용할 수 있다. 이전 `selections`는 OCR products의 0부터 시작하는 위치에 한해 호환 지원한다. `merged_product_names`에서 합쳐진 이름 목록을 확인한다. 서버는 선택된 ID가 실제 존재하는지 다시 확인한다. 대화 상태는 서버에 저장하지 않는다.
+- `status`: answered / needs_clarification / insufficient_data / refused / error.
+- `answer`: 제품 정보·병용 안내·미확정 이름·자료 부족 등을 LLM이 사용자 친화적인 존댓말로 정리한다. 내부 코드·근거 ID·후보는 표시하지 않는다.
+- `usage`: `routing`에 분류/추출 호출의 Bedrock 사용량만 반환한다. 답변 생성 및 임베딩 호출 사용량은 포함하지 않는다.
 
-제품 조회 전에 짧은 Claude 호출(최대 500 출력 토큰) 1회로 질문 속 제품명 추출과 함께 질문을 information/interactions/both/clarify로 분류한다. 효능·용법·주의사항·성분·보관도 구분한다. 분류 출력이 유효하지 않거나 질문이 모호하면 재질문한다. 단일 제품의 금기/부작용 질문은 일반 정보이고, 함께 복용하는 질문은 병용이다. 병용에는 서로 다른 제품 2개 이상이 필요하다. 분류는 확률적이므로 실제 질문 평가가 필요하다. LLM에는 성분 비교를 맡기지 않는다.
+재확인 안내도 LLM을 사용한다. 모델 거절·응답 잘림·서비스 오류 시에는 생성 답변을 사용할 수 없어 고정된 친절한 오류 안내를 반환한다. HTTP 오류 코드(401/422/503)는 유지하며 본문도 status/answer/usage 형식이다. 분류 호출은 최대 500 출력 토큰, 답변 호출은 기본 900 출력 토큰이다. 실제 문체/추출 품질은 모델 평가가 필요하다.
 
 ## 데이터 연결
 
@@ -79,7 +82,7 @@ python -m app.llm.v1.check_database
 
 AWS 참고: [GetSecretValue 권한](https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html), [RDS 관리형 시크릿](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-secrets-manager.html).
 
-현재 ask는 **gold와 pgvector를 함께 사용**한다. 제품 확정·의약품 DUR·건기식 섭취 주의사항은 gold를 기준으로 한다. 벡터 DB는 유사 제품 후보, 확정 제품의 정보 검색, 의약품끼리의 병용에서 보조 상호작용 원문 검색에 사용한다. 요청 전체는 repeatable-read/read-only 트랜잭션에서 처리하며 `gold.load_info`로 적재 버전을 표시한다. 실제 gold 테이블이 적재되어 있어야 한다. 런타임 계정에 gold 및 product_search 스키마 USAGE/테이블 SELECT 권한이 필요하다. 벡터 모델·차원이 설정과 일치하고 공개된 벡터 snapshot 날짜가 gold와 같아야 한다. 벡터가 미준비/미공개/다른 snapshot이면 warnings에 이유를 표시하고 gold만 사용한다. 네트워크·권한 등 실행 오류는 정상 fallback으로 숨기지 않는다.
+현재 ask는 **gold와 pgvector를 함께 사용**한다. 제품 확정·의약품 DUR·건기식 섭취 주의사항은 gold를 기준으로 한다. 벡터 DB는 확정 제품의 정보 검색과 의약품끼리의 병용에서 보조 상호작용 원문 검색에 사용한다. 제품명 후보 검색에는 사용하지 않는다. 요청 전체는 repeatable-read/read-only 트랜잭션에서 처리하며 `gold.load_info`로 적재 버전을 표시한다. 실제 gold 테이블이 적재되어 있어야 한다. 런타임 계정에 gold 및 product_search 스키마 USAGE/테이블 SELECT 권한이 필요하다. 벡터 모델·차원이 설정과 일치하고 공개된 벡터 snapshot 날짜가 gold와 같아야 한다. 벡터가 미준비/미공개/다른 snapshot이면 확인된 gold 자료만 사용하며 필요한 제한 사항은 LLM 답변에 쉽게 설명한다. 네트워크·권한 등 실행 오류는 정상 fallback으로 숨기지 않는다.
 
 | 목적 | 원본 |
 | --- | --- |
@@ -90,13 +93,13 @@ AWS 참고: [GetSecretValue 권한](https://docs.aws.amazon.com/secretsmanager/l
 | 병용 규칙 | gold.drug_contraindication |
 | 건기식 기능성·섭취 방법·주의 | primary_fnclty, ntk_mthd, iftkn_atnt_matr_cn |
 
-Python이 각 의약품쌍의 성분과 DUR 코드를 읽고, 해당 제품쌍의 금기 규칙을 조회해 양방향으로 비교한다. gold 금기 테이블은 이미 제품쌍에 제형·복합제 조건을 적용한 데이터이므로 **다른 제품의 동일 성분 규칙을 가져와 적용하지 않는다**. `code_match`에 양쪽 성분 코드 비교 결과를 기록한다. 복합 코드 또는 매핑 누락 때문에 code_match가 false여도 정확한 제품쌍의 품목 DUR를 버리지 않는다.
+Python이 각 의약품쌍의 성분과 DUR 코드를 읽고, 해당 제품쌍의 금기 규칙을 조회해 양방향으로 비교한다. gold 금기 테이블은 이미 제품쌍에 제형·복합제 조건을 적용한 데이터이므로 **다른 제품의 동일 성분 규칙을 가져와 적용하지 않는다**. 내부 `code_match`에 양쪽 성분 코드 비교 결과를 기록한다. 복합 코드 또는 매핑 누락 때문에 code_match가 false여도 정확한 제품쌍의 품목 DUR를 버리지 않는다.
 
 - `basis=품목 DUR` → `contraindicated`: 공식 제품쌍 금기 확인.
 - `basis=성분 규칙` → `ingredient_caution`: 성분 기준 주의. 공식 품목 금기로 격상하지 않는다.
 - 규칙 없음 + 코드 누락/판매중지 → `unknown`.
 - 조회 조건이 충족되지만 규칙 없음 → `not_found`. 병용 안전 보장은 아니다.
-- `ingr_key`가 같으면 `duplicate_ingredients`로 별도 반환한다. 동일 성분 중복을 금기라고 단정하지 않는다.
+- `ingr_key`가 같으면 내부 `duplicate_ingredients`에 기록하고 답변에서 설명한다. 동일 성분 중복을 금기라고 단정하지 않는다.
 
 성분 매핑 여부는 조회 범위의 상태일 뿐 의료 데이터 전체의 완전성을 인증하지 않는다. `remark`, `notification_date`, `carried_from`, 원문 및 출처를 보존한다. 건기식이 포함된 병용은 건기식의 섭취 시 주의사항 원문을 추가한다. 건기식 상호작용을 추정하거나 의약품 DUR 판정으로 취급하지 않는다.
 
@@ -151,13 +154,11 @@ AWS 공식 문서에서 확인한 모델 ID를 기본 설정으로 사용한다(
 
 ## 토큰·정확성 및 테스트
 
-제품 추출·분류 호출 1회 후 제품을 확인하고, 근거가 있으면 답변 생성 1회를 호출한다. 유사 후보 검색에는 미확정 이름별 Titan 임베딩을 사용하고, 정보 검색에는 질문 임베딩 1회를 재사용한다. 벡터 문맥은 확정 product_key/section/run으로 제한한다. 주의사항은 조건을 자르지 않도록 gold 전체를 사용한다. 출력 기본 한도는 900토큰, 답변 프롬프트는 18,000자다. 조건·주의사항을 임의로 잘라내지 않으며 초과 시 질문 범위를 줄이도록 안내한다. 전체 원문이 긴 질문은 즉시 요약하지 못할 수 있다.
+질문 추출/분류 1회, 사용자 답변 생성 1회를 사용한다. 모든 제품이 확정된 경우에만 벡터와 의료 근거를 조회한다. 벡터는 확정 제품/자료 유형/공개 run으로 범위를 제한하며 질문 임베딩을 재사용한다. 주의사항 원문은 임의로 자르지 않는다. 입력 예산 초과는 LLM이 제품 수나 질문 범위를 줄이도록 안내한다.
 
-`detected_intent`는 서버 분류 결과다. `usage.routing` 및 `usage.answer`에서 두 호출의 실제 토큰을 확인한다. `model`만 바꿔 동일 질문을 비교할 수 있다. `top_k`와 `max_distance`는 벡터 검색 결과 수·거리 기준이며 실제 데이터로 조정해야 한다. 같은 날짜라도 재적재 버전 차이까지 검증하는 것은 아니므로 gold/벡터를 같은 원본으로 배포한다.
+의약품 간 비교 결과·원문·조건은 내부 프롬프트에 남기되 외부 응답에는 status/answer/usage만 보낸다. 의약품 1개와 건강기능식품 1개는 성분 비교 없이 gold.health_food.iftkn_atnt_matr_cn 전체를 사용한다. 이 원문이 없으면 상호작용을 만들어내지 않고 부족한 자료를 설명한다.
 
-응답의 `interaction_checks`, `evidence`, `warnings`를 답변과 함께 UI에 표시한다. 모델의 자연어 설명은 확률적이므로 구조화된 Python 판정이 기준이다. 거절·출력 길이 초과·미완료 답변은 정상 답변으로 반환하지 않는다. 근거 없음을 모델 지식으로 채우지 않는다.
-
-프로젝트 루트에서 외부 AWS/DB 호출 없는 회귀 테스트:
+프로젝트 루트에서 AWS/DB 실제 호출 없는 회귀 테스트:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
@@ -165,30 +166,4 @@ $env:PYTHONPATH='backend'
 python -m unittest discover -s backend/app/llm/v1/tests -v
 ```
 
-실제 환경에서는 동일 질문을 두 모델로 실행하여 출처 일치, 금기 조건 보존, 토큰 및 지연을 비교한다. 이번 로컬 테스트는 실제 Bedrock 권한, DB 적재 여부 또는 임상 정확성을 인증하지 않는다.
-
-## 질문 제품명 병합 및 혼합 병용 테스트
-
-```json
-{
-  "question": "타이레놀과 오메가3를 같이 먹어도 되나요?",
-  "products": [],
-  "model": "haiku"
-}
-```
-
-브랜드/일반명은 정확한 단일 제품이 아닐 수 있다. `needs_clarification` 응답의 candidates에서 제조사·함량을 확인하고 **반환된 실제 product_key**로 선택한다. 아래 값은 형식 예시다.
-
-```json
-{
-  "question": "타이레놀과 오메가3를 같이 먹어도 되나요?",
-  "products": [],
-  "name_selections": {
-    "타이레놀": "drug:선택한ID",
-    "오메가3": "health_food:선택한ID"
-  },
-  "model": "haiku"
-}
-```
-
-의약품 1개 + 건강기능식품 1개면 성분 조회/비교를 수행하지 않는다. `gold.health_food.iftkn_atnt_matr_cn` 원문을 LLM에 전달해 설명하며 건기식 주의사항을 벡터 청크로 대체하지 않는다. 이 필드가 없으면 근거 부족을 알리고 다른 자료로 상호작용을 만들어내지 않는다. 의약품이 2개 이상 포함된 목록에서는 의약품끼리만 Python DUR 비교를 추가한다.
+실제 EC2/Bedrock/RDS 연결과 모델 답변 품질은 별도 검증이 필요하다. 변경 코드를 EC2에 반영한 뒤 deploy/ec2에서 `docker compose up -d --build backend`로 재배포한다.
