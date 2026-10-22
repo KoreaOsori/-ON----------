@@ -31,7 +31,7 @@ sys.path.insert(0, str(PIPELINE_DIR / "collect"))
 from collect import (  # noqa: E402
     ALL_OPERATIONS, DEFAULT_ROWS, FOOD_SAFETY_ROWS, bronze_prefix, collect_operation, get_service_key, is_food_safety,
 )
-from s3store import DEFAULT_BUCKET, Store  # noqa: E402
+from s3store import Store  # noqa: E402
 
 
 def log(message):
@@ -87,7 +87,7 @@ def run_step(script, *args):
 def main():
     parser = argparse.ArgumentParser(description="수집 → bronze 검증 → silver → gold → RDS (S3 기준)")
     parser.add_argument("--snapshot", default=date.today().isoformat())
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument("--bucket")
     parser.add_argument("--skip-collect", action="store_true", help="수집하지 않고 S3 에 이미 있는 bronze 스냅샷을 쓴다")
     parser.add_argument("--gold-host", help="RDS 호스트 덮어쓰기 (SSM 터널이면 localhost)")
     parser.add_argument("--gold-dsn", help="RDS 대신 이 DB 접속 문자열 (로컬 테스트용)")
