@@ -1,12 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Search } from "lucide-react"
 import Notice from "@/components/ui/Notice"
 import { button, inputClass } from "@/components/ui/styles"
 import { MAX_INTERACTION_DRUGS } from "@/lib/constants"
-import { drugs } from "@/mocks/drugs"
-import { useSession } from "@/providers/SessionProvider"
+import { searchMedicines, type MedicineSummary, type MedicineType } from "../api"
 import CategoryFilter from "./CategoryFilter"
 import DrugCard from "./DrugCard"
 import DrugDetailModal from "./DrugDetailModal"
@@ -21,24 +20,38 @@ const tabs: [Tab, string][] = [
 ]
 
 export default function MedicineView() {
-  const { logged } = useSession()
   const [tab, setTab] = useState<Tab>("search")
   const [query, setQuery] = useState("")
-  const [category, setCategory] = useState("전체")
-  const [detail, setDetail] = useState<number | null>(null)
-  const [selected, setSelected] = useState<number[]>([])
+  const [type, setType] = useState<MedicineType | undefined>()
+  const [results, setResults] = useState<MedicineSummary[]>([])
+  const [searchError, setSearchError] = useState(false)
+  const [detail, setDetail] = useState<{ drug: MedicineSummary; index: number } | null>(null)
+  const [selected, setSelected] = useState<MedicineSummary[]>([])
   const [result, setResult] = useState(false)
 
-  const filtered = drugs
-    .map((drug, index) => ({ drug, index }))
-    .filter(
-      ({ drug }) =>
-        drug.name.includes(query) && (category === "전체" || drug.category === category),
-    )
+  // 입력이 멈추면 검색 (글자마다 요청하지 않음)
+  useEffect(() => {
+    const keyword = query.trim()
+    if (!keyword) return
+    const timer = setTimeout(() => {
+      searchMedicines(keyword, type)
+        .then((items) => {
+          setResults(items)
+          setSearchError(false)
+        })
+        .catch(() => setSearchError(true))
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [query, type])
 
-  const add = (index: number) => {
-    if (selected.length < MAX_INTERACTION_DRUGS && !selected.includes(index)) {
-      setSelected([...selected, index])
+  // 검색어를 지우면 이전 결과는 보이지 않게 한다
+  const visible = query.trim() ? results : []
+
+  const isSelected = (drug: MedicineSummary) => selected.some((item) => item.id === drug.id)
+
+  const add = (drug: MedicineSummary) => {
+    if (selected.length < MAX_INTERACTION_DRUGS && !isSelected(drug)) {
+      setSelected([...selected, drug])
       setResult(false)
     }
   }
@@ -47,7 +60,7 @@ export default function MedicineView() {
     setTab(value)
     setResult(false)
     setQuery("")
-    setCategory("전체")
+    setType(undefined)
   }
 
   return (
@@ -69,11 +82,9 @@ export default function MedicineView() {
       </div>
       {tab === "interaction" && (
         <InteractionSelection
-          logged={logged}
           selected={selected}
-          onLoadMine={() => setSelected([0, 1])}
-          onRemove={(index) => {
-            setSelected(selected.filter((item) => item !== index))
+          onRemove={(id) => {
+            setSelected(selected.filter((item) => item.id !== id))
             setResult(false)
           }}
         />
@@ -88,25 +99,29 @@ export default function MedicineView() {
           aria-label="약 검색"
         />
       </div>
-      {tab === "search" && <CategoryFilter value={category} onChange={setCategory} />}
+      {tab === "search" && <CategoryFilter value={type} onChange={setType} />}
       <div className="my-6 grid grid-cols-2 gap-4">
-        {filtered.map(({ drug, index }) => (
+        {visible.map((drug, index) => (
           <DrugCard
-            key={drug.name}
+            key={drug.id}
             drug={drug}
             index={index}
             mode={tab}
-            added={selected.includes(index)}
-            addDisabled={selected.length >= MAX_INTERACTION_DRUGS || selected.includes(index)}
-            onOpen={() => setDetail(index)}
-            onAdd={() => add(index)}
+            added={isSelected(drug)}
+            addDisabled={selected.length >= MAX_INTERACTION_DRUGS || isSelected(drug)}
+            onOpen={() => setDetail({ drug, index })}
+            onAdd={() => add(drug)}
           />
         ))}
       </div>
-      {!filtered.length && (
+      {!visible.length && (
         <div className="py-16 text-center text-slate-500">
           <Search className="mx-auto mb-4" />
-          검색 결과가 없어요. 다른 이름으로 찾아보세요.
+          {searchError
+            ? "검색하지 못했어요. 잠시 후 다시 시도해 주세요."
+            : query.trim()
+              ? "검색 결과가 없어요. 다른 이름으로 찾아보세요."
+              : "약 이름을 입력해 보세요."}
         </div>
       )}
       {tab === "interaction" && (
@@ -120,16 +135,17 @@ export default function MedicineView() {
       )}
       {result && <InteractionResult selected={selected} />}
       <Notice />
-      {detail !== null && (
+      {detail && (
         <DrugDetailModal
-          index={detail}
+          id={detail.drug.id}
+          index={detail.index}
           onClose={() => setDetail(null)}
           onCheckInteraction={() => {
             setTab("interaction")
-            add(detail)
+            add(detail.drug)
             setDetail(null)
             setQuery("")
-            setCategory("전체")
+            setType(undefined)
           }}
         />
       )}

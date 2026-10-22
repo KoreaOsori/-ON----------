@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import quote_plus
@@ -29,6 +30,8 @@ class Settings(BaseSettings):
     db_name: str = "yakon"
     db_username: str | None = None
     db_password: str | None = None
+    # AWS(EC2): DB_HOST 를 주지 않으면 이 시크릿(DB_HOST·DB_PORT·DB_NAME·DB_USERNAME·DB_PASSWORD)에서 읽는다. 인증은 EC2 IAM 역할
+    db_secret_id: str | None = None
     redis_url: str = "redis://localhost:6379/0"
 
     # AWS 공통 (ECS에서는 Task Role 자격증명을 사용하므로 키를 넣지 않는다)
@@ -52,8 +55,8 @@ class Settings(BaseSettings):
     # 처방전 OCR: textract 는 한국어 미지원 → 한국어 처방전은 claude(비전) 권장
     ocr_provider: Literal["mock", "claude", "textract"] = "mock"
 
-    # 공공데이터 (data.go.kr) — 식약처 e약은요 / DUR / 약국 정보
-    drug_data_source: Literal["mock", "public_api"] = "mock"
+    # 의약품 데이터: gold = 데이터 파이프라인이 RDS 에 적재한 gold 스키마 / mock = 가상 데이터 (테스트·DB 없는 로컬) / public_api = 공공데이터 (data.go.kr) e약은요
+    drug_data_source: Literal["mock", "public_api", "gold"] = "mock"
     public_data_service_key: str | None = None
 
     # 인증
@@ -79,10 +82,25 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _assemble_database_url(self) -> "Settings":
+        if self.db_secret_id and not self.db_host:
+            self._load_db_secret()
         if self.db_host and self.db_username and self.db_password:
             password = quote_plus(self.db_password)
             self.database_url = f"postgresql+asyncpg://{self.db_username}:{password}@{self.db_host}:{self.db_port}/{self.db_name}"
         return self
+
+    def _load_db_secret(self) -> None:
+        import boto3
+
+        response = boto3.client("secretsmanager", region_name=self.aws_region).get_secret_value(
+            SecretId=self.db_secret_id
+        )
+        secret = json.loads(response["SecretString"])
+        self.db_host = secret["DB_HOST"]
+        self.db_port = int(secret.get("DB_PORT") or 5432)
+        self.db_name = secret["DB_NAME"]
+        self.db_username = secret["DB_USERNAME"]
+        self.db_password = secret["DB_PASSWORD"]
 
     @property
     def cors_origin_list(self) -> list[str]:

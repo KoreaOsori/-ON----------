@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -15,8 +15,9 @@ async def search_medicines(
     repository: Repository,
     q: Annotated[str, Query(max_length=100)] = "",
     category: str | None = None,
+    medicine_type: Annotated[Literal["일반", "전문"] | None, Query(alias="type")] = None,
 ):
-    return await repository.search(q.strip(), category)
+    return await repository.search(q.strip(), category, medicine_type)
 
 
 @router.get("/{medicine_id}", response_model=MedicineDetail, summary="약 상세정보")
