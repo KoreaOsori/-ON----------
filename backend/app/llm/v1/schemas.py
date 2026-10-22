@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -15,30 +15,22 @@ class ProductInput(StrictModel):
 
 
 class AskRequest(StrictModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {"question": "이 제품의 효능을 알려주세요.", "products": ["DB에 저장된 제품명"], "model": "haiku"},
+        {"question": "이 두 제품을 함께 먹어도 되나요?", "products": ["첫 번째 제품명", "두 번째 제품명"],
+         "model": "sonnet"},
+    ]})
     question: str = Field(min_length=1, max_length=1000)
-    intent: Literal["efficacy", "interactions"]
-    products: list[ProductInput] = Field(min_length=1, max_length=8)
+    products: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=8, description="OCR 제품명 목록. 질문에 제품명이 있으면 생략 가능합니다.")
     model: Literal["sonnet", "haiku"] | None = None
-
-    @model_validator(mode="after")
-    def validate_pair(self):
-        if self.intent == "interactions" and len(self.products) < 2:
-            raise ValueError("병용 확인에는 제품을 2개 이상 입력하세요.")
-        return self
 
 
 class AskResponse(BaseModel):
-    status: Literal["answered", "needs_clarification", "insufficient_data", "refused"]
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["answered", "needs_clarification", "insufficient_data", "refused", "error"]
     answer: str
-    products: list[dict] = Field(default_factory=list)
-    clarifications: list[dict] = Field(default_factory=list)
-    evidence: list[dict] = Field(default_factory=list)
-    interaction_checks: list[dict] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    model_id: str | None = None
     usage: dict = Field(default_factory=dict)
-    latency_ms: int = 0
-    run_id: str | None = None
 
 
 class IngredientProduct(StrictModel):
