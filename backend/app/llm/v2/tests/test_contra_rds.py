@@ -57,7 +57,6 @@ async def test_reverse_direction_is_used_when_only_one_side_is_stored_and_names_
     assert len([1 for sql, _ in reader.calls if "mixture_item_seq = :second" in sql]) == 2
 
 
-<<<<<<< HEAD
 async def test_ingredient_only_pair_is_reported_as_ingredient_level_caution_not_contraindication():
     tool, _ = _tool([_rule("100", "200", content="심실성빈맥", basis="성분 규칙")])
     result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})
@@ -93,8 +92,6 @@ def test_prompt_and_outcome_know_ingredient_level_caution():
     assert outcome_of(ToolResult("x", [Evidence("a", "", "contraindication_ingredient", 1)])) == "found"
 
 
-=======
->>>>>>> origin/master
 async def test_ingredient_rules_are_labeled_and_product_dur_comes_first_and_duplicates_collapse():
     rules = [
         _rule("100", "200", content="성분 단위 사유", basis="성분 규칙"),
@@ -154,7 +151,6 @@ async def test_health_food_combination_does_not_touch_the_rule_table():
     result = await tool.run({"products": ["와파린정", "홍삼정"]})
     assert not result.is_error and "병용금기 판정 불가" in result.text
     assert not any("gold.drug_contraindication" in sql for sql, _ in reader.calls)
-<<<<<<< HEAD
 
 
 # ----------------------------------------------------------------------------- 성분 이름 / 성분 코드 조회
@@ -300,5 +296,3 @@ async def test_find_ingredient_collects_every_code_for_the_same_name():
     reader = FakeReader(lambda sql, params: rows)
     match, without_code = await RdsContraStore().find_ingredient(reader, "가나성분")
     assert match.codes == ("D000010", "D000011") and without_code is False
-=======
->>>>>>> origin/master
