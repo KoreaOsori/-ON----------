@@ -26,6 +26,10 @@ variable "data_bucket_arn" {
   type = string
 }
 
+variable "upload_bucket_arn" {
+  type = string
+}
+
 variable "secret_arns" {
   description = "EC2 가 읽을 시크릿 (API 키, RDS 마스터 비밀번호)"
   type        = list(string)

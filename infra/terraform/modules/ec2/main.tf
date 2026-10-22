@@ -37,6 +37,11 @@ data "aws_iam_policy_document" "app" {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = ["${var.data_bucket_arn}/*"]
   }
+  # 업로드 버킷: 백엔드가 presigned URL 발급(PutObject 서명)·사진 읽기(OCR)
+  statement {
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${var.upload_bucket_arn}/*"]
+  }
   # API 키, DB 비밀번호 읽기
   statement {
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
