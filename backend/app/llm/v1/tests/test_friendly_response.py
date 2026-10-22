@@ -66,6 +66,52 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         await self.service.ask(self.request(question='약A 효능?', products=['약A', '약A']))
         self.repo.resolve.assert_awaited_once_with('약A')
 
+    async def test_clarification_preserves_confirmed_names(self):
+        self.repo.resolve.side_effect = [([product()], True), ([], False)]
+        response = await self.service.ask(self.request(products=['약A', '알수없는약123']))
+        self.assertEqual(response.status, 'needs_clarification')
+        self.assertEqual(self.payload()['confirmed_product_names'], ['약A'])
+        self.assertEqual(self.payload()['unresolved'], ['알수없는약123'])
+        self.repo.safety.assert_not_called()
+
+    async def test_excluded_question_product_is_not_looked_up(self):
+        self.route.product_names = ['약A']
+        await self.service.ask(self.request(
+            question='가짜약123은 복용하지 않아요. 약A 효능만 알려주세요.', products=[]))
+        self.repo.resolve.assert_awaited_once_with('약A')
+        self.assertEqual([p['product_name'] for p in self.payload()['products']], ['약A'])
+        self.assertNotIn('unresolved', self.payload())
+        self.assertIn('조회했다고 주장하지 마라', self.bedrock.generate.call_args.args[1])
+
+    async def test_truncated_answer_rewritten_once_from_full_evidence(self):
+        self.repo.documents.return_value[0]['content'] = '주의 원문과 예외 조건'
+        self.bedrock.generate.side_effect = [
+            {'answer': '잘린 답변', 'stop_reason': 'max_tokens'},
+            {'answer': '완성된 답변', 'stop_reason': 'end_turn'},
+        ]
+        response = await self.service.ask(self.request())
+        self.assertEqual(response.status, 'answered')
+        self.assertEqual(response.answer, '완성된 답변')
+        self.assertEqual(response.usage, {'routing': {'inputTokens': 10}})
+        first, retry = self.bedrock.generate.await_args_list
+        self.assertEqual(first.args[2], retry.args[2])
+        self.assertIn('주의 원문과 예외 조건', retry.args[2])
+        self.assertNotIn('잘린 답변', retry.args[2])
+        self.repo.resolve.assert_awaited_once()
+
+    async def test_retry_is_bounded_and_never_returns_partial_answer(self):
+        self.bedrock.generate.return_value = {'answer': '잘린 답변', 'stop_reason': 'max_tokens'}
+        response = await self.service.ask(self.request())
+        self.assertEqual(self.bedrock.generate.await_count, 2)
+        self.assertEqual(response.status, 'insufficient_data')
+        self.assertNotIn('잘린 답변', response.answer)
+
+    async def test_refusal_does_not_retry(self):
+        self.bedrock.generate.return_value = {'answer': '거절', 'stop_reason': 'refusal'}
+        response = await self.service.ask(self.request())
+        self.assertEqual(response.status, 'refused')
+        self.bedrock.generate.assert_awaited_once()
+
     async def test_mixed_pair_gold_precautions_without_ingredient_comparison(self):
         self.route.intent, self.route.sections, self.route.product_names = 'interactions', [], ['영양제B']
         self.repo.resolve.side_effect = [([product()], True), ([product('health_food:2', '영양제B', 'health_food')], True)]
