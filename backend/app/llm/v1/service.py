@@ -1,7 +1,7 @@
 import json
 
 from .interactions import compare_gold
-from .routing import classify
+from .routing import classify, scoped_question
 from .schemas import AskResponse
 
 SYSTEM = """약과 건강기능식품 정보를 친절하고 자연스러운 한국어 존댓말로 안내한다.
@@ -10,6 +10,7 @@ SYSTEM = """약과 건강기능식품 정보를 친절하고 자연스러운 한
 단, 근거의 금기 조건·예외·비고와 미확인 제품명은 길이보다 우선하여 모두 보존한다.
 제품 설명은 products에 있는 제품만, 제품 확인 요청은 unresolved에 있는 이름만 대상으로 한다.
 질문에만 등장하거나 문의 대상에서 제외된 제품은 재언급하거나 조회했다고 주장하지 마라.
+[문의 대상에서 제외됨] 표시는 답변에서 생략하고 그 대상의 제품 정보를 다시 요청하지 마라.
 confirmed_product_names의 제품은 확인된 상태이므로 제품명·제조사·함량을 다시 요구하지 마라.
 JSON, 내부 상태값, 코드, product_key, E1 같은 근거 식별자는 답변에 노출하지 마라.
 확인되지 않은 이름은 unresolved의 원래 이름을 하나씩 인용하여 '이 이름만으로는 정확한 제품을 확인하기 어려워요'라고
@@ -75,7 +76,8 @@ class Service:
         for name in request.products + route.product_names:
             if ''.join(name.split()).casefold() not in {''.join(n.split()).casefold() for n in names}:
                 names.append(name)
-        payload = {'question': request.question, 'intent': route.intent}
+        question = scoped_question(request.question, route, names)
+        payload = {'question': question, 'intent': route.intent}
         if route.intent == 'clarify' or not names:
             return await self.respond(model_id, routing_usage, 'needs_clarification',
                                       {**payload, 'task': '제품명과 궁금한 내용을 구체적으로 다시 물어보기'})
@@ -111,7 +113,7 @@ class Service:
                 checks = compare_gold(selected, ingredients, rules, ingredient_rules)
         query_vector = None
         if vector_ready and (route.intent in ('information', 'both') or len(keys) >= 2):
-            query_vector = await self.bedrock.embed(request.question)
+            query_vector = await self.bedrock.embed(question)
         for product in selected:
             if interactions and len(keys) >= 2 and product['product_type'] == 'drug':
                 label_docs = await self.repo.documents(product['product_key'], 'interactions')
