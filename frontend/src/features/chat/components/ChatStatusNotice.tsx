@@ -4,10 +4,13 @@ import type { ChatStatus } from "../types"
 
 export default function ChatStatusNotice({
   status,
+  errorMessage,
   onRetry,
   onLogin,
 }: {
   status: ChatStatus
+  /** 서버가 보낸 안내 문장 (없으면 기본 문구) */
+  errorMessage?: string
   onRetry: () => void
   onLogin: () => void
 }) {
@@ -24,7 +27,7 @@ export default function ChatStatusNotice({
   if (status === "error")
     return (
       <Notice>
-        <p>정보를 불러오지 못했어요.</p>
+        <p>{errorMessage || "정보를 불러오지 못했어요."}</p>
         <button onClick={onRetry} className="mt-2 min-h-11 font-semibold text-blue-600">
           다시 시도
         </button>
