@@ -9,6 +9,7 @@ export type MedicineSummary = {
   category: string
   type: string
   saleStatus: string // 판매 | 판매중지
+  imageUrl?: string | null // 식약처 의약품안전나라 제품 사진 (없는 약이 많음)
 }
 
 export type DurCaution = {

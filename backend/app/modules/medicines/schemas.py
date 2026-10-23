@@ -8,6 +8,7 @@ class MedicineSummary(CamelModel):
     category: str
     type: str  # 일반 | 전문
     sale_status: str = "판매"  # 판매 | 판매중지 (판매중지 약은 공식 DUR 판정 없음)
+    image_url: str | None = None  # 식약처 의약품안전나라 제품 사진 주소 (gold.drug.image_url, 없는 약이 많음)
 
 
 class DurCaution(CamelModel):

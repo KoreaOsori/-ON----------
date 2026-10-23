@@ -121,7 +121,7 @@ class PublicApiMedicineRepository:
 class GoldMedicineRepository:
     """데이터 파이프라인이 RDS 에 적재한 gold 스키마 (gold.drug, gold.drug_contraindication)"""
 
-    _SUMMARY_COLUMNS = "item_seq, item_name, entp_name, class_name, etc_otc_name, sale_status"
+    _SUMMARY_COLUMNS = "item_seq, item_name, entp_name, class_name, etc_otc_name, sale_status, image_url"
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -135,6 +135,7 @@ class GoldMedicineRepository:
             "category": row.class_name or "",
             "type": (row.etc_otc_name or "").removesuffix("의약품"),  # 일반의약품 → 일반
             "sale_status": row.sale_status,
+            "image_url": row.image_url,
         }
 
     async def search(
@@ -161,10 +162,11 @@ class GoldMedicineRepository:
         if medicine_type:
             conditions.append("etc_otc_name = :etc_otc_name")
             params["etc_otc_name"] = f"{medicine_type}의약품"
+        # 판매 중 → 사진 있는 약 → 이름이 짧은 순 (사진은 알약에만 있어 물약·주사·외용제는 뒤로 간다)
         result = await self.session.execute(
             text(
                 f"SELECT {self._SUMMARY_COLUMNS} FROM gold.drug WHERE {' AND '.join(conditions)} "
-                "ORDER BY sale_status = '판매중지', length(item_name), item_name LIMIT :limit"
+                "ORDER BY sale_status = '판매중지', image_url IS NULL, length(item_name), item_name LIMIT :limit"
             ),
             params,
         )
