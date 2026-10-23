@@ -115,6 +115,8 @@ class ToolResult:
     # 되묻기·찾지 못함 말고도 모델이 전해야 할 안내(예: [확인 불가])가 섞여 있다
     other_problem: bool = False
     clarification: str = ""
+    # 병용 확인에서 이 결과가 가리키는 사용자 입력 이름(확정 못 한 제품 안내에 쓴다)
+    requested: str = ""
 
     @property
     def terminal(self) -> bool:

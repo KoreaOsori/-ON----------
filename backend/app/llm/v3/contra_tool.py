@@ -16,6 +16,7 @@
 - 이 도구는 DB 를 읽기만 하고(검색 DB 읽기 전용 트랜잭션), 병용금기 파일도 읽기 전용으로 연다.
 """
 import logging
+from dataclasses import replace
 import unicodedata
 from itertools import combinations
 from typing import Any
@@ -204,13 +205,13 @@ class ContraindicationTool:
                             resolved.append(ingredient)
                             continue
                         if ingredient_problem is not None and fallback == "missing":
-                            problems.append(ingredient_problem)
+                            problems.append(replace(ingredient_problem, requested=text))
                             continue
                         if fallback == "missing":
-                            problems.append(ToolResult(problem.text, missing=[text]))
+                            problems.append(ToolResult(problem.text, missing=[text], requested=text))
                             continue
                     if problem is not None:
-                        problems.append(problem)
+                        problems.append(replace(problem, requested=text))
                         continue
                     assert product is not None
                     if approximate:

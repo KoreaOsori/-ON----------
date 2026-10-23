@@ -134,3 +134,27 @@ def test_parent_registers_all_versions_and_enters_v3_lifespan():
               and isinstance(n.func, ast.Attribute) and n.func.attr == 'mount']
     assert mounts == ['/api/llm/v1', '/api/llm/v2', '/api/llm/v3']
     assert 'llm_v3_lifespan(app.state.llm_v3_app)' in source
+
+
+async def test_ambiguous_name_is_shown_once_with_numbered_candidates():
+    tool = ContraindicationTool(make_settings(), FakeReaderFactory(gold_reader()), GoldContraStore())
+    model = ScriptedModel(response(tool_use_block('1', 'check_contraindication', products=['와파린정', '타이레놀', '없는약'])))
+    result = await DrugInfoAgent(model, tool, Limits(), contra_tool=tool).run('같이 먹어도 되나요?')
+    answer = result.answer
+    assert '타이레놀은(는) 여러 제품이 조회돼요.\n1. 타이레놀정500밀리그램 (C사)\n2. 타이레놀8시간정 (C사)' in answer
+    assert answer.count('여러 제품이 조회돼요') == 1  # 후보마다 문장을 반복하지 않는다
+    assert '없는약은(는) 등록된 제품명으로 찾지 못했어요' in answer
+    assert answer.rstrip().endswith('전체 조합의 병용 여부를 판단하기 어려워요.') and '목록에 적힌 그대로' in answer
+
+
+def test_resolution_answer_names_too_many_and_unverifiable_inputs():
+    from app.llm.v3.prompts import build_resolution_answer
+    from app.llm.v3.tools import ToolResult
+
+    text = build_resolution_answer([], [
+        ToolResult("[검색 결과 없음] '아스피린'과(와) 일치하는 제품이 너무 많습니다.", requested='아스피린'),
+        ToolResult("[확인 불가] '설파메톡사졸'은(는) 성분 이름으로는 있지만 DUR 성분 코드가 없어", requested='설파메톡사졸'),
+    ])
+    assert '아스피린은(는) 일치하는 제품이 너무 많아요' in text
+    assert '설파메톡사졸은(는) 등록된 자료로는 병용 여부를 확인할 수 없어요' in text
+    assert '일부 제품은' not in text and '목록에 적힌 그대로' not in text
