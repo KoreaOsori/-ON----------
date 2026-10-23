@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     db_name: str = "yakon"
     db_username: str | None = None
     db_password: str | None = None
-    # AWS(EC2): DB_HOST 를 주지 않으면 이 시크릿(DB_HOST·DB_PORT·DB_NAME·DB_USERNAME·DB_PASSWORD)에서 읽는다. 인증은 EC2 IAM 역할
+    # AWS(EC2): 앱 시크릿. DB 접속 정보(DB_HOST·DB_PORT·DB_NAME·DB_USERNAME·DB_PASSWORD), 공공데이터 키(E_Drug_API),
+    # 업로드 버킷(S3_UPLOAD_BUCKET)을 여기서 읽는다. 인증은 EC2 IAM 역할
     db_secret_id: str | None = None
     redis_url: str = "redis://localhost:6379/0"
 
@@ -82,25 +83,31 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _assemble_database_url(self) -> "Settings":
-        if self.db_secret_id and not self.db_host:
-            self._load_db_secret()
+        if self.db_secret_id:
+            self._load_app_secret()
         if self.db_host and self.db_username and self.db_password:
             password = quote_plus(self.db_password)
             self.database_url = f"postgresql+asyncpg://{self.db_username}:{password}@{self.db_host}:{self.db_port}/{self.db_name}"
         return self
 
-    def _load_db_secret(self) -> None:
+    def _load_app_secret(self) -> None:
+        """환경변수로 이미 준 값은 그대로 두고, 없는 값만 시크릿에서 채운다."""
         import boto3
 
         response = boto3.client("secretsmanager", region_name=self.aws_region).get_secret_value(
             SecretId=self.db_secret_id
         )
         secret = json.loads(response["SecretString"])
-        self.db_host = secret["DB_HOST"]
-        self.db_port = int(secret.get("DB_PORT") or 5432)
-        self.db_name = secret["DB_NAME"]
-        self.db_username = secret["DB_USERNAME"]
-        self.db_password = secret["DB_PASSWORD"]
+        if not self.db_host:
+            self.db_host = secret["DB_HOST"]
+            self.db_port = int(secret.get("DB_PORT") or 5432)
+            self.db_name = secret["DB_NAME"]
+            self.db_username = secret["DB_USERNAME"]
+            self.db_password = secret["DB_PASSWORD"]
+        if not self.public_data_service_key:
+            self.public_data_service_key = secret.get("E_Drug_API")
+        if "s3_upload_bucket" not in self.model_fields_set and secret.get("S3_UPLOAD_BUCKET"):
+            self.s3_upload_bucket = secret["S3_UPLOAD_BUCKET"]
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -43,7 +43,7 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dur_link import LINKED, MULTIPLE, link_rule  # noqa: E402
-from s3store import DEFAULT_BUCKET, Store  # noqa: E402
+from s3store import Store  # noqa: E402
 from tables import (  # noqa: E402
     ALL_TABLE_NAMES, CONTRAINDICATION_TABLE, DOC_SOURCE_COLUMNS, DRUG_PRODUCT_TABLE, DUR_INGR_TABLES,
     DUR_INGR_USJNT, DUR_ITEM_CAUTION_TABLES, DUR_ITEM_EFCY_DPLCT, DUR_ITEM_MASTER, DUR_ITEM_SEOBANGJEONG,
@@ -1058,7 +1058,7 @@ def main():
     parser = argparse.ArgumentParser(description="S3 Bronze → S3 Silver 빌드")
     parser.add_argument("tables", nargs="*", help=f"일부 테이블만 (기본: 전체). 사용 가능: {ALL_TABLE_NAMES}")
     parser.add_argument("--snapshot", help="bronze 스냅샷 날짜 (기본: 모든 원본에 공통인 최신)")
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument("--bucket")
     parser.add_argument("--work", help="임시 폴더 (지정하면 끝나도 지우지 않음. 기본: 새 임시 폴더를 만들고 끝나면 삭제)")
     args = parser.parse_args()
     unknown = [name for name in args.tables if name not in ALL_TABLE_NAMES]

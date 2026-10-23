@@ -4,7 +4,8 @@
       silver/{테이블}/snapshot={날짜}/data.parquet, _meta.json, _rejects.json + silver/_latest.json
       gold/{테이블}/snapshot={silver 날짜}/data.parquet + gold/_latest.json
 
-- 버킷은 각 스크립트의 --bucket 으로 바꾼다. 로컬 시험은 환경변수 AWS_ENDPOINT_URL_S3 로 시험용 S3(moto)를 가리킨다
+- 버킷은 기본이 pill-check-data-{지금 AWS 계정 번호} (Terraform envs/dev 와 같은 이름 규칙), 각 스크립트의 --bucket 으로 바꾼다.
+  로컬 시험은 환경변수 AWS_ENDPOINT_URL_S3 로 시험용 S3(moto)를 가리킨다
 - AWS 인증: EC2 는 역할, 내 PC 는 aws configure 한 계정
 """
 
@@ -12,17 +13,18 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-DEFAULT_BUCKET = "pill-check-data-827913617635"
+BUCKET_PREFIX = "pill-check-data-"
 REGION = "us-east-1"
 DOWNLOAD_THREADS = 16  # 작은 파일이 많아(bronze 2,300개) 하나씩 받으면 느리다 (EC2 에서 350초)
 
 
 class Store:
-    def __init__(self, bucket=DEFAULT_BUCKET):
+    def __init__(self, bucket=None):
         import boto3
         from botocore.config import Config
 
-        self.bucket = bucket
+        # 계정 번호를 코드에 적지 않고 실행할 때 조회한다 (공개 저장소)
+        self.bucket = bucket or BUCKET_PREFIX + boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
         # 동시에 받는 스레드 수만큼 접속을 열어 둔다 (기본 10개면 남는 스레드가 기다린다)
         self.s3 = boto3.client("s3", region_name=REGION, config=Config(max_pool_connections=DOWNLOAD_THREADS))
 

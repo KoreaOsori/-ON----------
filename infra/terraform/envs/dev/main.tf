@@ -1,4 +1,4 @@
-# 구성: VPC + EC2 1대(웹·백엔드·파이프라인) + RDS PostgreSQL 1대(gold / rag 스키마) + S3 데이터 버킷 + Secrets Manager
+# 구성: VPC + EC2 1대(웹·백엔드·파이프라인) + RDS PostgreSQL 1대(gold / rag 스키마) + S3 데이터·업로드 버킷 + Secrets Manager
 #       + 파이프라인 정기 실행 스케줄 (매월 20일 02:00 KST)
 locals {
   name = "${var.project}-${var.environment}"
@@ -20,6 +20,12 @@ module "security" {
 module "data_bucket" {
   source      = "../../modules/s3"
   bucket_name = "${var.project}-data-${data.aws_caller_identity.current.account_id}"
+}
+
+module "uploads_bucket" {
+  source          = "../../modules/uploads"
+  bucket_name     = "${var.project}-uploads-${data.aws_caller_identity.current.account_id}"
+  allowed_origins = ["http://${module.ec2.public_ip}"]
 }
 
 module "secrets" {
@@ -45,6 +51,7 @@ module "ec2" {
   subnet_id         = module.network.public_subnet_ids[0]
   security_group_id = module.security.ec2_sg_id
   data_bucket_arn   = module.data_bucket.bucket_arn
+  upload_bucket_arn = module.uploads_bucket.bucket_arn
   secret_arns       = [module.secrets.app_secret_arn, module.rds.master_user_secret_arn]
 }
 

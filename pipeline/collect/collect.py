@@ -39,7 +39,7 @@ import urllib3
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from operations import FOOD_SAFETY_OPERATIONS, OPERATIONS  # noqa: E402
-from s3store import DEFAULT_BUCKET, Store  # noqa: E402
+from s3store import Store  # noqa: E402
 
 BASE_URL = "https://apis.data.go.kr/1471000"
 FOOD_SAFETY_URL = "https://openapi.foodsafetykorea.go.kr/api"
@@ -349,7 +349,7 @@ def main():
     parser.add_argument("--rows", type=int,
                         help=f"한 번에 받는 건수 (기본: 공공데이터포털 {DEFAULT_ROWS}, 식품안전나라 {FOOD_SAFETY_ROWS})")
     parser.add_argument("--snapshot", default=date.today().isoformat())
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument("--bucket")
     args = parser.parse_args()
 
     targets = list(ALL_OPERATIONS) if args.all else args.operations

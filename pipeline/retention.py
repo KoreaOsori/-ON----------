@@ -22,7 +22,7 @@ PIPELINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PIPELINE_DIR / "collect"))
 
 from collect import ALL_OPERATIONS  # noqa: E402
-from s3store import DEFAULT_BUCKET, Store  # noqa: E402
+from s3store import Store  # noqa: E402
 
 KEEP = {"bronze": 2, "silver": 4, "gold": 2}
 
@@ -107,7 +107,7 @@ def delete_prefix(store, prefix):
 
 def main():
     parser = argparse.ArgumentParser(description="S3 오래된 스냅샷 정리 (기본은 목록만)")
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument("--bucket")
     parser.add_argument("--apply", action="store_true", help="실제로 지운다")
     args = parser.parse_args()
     store = Store(args.bucket)

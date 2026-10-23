@@ -1,7 +1,7 @@
 import json
 import ssl
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 from app.llm.v1.config import Settings
 from app.llm.v1.database import CA_FILE, RDS, DatabaseConnectionError, create_database_engine, read_credentials
@@ -9,13 +9,27 @@ from app.llm.v1.database import CA_FILE, RDS, DatabaseConnectionError, create_da
 
 class SecretTests(unittest.TestCase):
     @patch("app.llm.v1.database.session_for")
-    def test_only_credentials_are_taken_from_secret(self, session):
+    def test_credentials_and_host_are_read_from_their_secrets(self, session):
         client = session.return_value.client.return_value
-        client.get_secret_value.return_value = {"SecretString": json.dumps({
-            "username": "user", "password": "p@ss:/!", "host": "ignored", "dbname": "ignored"})}
-        self.assertEqual(read_credentials(Settings(_env_file=None)), ("user", "p@ss:/!"))
-        client.get_secret_value.assert_called_once_with(SecretId=RDS.secret_id, VersionStage="AWSCURRENT")
+        client.get_secret_value.side_effect = [
+            {"SecretString": json.dumps({"username": "user", "password": "p@ss:/!", "host": "ignored"})},
+            {"SecretString": json.dumps({"DB_HOST": "new-db.example", "DB_PASSWORD": "ignored"})}]
+        self.assertEqual(read_credentials(Settings(_env_file=None)), ("user", "p@ss:/!", "new-db.example"))
+        self.assertEqual(client.get_secret_value.call_args_list, [
+            call(SecretId=RDS.secret_id, VersionStage="AWSCURRENT"),
+            call(SecretId='pill-check/dev/app', VersionStage="AWSCURRENT")])
         client.close.assert_called_once()
+
+    @patch("app.llm.v1.database.session_for")
+    def test_invalid_host_never_falls_back_to_hardcoded_address(self, session):
+        client = session.return_value.client.return_value
+        for value in ({}, {'DB_HOST': ''}, {'DB_HOST': None}, {'DB_HOST': '  '}):
+            with self.subTest(value=value):
+                client.get_secret_value.side_effect = [
+                    {'SecretString': '{"username":"u","password":"p"}'},
+                    {'SecretString': json.dumps(value)}]
+                with self.assertRaises((KeyError, ValueError)):
+                    read_credentials(Settings(_env_file=None))
 
     @patch("app.llm.v1.database.session_for")
     def test_empty_password_is_rejected_and_client_closed(self, session):
@@ -40,14 +54,15 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
     @patch("app.llm.v1.database.asyncpg.connect", new_callable=AsyncMock)
     @patch("app.llm.v1.database.read_credentials")
     async def test_new_connections_refresh_password_and_verify_tls(self, credentials, connect, engine):
-        credentials.side_effect = [("u", "old"), ("u", "new@:/!")]
+        credentials.side_effect = [("u", "old", "old-db.example"), ("u", "new@:/!", "new-db.example")]
         create_database_engine(Settings(_env_file=None))
         creator = engine.call_args.kwargs["async_creator"]
         await creator()
         await creator()
         self.assertEqual(credentials.call_count, 2)
         args = connect.call_args.kwargs
-        self.assertEqual(args["host"], RDS.host)
+        self.assertEqual(connect.call_args_list[0].kwargs['host'], 'old-db.example')
+        self.assertEqual(args["host"], 'new-db.example')
         self.assertEqual(args["database"], "pill")
         self.assertEqual(args["password"], "new@:/!")
         self.assertTrue(args["ssl"].check_hostname)
