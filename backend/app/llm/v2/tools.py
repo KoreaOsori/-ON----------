@@ -63,7 +63,7 @@ def build_tool_spec(allow_global_search: bool = False) -> dict[str, Any]:
                 "product_key": {
                     "type": "string",
                     "maxLength": 120,
-                    "description": "[선택한 제품 ID]가 주어졌거나 [확인 필요] 후보 중 사용자가 고른 제품의 product_key. 그 밖에는 생략.",
+                    "description": "[선택한 제품 ID]가 주어진 경우에만 그 product_key. 그 밖에는 생략.",
                 },
                 "question": {
                     "type": "string",
@@ -130,7 +130,7 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
         listed = outcome.products[:10]
         lines = [
             f"[확인 필요] '{shown}'과(와) 일치하는 제품이 {len(outcome.products)}개 있습니다. 임의로 고르지 말고 "
-            "사용자에게 어느 제품인지 물어보세요. 사용자가 고르면 해당 product_key로 다시 검색하세요."
+            "사용자에게 해당하는 제품을 제품명(제조사 포함)으로 다시 입력해 질문해 달라고 안내하세요."
         ]
         lines += [f"- {p['product_name']} ({p['manufacturer']}) / product_key={p['product_key']}" for p in listed]
         if len(outcome.products) > len(listed):

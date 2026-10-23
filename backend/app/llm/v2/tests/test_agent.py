@@ -496,3 +496,46 @@ async def test_no_products_means_no_block():
     model = ScriptedModel(response(text_block("x")))
     await make_agent(model, FakeTool(FOUND)).run("질문")
     assert "[확인된 제품명]" not in model.calls[0]["messages"][0]["content"]
+
+
+# ---- 되묻기 우선, 안내 문구(다시 입력 방식)
+
+async def test_unresolved_clarification_wins_over_evidence_for_another_product():
+    model = ScriptedModel(
+        response(search_call("a", product_name="코데농정"), search_call("b", product_name="고려인삼분말캡슐")),
+        response(text_block("고려인삼분말캡슐은 두 개예요.")),
+    )
+    result = await make_agent(model, FakeTool(FOUND, CLARIFY)).run("고려인삼분말캡슐 주의할 점", products=["코데농정"])
+    assert result.stop_reason == "needs_clarification" and not result.grounded and result.sources == []
+    assert [c["product_key"] for c in result.candidates] == ["drug:1", "drug:2"]
+    assert "고려인삼분말캡슐은 두 개예요" not in result.answer  # 모델 문장 대신 코드가 만든 안내
+
+
+async def test_clarification_resolved_by_retry_with_same_name_is_cleared():
+    model = ScriptedModel(
+        response(search_call("a", product_name="대한포도당주사액")),
+        response(search_call("b", product_name=" 대한포도당주사액 ")),  # 공백·대소문자는 같은 이름으로 본다
+        response(text_block("정리")),
+    )
+    result = await make_agent(model, FakeTool(CLARIFY, FOUND)).run("대한포도당주사액 용법")
+    assert result.grounded and result.stop_reason == "done" and result.candidates == []
+
+
+def test_clarification_text_asks_to_retype_not_to_select():
+    from app.llm.v2.prompts import FOOD_COMBINATION_NOTE, build_clarification_answer
+
+    candidates = [
+        {"product_key": "health_food:1", "product_name": "고려인삼분말캡슐", "manufacturer": "고려인삼과학주식회사"},
+        {"product_key": "health_food:2", "product_name": "고려인삼분말캡슐", "manufacturer": "(주)케이지앤에프"},
+    ]
+    text = build_clarification_answer(candidates)
+    assert "이름이 겹치는 제품이 여러 개" in text and "다시 질문해 주세요" in text
+    assert "1. 고려인삼분말캡슐 (고려인삼과학주식회사)" in text and "2. 고려인삼분말캡슐 ((주)케이지앤에프)" in text
+    for banned in ("알려 주세요", "알려주세요", "선택", "골라", "고르"):
+        assert banned not in text
+    assert FOOD_COMBINATION_NOTE not in text and FOOD_COMBINATION_NOTE in build_clarification_answer(candidates, food_combination=True)
+
+
+def test_fixed_messages_ask_to_ask_again_with_name():
+    for text in (NO_EVIDENCE_ANSWER, OUT_OF_SCOPE_ANSWER):
+        assert "알려주시면" not in text and "질문해 주" in text

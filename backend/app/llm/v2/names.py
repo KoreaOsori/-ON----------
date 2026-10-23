@@ -88,3 +88,28 @@ def clean_product_names(names: list[str] | None) -> list[str]:
             seen.add(key)
             cleaned.append(name)
     return cleaned[:MAX_GIVEN_PRODUCTS]
+
+
+_COMPANY_WORDS = re.compile(r"\(주\)|㈜|주식회사|\(유\)|㈲|유한회사|\(합\)")
+
+
+def _company_key(text: str) -> str:
+    """제조사 비교용 정규화: 회사 형태 표기·공백·괄호·대소문자를 무시한다."""
+    folded = unicodedata.normalize("NFKC", text).lower()
+    folded = _COMPANY_WORDS.sub("", folded)
+    return re.sub(r"[\s()\[\]·.,-]", "", folded)
+
+
+def narrow_by_manufacturer(raw_name: str, products: list[dict]) -> list[dict]:
+    """이름이 같은 제품이 여럿일 때, 사용자가 입력에 제조사까지 적었으면 그 제조사 제품만 남긴다.
+
+    되묻기 목록의 한 줄('제품명 (제조사)')을 그대로 다시 입력하는 흐름을 위한 것이다. 제조사가 입력에 없거나,
+    모든 후보가 맞거나, 하나도 안 맞으면 그대로 돌려준다(임의로 고르지 않는다)."""
+    if len(products) < 2:
+        return products
+    text = _company_key(raw_name)
+    matched = [
+        p for p in products
+        if len(key := _company_key(str(p.get("manufacturer") or ""))) >= 2 and key in text
+    ]
+    return matched if 0 < len(matched) < len(products) else products

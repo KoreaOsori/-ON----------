@@ -262,3 +262,34 @@ async def test_fetch_section_texts_reports_truncation_and_validates_inputs():
         with raises(ValueError):
             await fetch_section_texts(reader, "run1", bad[0], bad[1], bad[2])
     assert reader.calls == []  # 검증 실패는 DB 에 도달하지 않는다
+
+
+# ---- 같은 이름 제품: 제조사까지 적은 입력
+
+TWIN_A = {"product_key": "health_food:1", "product_name": "고려인삼분말캡슐", "manufacturer": "고려인삼과학주식회사", "product_type": "health_food"}
+TWIN_B = {"product_key": "health_food:2", "product_name": "고려인삼분말캡슐", "manufacturer": "(주)케이지앤에프", "product_type": "health_food"}
+
+
+async def _find_twins(name):
+    def handler(sql, params):
+        return [TWIN_A, TWIN_B] if params["value"] == "고려인삼분말캡슐" else []
+
+    return await find_products(FakeReader(handler), "run1", name)
+
+
+async def test_listed_line_with_manufacturer_resolves_to_that_product():
+    for text, key in (
+        ("고려인삼분말캡슐 (고려인삼과학주식회사)", "health_food:1"),
+        ("고려인삼분말캡슐 ((주)케이지앤에프)", "health_food:2"),
+        ("고려인삼분말캡슐 (케이지앤에프)", "health_food:2"),  # (주) 표기를 생략해도
+        ("고려인삼분말캡슐(고려인삼과학)", "health_food:1"),  # 회사 형태 표기(주식회사)를 빼고 써도
+    ):
+        found = await _find_twins(text)
+        assert [p["product_key"] for p in found["products"]] == [key], text
+        assert found["approximate"] is False, text
+
+
+async def test_name_without_manufacturer_or_with_unknown_one_keeps_all_candidates():
+    for text in ("고려인삼분말캡슐", "고려인삼분말캡슐 (없는제약)"):
+        found = await _find_twins(text)
+        assert [p["product_key"] for p in found["products"]] == ["health_food:1", "health_food:2"], text
