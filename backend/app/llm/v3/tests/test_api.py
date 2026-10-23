@@ -90,7 +90,8 @@ def test_ask_products_validation():
     client, agent = client_for()
     with client:
         post = lambda products: client.post("/llm/v3/ask", json={"question": "a", "products": products}).status_code  # noqa: E731
-        assert post([f"약{i}" for i in range(9)]) == 422  # 최대 8개
+        assert post([f"약{i}" for i in range(11)]) == 422  # 최대 10개
+        assert post([f"약{i}" for i in range(10)]) == 200
         assert post([""]) == 422
         assert post(["x" * 121]) == 422
         assert post("아로나민골드정") == 422  # 배열이 아니다

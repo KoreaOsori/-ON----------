@@ -484,7 +484,7 @@ def test_clean_product_names_dedupes_and_limits():
 
     assert clean_product_names(None) == [] and clean_product_names([]) == []
     assert clean_product_names(["  아로나민 골드정 ", "아로나민골드정", "", "코푸시럽에스"]) == ["아로나민 골드정", "코푸시럽에스"]
-    assert len(clean_product_names([f"약{i}" for i in range(20)])) == 8
+    assert len(clean_product_names([f"약{i}" for i in range(20)])) == 10
     assert len(clean_product_names(["가" * 500])[0]) == 120
 
 
@@ -498,7 +498,7 @@ async def test_products_are_sent_as_data_block_and_prompt_explains_them():
     from app.llm.v3.prompts import CONTRA_PROMPT_ADDENDUM
 
     assert "[확인된 제품명]" in SYSTEM_PROMPT and "check_contraindication" not in SYSTEM_PROMPT and result.grounded
-    assert "6개 이상이면" in CONTRA_PROMPT_ADDENDUM and "[확인된 제품명]" in CONTRA_PROMPT_ADDENDUM
+    assert "11개 이상이면" in CONTRA_PROMPT_ADDENDUM and "[확인된 제품명]" in CONTRA_PROMPT_ADDENDUM
 
 
 async def test_tool_name_is_expanded_to_the_longer_given_spelling_so_manufacturer_narrows_candidates():

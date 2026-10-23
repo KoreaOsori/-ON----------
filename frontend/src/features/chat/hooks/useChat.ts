@@ -8,8 +8,8 @@ import { askLlm, type LlmAskResponse } from "../api"
 import { buildProfileContext, summarizeForChat } from "../profileContext"
 import type { ChatMessage, ChatStatus } from "../types"
 
-/** v3 API 의 products 최대 개수 */
-export const MAX_CHAT_PRODUCTS = 8
+/** v3 API 의 products 최대 개수 (병용 확인 한도와 같은 10개) */
+export const MAX_CHAT_PRODUCTS = 10
 
 const DEFAULT_ERROR = "정보를 불러오지 못했어요. 잠시 후 다시 시도해 주세요."
 

@@ -47,8 +47,8 @@ class AskRequest(StrictModel):
     products: list[Annotated[str, Field(min_length=1, max_length=MAX_GIVEN_NAME_CHARS)]] | None = Field(
         None,
         max_length=MAX_GIVEN_PRODUCTS,
-        description="이미 알고 있는 제품명 목록(예: 처방전·약 사진 OCR 결과, 최대 8개). 질문에 약 이름이 없어도 이 목록으로 조회한다. "
-        "병용 확인은 5개까지(6개 이상이면 줄여 달라고 안내).",
+        description="이미 알고 있는 제품명 목록(예: 처방전·약 사진 OCR 결과, 최대 10개). 질문에 약 이름이 없어도 이 목록으로 조회한다. "
+        "병용 확인은 제품(성분) 10개까지(11개 이상이면 줄여 달라고 안내).",
     )
     profile_context: str | None = Field(
         None, max_length=1000, description="사용자 정보(나이·복용 중인 약 등). 모델에는 데이터로만 전달된다."

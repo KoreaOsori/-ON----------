@@ -6,7 +6,7 @@ const LLM_PREFIX = "/api/llm/v3"
 
 export type LlmAskRequest = {
   question: string
-  /** 사진(OCR)·후보 선택으로 확인된 제품명 목록 (최대 8개) */
+  /** 사진(OCR)·후보 선택으로 확인된 제품명 목록 (최대 10개) */
   products?: string[]
   /** 성별·나이·임신 여부·복용 중인 약 (최대 1000자). 모델에는 데이터로만 전달된다 */
   profile_context?: string

@@ -26,17 +26,28 @@ async def test_crisis_question_skips_model():
     assert result.stop_reason == "crisis" and result.answer == CRISIS_ANSWER and model.calls == []
 
 
-async def test_too_many_products_without_tool_call_explains_the_limit():
-    products = ["셉트린정", "타이레놀정500밀리그람", "와파린정", "아스피린", "판콜에이내복액", "게보린정"]
-    model = ScriptedModel(response(text_block("5개 이하로 줄여 주세요.")))
-    result = await DrugInfoAgent(model, FakeTool(FOUND), Limits()).run("이 약들 같이 먹어도 돼요?", products=products)
-    assert result.stop_reason == "needs_clarification" and result.answer == TOO_MANY_PRODUCTS_ANSWER
+def test_limit_is_ten_products_everywhere():
+    from app.llm.v3.contra_tool import MAX_PRODUCTS, build_contra_spec
+    from app.llm.v3.names import MAX_GIVEN_PRODUCTS, clean_product_names
+    from app.llm.v3.prompts import CONTRA_PROMPT_ADDENDUM
+
+    assert MAX_PRODUCTS == 10 and MAX_GIVEN_PRODUCTS == 10
+    assert build_contra_spec()["input_schema"]["properties"]["products"]["maxItems"] == 10
+    assert "10개까지" in TOO_MANY_PRODUCTS_ANSWER and "11개 이상" in CONTRA_PROMPT_ADDENDUM and "2~10개" in CONTRA_PROMPT_ADDENDUM
+    assert len(clean_product_names([f"약{i}" for i in range(12)])) == 10
 
 
-async def test_contra_tool_with_six_products_returns_limit_guidance_without_db():
+async def test_ten_products_are_checked_not_refused():
     reader = gold_reader()
     tool = ContraindicationTool(make_settings(), FakeReaderFactory(reader), GoldContraStore())
-    result = await tool.run({"products": ["a1", "b2", "c3", "d4", "e5", "f6"]})
+    result = await tool.run({"products": [f"없는약{i}" for i in range(10)]})
+    assert result.clarification != TOO_MANY_PRODUCTS_ANSWER and reader.calls  # 10개는 한도 안이라 실제로 조회한다
+
+
+async def test_contra_tool_with_eleven_products_returns_limit_guidance_without_db():
+    reader = gold_reader()
+    tool = ContraindicationTool(make_settings(), FakeReaderFactory(reader), GoldContraStore())
+    result = await tool.run({"products": [f"약{i}" for i in range(11)]})
     assert result.is_error and result.clarification == TOO_MANY_PRODUCTS_ANSWER and reader.calls == []
 
 
