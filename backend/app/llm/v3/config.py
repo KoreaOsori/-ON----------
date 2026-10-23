@@ -119,8 +119,6 @@ class V3Settings:
     contra_source: str = "auto"
 
     # --- HTTP API (api.py) ---
-    # 비우면 키 없이 열린다(localhost 전용으로만 쓸 것). 값이 있으면 X-API-Key 헤더가 일치해야 한다. AWS 키와 무관하다.
-    api_key: str = field(default="", repr=False)
     api_max_concurrency: int = 4  # 동시에 처리할 질문 수(DB 풀·Bedrock 호출 보호)
     api_queue_seconds: float = 5.0  # 자리가 날 때까지 기다리는 최대 시간. 넘기면 503
 
@@ -216,7 +214,6 @@ class V3Settings:
             allow_global_search=(env.get("LLM_V3_ALLOW_GLOBAL_SEARCH", "").lower() in ("1", "true", "yes")),
             contra_db_path=env.get("LLM_V3_CONTRA_DB") or "",
             contra_source=contra_source,
-            api_key=env.get("LLM_V3_API_KEY") or "",
             api_max_concurrency=max(1, _int(env, "LLM_V3_API_MAX_CONCURRENCY", 4)),
             api_queue_seconds=max(0.0, _float(env, "LLM_V3_API_QUEUE_SECONDS", 5.0)),
         )

@@ -1,4 +1,4 @@
-"""HTTP API 테스트: 가짜 에이전트로 요청 검증·인증·상태 코드·동시 요청 제한을 확인한다(Bedrock/DB 호출 없음)."""
+"""HTTP API 테스트: 가짜 에이전트로 요청 검증·상태 코드·동시 요청 제한을 확인한다(Bedrock/DB 호출 없음)."""
 import asyncio
 import logging
 
@@ -173,43 +173,14 @@ def test_unexpected_exception_hides_details_and_logs_only_the_class(caplog=None)
     assert any("RuntimeError" in m for m in records)
 
 
-def test_api_key_is_required_when_configured():
-    client, agent = client_for(api_key="s3cret-key")
+def test_no_api_key_is_needed():
+    client, agent = client_for()
     with client:
-        ask = lambda **kw: client.post("/llm/v3/ask", json={"question": "질문"}, **kw)  # noqa: E731
-        assert ask().status_code == 401
-        assert ask(headers={"X-API-Key": "wrong"}).status_code == 401
-        assert ask(headers={"X-API-Key": ""}).status_code == 401
-        assert ask(headers={"X-API-Key": "s3cret-key"}).status_code == 200
-        assert client.get("/llm/v3/models").status_code == 401
-        assert client.get("/llm/v3/models", headers={"X-API-Key": "s3cret-key"}).status_code == 200
-        assert client.get("/llm/v3/health").status_code == 200  # 생존 확인은 인증 없이
-    assert len(agent.calls) == 1  # 인증 실패 요청은 에이전트에 도달하지 않는다
-
-
-def test_non_ascii_api_key_header_is_rejected_not_crashing():
-    client, agent = client_for(api_key="s3cret-key")
-    with client:
-        response = client.post("/llm/v3/ask", json={"question": "q"}, headers={"X-API-Key": "키-값".encode()})
-    assert response.status_code == 401 and agent.calls == []
-
-
-def test_open_mode_without_api_key_warns():
-    records = []
-
-    class Capture(logging.Handler):
-        def emit(self, record):
-            records.append(record.getMessage())
-
-    handler = Capture()
-    api_module.logger.addHandler(handler)
-    try:
-        client, _ = client_for()
-        with client:
-            assert client.post("/llm/v3/ask", json={"question": "질문"}).status_code == 200
-    finally:
-        api_module.logger.removeHandler(handler)
-    assert any("LLM_V3_API_KEY" in m for m in records)
+        assert client.post("/llm/v3/ask", json={"question": "질문"}).status_code == 200
+        assert client.post("/llm/v3/ask", json={"question": "질문"}, headers={"X-API-Key": "anything"}).status_code == 200  # 보내도 무시
+        assert client.get("/llm/v3/models").status_code == 200
+        assert client.get("/llm/v3/health").status_code == 200
+    assert len(agent.calls) == 2
 
 
 def test_models_and_health():
@@ -285,6 +256,6 @@ def test_openapi_documents_the_error_responses_of_ask():
     with client:
         schema = client.get("/openapi.json").json()
     responses = schema["paths"]["/llm/v3/ask"]["post"]["responses"]
-    assert {"200", "401", "422", "503", "504"} <= set(responses)
+    assert {"200", "422", "503", "504"} <= set(responses) and "401" not in responses
     assert "Retry-After" in responses["503"]["headers"]
     assert responses["422"]["content"]["application/json"]["schema"]["$ref"].endswith("ValidationErrorBody")

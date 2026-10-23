@@ -118,9 +118,10 @@ async def test_caller_products_are_merged_even_if_model_omits_one():
 
 
 def test_v3_settings_override_v2_fallback_without_changing_shared_secrets():
-    fallback = V3Settings.from_env({'LLM_V2_API_KEY': 'inherited'})
-    own = V3Settings.from_env({'LLM_V2_API_KEY': 'inherited', 'LLM_V3_API_KEY': 'own'})
-    assert fallback.api_key == 'inherited' and own.api_key == 'own'
+    fallback = V3Settings.from_env({'LLM_V2_DEFAULT_MODEL': 'sonnet'})
+    own = V3Settings.from_env({'LLM_V2_DEFAULT_MODEL': 'sonnet', 'LLM_V3_DEFAULT_MODEL': 'haiku'})
+    assert fallback.default_model == 'sonnet' and own.default_model == 'haiku'
+    assert not hasattr(own, 'api_key')  # LLM_V2_API_KEY 가 있어도 v3 는 키를 쓰지 않는다
     assert own.app_secret_id == 'pill-check/dev/app'
 
 

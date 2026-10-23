@@ -1,6 +1,6 @@
 # LLM V3
 
-V2의 도구 호출 에이전트·벡터 검색·제품명 표기 정규화·인증을 기반으로 만든 독립 버전입니다.
+V2의 도구 호출 에이전트·벡터 검색·제품명 표기 정규화를 기반으로 만든 독립 버전입니다.
 V1/V2 코드를 런타임에 import하지 않습니다. 기존 버전 파일은 변경하지 않습니다.
 
 ## 변경점
@@ -23,7 +23,7 @@ V1/V2 코드를 런타임에 import하지 않습니다. 기존 버전 파일은 
 - `/api/llm/v3/models`, `/api/llm/v3/health`
 
 `backend/app/main.py`에서 V3 앱을 mount하고 수명주기를 연결합니다. 기존 `/api/` Nginx 프록시를 그대로 사용합니다.
-공개 경로의 X-API-Key 인증은 V2와 같습니다. `LLM_V3_API_KEY`가 우선이며 없으면 `LLM_V2_API_KEY`를 사용합니다.
+V3는 X-API-Key 인증 없이 호출합니다(헤더를 보내도 무시합니다). `LLM_V3_API_KEY`·`LLM_V2_API_KEY` 설정과 관계없이 열려 있으므로, 남용 방지는 동시 처리 제한(`LLM_V3_API_MAX_CONCURRENCY`, 기본 4)에 의존합니다. 공개 서비스라면 Nginx 등 앞단에서 요청 수 제한을 거는 것을 권장합니다.
 V3 설정은 `LLM_V3_*`가 우선, 같은 이름의 `LLM_V2_*`는 호환 기본값입니다.
 DB 호스트는 기존 `pill-check/dev/app` 시크릿의 `DB_HOST`를 사용합니다. EC2 인스턴스 역할 인증을 유지합니다.
 V1 Python 판정은 RDS 모드에 적용됩니다. `LLM_V3_CONTRA_SOURCE=rds`로 명시할 수 있으며 기본 auto도 로컬 SQLite 파일이 없으면 RDS입니다.
@@ -53,5 +53,5 @@ $env:PYTHONPATH='backend'
 python -m app.llm.v3.tests.run
 ```
 
-가짜 DB·모델로 실행하며 실제 AWS/DB 호출은 없습니다. V2 호환 동작, V1 판정, V3 도구 통합과 mount된 Swagger·인증을 검증합니다.
+가짜 DB·모델로 실행하며 실제 AWS/DB 호출은 없습니다. V2 호환 동작, V1 판정, V3 도구 통합과 mount된 Swagger(인증 없음)를 검증합니다.
 실제 DB 데이터와 Bedrock 모델의 답변 품질 및 비용은 배포 후 별도 검증해야 합니다.
