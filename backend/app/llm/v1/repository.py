@@ -123,6 +123,14 @@ class Repository:
                     row['mapping_source'] = 'gold.drug_ingredient exact unique ingredient name'
                 elif not row['dur_ingr_code'] and len(codes) > 1:
                     row['mapping_issue'] = '동일 성분명에 여러 DUR 코드가 있어 자동 선택하지 않음'
+            for row in ingredients:
+                if not row['dur_ingr_code'] and not row.get('mapping_issue'):
+                    row['mapping_issue'] = ('성분명이 없어 비교용 코드를 보완할 수 없음' if not row.get('ingr_name')
+                                            else '같은 성분명으로 비교용 코드를 찾지 못함')
+        else:
+            for row in ingredients:
+                if not row['dur_ingr_code']:
+                    row['mapping_issue'] = '성분명이 없어 비교용 코드를 보완할 수 없음'
         # Product scope preserves route/form restrictions and composite-code mappings from gold.
         rules = await self.rows('''SELECT * FROM gold.drug_contraindication
             WHERE item_seq=ANY(CAST(:ids AS text[])) AND mixture_item_seq=ANY(CAST(:ids AS text[]))

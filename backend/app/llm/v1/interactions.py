@@ -19,9 +19,47 @@ def ingredient_coverage(product, rows):
         state = 'all_available'
         explanation = f'{name}: 조회된 성분 {total}개 모두 병용금기 비교에 연결할 수 있어요.'
     return {'ingredient_count': total, 'coded_count': coded,
+            'unmapped_details': [{'name': r.get('ingr_name') or r['ingr_key'],
+                                  'reason': r.get('mapping_issue', '비교용 코드가 연결되지 않은 이유는 미확인')}
+                                 for r in rows if not r['dur_ingr_code']],
             'unmapped_names': [r.get('ingr_name') or r['ingr_key'] for r in rows if not r['dur_ingr_code']],
             'missing_ingredient_rows': not bool(rows),
             'mapping_state': state, 'explanation': explanation}
+
+
+def pair_explanation(first, second, a, b, product_result, ingredient_matches):
+    """Keep lookup outcome, compared scope and overlap separate for generation."""
+    ac = {r['dur_ingr_code'] for r in a if r['dur_ingr_code']}
+    bc = {r['dur_ingr_code'] for r in b if r['dur_ingr_code']}
+    pairs = {tuple(sorted((left, right))) for left in ac for right in bc if left != right}
+    partial = any(not r['dur_ingr_code'] for r in a + b)
+    scope = ('unavailable' if not ac or not bc else 'no_distinct_pairs' if not pairs
+             else 'partial' if partial else 'all_mapped')
+    product_text = {'not_found': '제품 간 등록된 병용금기는 찾지 못했어요',
+                    'contraindicated': '제품 간 등록된 병용금기가 확인됐어요',
+                    'ingredient_caution': '제품 간 성분 기준 주의 정보가 확인됐어요'}[product_result]
+    if scope == 'unavailable':
+        ingredient_text = '한쪽 이상에 비교용 코드가 없어 성분 기준 금기 비교는 진행하지 못했어요'
+    elif scope == 'no_distinct_pairs':
+        ingredient_text = '연결된 성분이 서로 같아 다른 성분끼리 비교할 조합은 없고, 동일 성분 중복을 따로 확인했어요'
+    else:
+        prefix = '연결된 일부 성분에서' if partial else '조회된 성분의 연결 코드로'
+        outcome = '성분 기준 금기·주의 규칙이 확인됐어요' if ingredient_matches else '해당 범위의 성분 기준 금기 규칙은 찾지 못했어요'
+        ingredient_text = f'{prefix} 서로 다른 성분 조합 {len(pairs)}개를 비교했고, {outcome}'
+    duplicates = []
+    for left in a:
+        for right in b:
+            same_code = bool(left['dur_ingr_code'] and left['dur_ingr_code'] == right['dur_ingr_code'])
+            same_key = bool(left.get('ingr_key') and left.get('ingr_key') == right.get('ingr_key'))
+            if same_code or same_key:
+                names = sorted({r.get('ingr_name') or r['ingr_key'] for r in (left, right)})
+                if names not in duplicates:
+                    duplicates.append(names)
+    return {'products': [first.get('product_name', first['product_key']), second.get('product_name', second['product_key'])],
+            'product_lookup': product_text, 'ingredient_comparison': ingredient_text,
+            'comparison_scope': scope, 'distinct_code_pairs_compared': len(pairs),
+            'same_ingredient_names': duplicates,
+            'overlap_result': '동일 성분 중복 확인(병용금기와 별개)' if duplicates else '조회된 성분에서 동일 성분 중복 미발견'}
 
 
 def supplemental_cautions(first, second, ac, bc, rules):
@@ -109,6 +147,8 @@ def compare_gold(products, ingredients, rules, ingredient_rules=(), dur_rules=()
                        "rules": matches, "ingredients": {ak: a, bk: b},
                        "duplicate_ingredients": sorted({r["ingr_key"] for r in a} & {r["ingr_key"] for r in b}),
                        "ingredient_sources": ["gold.drug_ingredient"]})
+        checks[-1]['pair_explanation'] = pair_explanation(first, second, a, b,
+                                                         checks[-1]['product_pair_result'], ingredient_matches)
     return checks
 
 

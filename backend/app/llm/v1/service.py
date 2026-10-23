@@ -30,6 +30,13 @@ daily_dose_limits는 성분별 참고 상한이다. max_qty 원문과 form_name�
 contraindicated=품목 DUR 금기 확인. ingredient_caution=성분 기준 주의, 공식 품목 금기로 단정 금지.
 unknown=확인 자료 부족. not_found=조회한 자료에서 금기 미발견, 안전 보장 아님. 동일 성분 중복은 금기와 구분.
 checks가 있으면 먼저 product_pair_result로 해당 제품쌍의 금기 조회 결과를 명확히 말한다.
+세 제품 이상이어도 pair_explanation을 기준으로 제품쌍마다 조회 결과·성분 비교 범위·중복 여부를 구분한다.
+일부 제품쌍을 비교했으면 '세 제품 모두 비교하지 못했다'고 합쳐 설명하지 마라.
+pair_explanation의 제품쌍별 비교 문장과 same_ingredient_names를 우선 사용하고,
+제품쌍 금기 미발견을 성분 중복 없음으로 바꾸지 마라. 중복과 금기는 서로 다른 항목이다.
+comparison_scope=partial이면 비교한 범위의 결과만 설명하고 미연결 성분은 비교하지 못했다고 덧붙인다.
+unmapped_details의 reason만 사용해 미연결 이유를 설명하며 성분 자료 없음과 비교용 코드 없음은 구분한다.
+코드가 없다는 이유로 그 성분이 DUR 규칙에 존재하지 않는다고 단정하지 마라.
 제품쌍 미발견이면 '등록된 제품 간 병용금기 정보는 찾지 못했어요'라고 말하고, 곧바로 안전 보장은 아니라고 설명한다.
 성분 확인 범위는 mapping_coverage.explanation의 제품별 문장을 사용하고 수치와 의미를 바꾸지 마라.
 제품별 문장은 같은 제품에 대해 한 번만 전달한다. 서로 다른 확인 상태를 '두 제품 모두 일부'처럼 합쳐 요약하지 마라.
