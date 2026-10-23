@@ -4,7 +4,7 @@
 
 - 엔드포인트: POST /llm/v2/ask (질문), GET /llm/v2/models (설정 확인, 인증), GET /llm/v2/health (생존 확인, 인증 없음).
 - 서버는 대화 상태를 저장하지 않는다. 제품 후보가 여럿이라 status 가 needs_clarification 이면 candidates 를 사용자에게 보여 주고,
-  사용자가 고른 product_key 를 넣어 같은 질문을 다시 보낸다.
+  사용자가 제품명을 제조사까지 적어 같은 질문을 다시 보낸다.
 - 응답 코드: 정책에 따른 안내(근거 없음·되묻기·위기 등)는 항상 200 + status 로, 서비스 문제는 HTTP 오류로 나간다. 오류 본문은 모두
   {"detail": "<사용자에게 보여 줘도 되는 한국어 문장>"} 이다(422 는 fields 가 더 붙는다). 401 만 사용자에게 보이면 안 되는 설정 문제다.
   401=키 없음/틀림, 422=요청 형식·길이 위반, 503=동시 요청 초과·내부 오류·v2 초기화 실패(Retry-After 가 올 수 있음), 504=답변 시간 초과.
@@ -33,7 +33,6 @@ from app.llm.v2.config import ConfigError, V2Settings
 from app.llm.v2.db import safe_error_name
 from app.llm.v2.names import MAX_GIVEN_NAME_CHARS, MAX_GIVEN_PRODUCTS
 from app.llm.v2.prompts import ERROR_ANSWER, TIMEOUT_ANSWER
-from app.llm.v2.search import PRODUCT_KEY_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +49,6 @@ class StrictModel(BaseModel):
 
 class AskRequest(StrictModel):
     question: str = Field(min_length=1, max_length=MAX_QUESTION_FIELD, description="사용자 질문(자연어)")
-    product_key: str | None = Field(
-        None, max_length=120, description="needs_clarification 에서 사용자가 고른 후보의 product_key. 예: drug:195700010"
-    )
     products: list[Annotated[str, Field(min_length=1, max_length=MAX_GIVEN_NAME_CHARS)]] | None = Field(
         None,
         max_length=MAX_GIVEN_PRODUCTS,
@@ -62,13 +58,6 @@ class AskRequest(StrictModel):
     profile_context: str | None = Field(
         None, max_length=1000, description="사용자 정보(나이·복용 중인 약 등). 모델에는 데이터로만 전달된다."
     )
-
-    @field_validator("product_key")
-    @classmethod
-    def valid_product_key(cls, value: str | None) -> str | None:
-        if value is not None and not PRODUCT_KEY_PATTERN.match(value):
-            raise ValueError("product_key 형식이 올바르지 않습니다.")
-        return value
 
 
 class Candidate(BaseModel):
@@ -172,7 +161,7 @@ async def ask(body: AskRequest, request: Request) -> AskResponse:
             503, BUSY_MESSAGE, headers={"Retry-After": str(max(1, int(settings.api_queue_seconds)))}
         ) from None
     try:
-        result = await state.llm_agent.run(body.question, body.profile_context, body.product_key, body.products)
+        result = await state.llm_agent.run(body.question, body.profile_context, body.products)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - 질문·비밀값을 남기지 않는다.

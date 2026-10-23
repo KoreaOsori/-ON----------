@@ -6,7 +6,7 @@ contra_index.py 가 만든 파일을 조회한다. 키는 item_seq(품목기준�
 import asyncio
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
 
@@ -34,12 +34,22 @@ class PairCheck:
     rules: list[ContraRule]
     level: str = "product"  # product=제품 쌍(item_seq) 조회 | ingredient=성분 코드(D코드) 조회
     unresolved: tuple[str, ...] = ()  # level=ingredient 에서 성분 코드를 찾지 못해 판정하지 못한 쪽(조회 키)
+    ingredient_check: str = ""  # 제품 쌍에서 성분 비교 여부: ''=안 함(품목 병용금기가 있거나 지원 안 함) | compared=비교함 | no_codes=성분 코드를 몰라 못 함
+
+
+@dataclass(frozen=True)
+class EfficacyOverlap:
+    """같은 효능군(계열)에 속한 서로 다른 성분이 여러 조회 대상에 나뉘어 들어 있는 경우(병용금기와는 별개)."""
+
+    series: str  # 효능군 이름(예: 비스테로이드성 소염제)
+    members: tuple[tuple[str, str], ...]  # (조회 키, 그 제품 안에서 이 효능군에 속하는 성분 이름들)
 
 
 @dataclass(frozen=True)
 class LookupResult:
     pairs: list[PairCheck]
     has_rules: dict[str, bool]  # 각 제품이 이 자료에 규칙을 하나라도 가지는가
+    overlaps: list[EfficacyOverlap] = field(default_factory=list)  # 효능군 중복(RDS 저장소만)
 
 
 class ContraStore:

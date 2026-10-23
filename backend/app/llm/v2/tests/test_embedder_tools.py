@@ -175,7 +175,7 @@ def test_format_outcome_lists_candidates_for_clarification():
         {"product_key": "drug:2", "product_name": "대한포도당주사액(10%)", "manufacturer": "대한약품", "product_type": "drug"},
     ]
     result = format_outcome(SearchOutcome("needs_clarification", "run1", "prefix", products), "대한포도당주사액")
-    assert result.text.startswith("[확인 필요]") and "product_key=drug:2" in result.text and "(10%)" in result.text
+    assert result.text.startswith("[확인 필요]") and "product_key" not in result.text and "(10%)" in result.text
     assert result.evidence == [] and [c["product_key"] for c in result.candidates] == ["drug:1", "drug:2"]
 
 
@@ -193,14 +193,11 @@ def test_display_name_shortens_export_tags_but_evidence_keeps_full_name():
     assert result.evidence[0].product_name == full and "SINSINCORN" not in result.evidence[0].label
 
 
-async def test_tool_run_keeps_product_name_as_typed_and_validates_product_key():
+async def test_tool_run_keeps_product_name_as_typed():
     tool, reader, _ = _tool(_db)
     await tool.run({"product_name": "제이스로얄샷Ⅱ（500）", "question": "복용법"})
     # 도구는 NFKC 로 이름을 바꾸지 않는다('Ⅱ'가 'II'가 되면 못 찾는다). 변형은 검색 단계(names)가 맡는다.
     assert any(p.get("value") == "제이스로얄샷ⅱ（500）" for _, p in reader.calls)
-    assert (await tool.run({"product_name": "A", "question": "q", "product_key": "ｄｒｕｇ:1"})).text.startswith("[인자 오류]") is False
-    result = await tool.run({"product_name": "A", "question": "q", "product_key": "drug:1'; --"})
-    assert result.is_error and result.text.startswith("[인자 오류]")
 
 
 async def test_tool_run_returns_candidates_for_agent():

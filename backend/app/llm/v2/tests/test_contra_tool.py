@@ -95,7 +95,7 @@ async def test_three_products_check_every_pair():
 async def test_ambiguous_name_asks_instead_of_choosing_and_skips_lookup():
     tool, _ = _tool([_row("100", "300")])
     result = await tool.run({"products": ["와파린정", "타이레놀"]})
-    assert result.text.startswith("[확인 필요]") and "product_key=drug:300" in result.text and "product_key=drug:310" in result.text
+    assert result.text.startswith("[확인 필요]") and "product_key" not in result.text and "타이레놀8시간정 (C사)" in result.text
     assert result.evidence == [] and {c["product_key"] for c in result.candidates} == {"drug:300", "drug:310"}
 
 
@@ -302,8 +302,8 @@ async def test_ambiguous_names_mark_health_foods_in_candidates():
     tool, _ = _tool([_row("100", "200")])
     result = await tool.run({"products": ["와파린정", "비타민"]})
     assert result.text.startswith("[확인 필요]")
-    assert "- [건강기능식품] 비타민C (F사) / product_key=health_food:10" in result.text
-    assert "- [건강기능식품] 비타민D (F사) / product_key=health_food:11" in result.text and result.evidence == []
+    assert "- [건강기능식품] 비타민C (F사)" in result.text and "product_key" not in result.text
+    assert "- [건강기능식품] 비타민D (F사)" in result.text and result.evidence == []
 
 
 async def test_food_precaution_text_is_data_and_not_cut_by_the_general_result_limit():

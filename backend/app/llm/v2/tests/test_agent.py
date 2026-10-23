@@ -247,17 +247,20 @@ async def test_clarification_answer_is_built_by_code_not_by_model():
 
 
 async def test_clarification_is_dropped_when_evidence_was_found_later():
-    model = ScriptedModel(response(search_call("a")), response(search_call("b", product_key="drug:1")), response(text_block("정리")))
+    model = ScriptedModel(response(search_call("a")), response(search_call("b")), response(text_block("정리")))
     result = await make_agent(model, FakeTool(CLARIFY, FOUND)).run("대한포도당주사액 용법")
     assert result.grounded and result.candidates == [] and result.stop_reason == "done"
 
 
-async def test_caller_selected_product_key_overrides_model_arguments():
-    model = ScriptedModel(response(search_call(product_key="drug:99")), response(text_block("답")))
-    tool = FakeTool(FOUND)
-    result = await make_agent(model, tool).run("대한포도당주사액 용법", None, product_key="drug:2")
-    assert tool.calls[0]["product_key"] == "drug:2" and result.grounded
-    assert "[선택한 제품 ID]\ndrug:2" in model.calls[0]["messages"][0]["content"]
+def test_product_key_is_no_longer_an_input():
+    import inspect
+
+    from app.llm.v2.agent import answer
+    from app.llm.v2.prompts import build_user_content
+
+    assert "product_key" not in inspect.signature(DrugInfoAgent.run).parameters and "product_key" not in inspect.signature(answer).parameters
+    assert "선택한 제품 ID" not in build_user_content("질문", None, ["코데농정"])
+    assert "product_key" not in build_tool_spec(False)["input_schema"]["properties"]
 
 
 async def test_tool_trace_records_arguments_and_result_head():
@@ -302,11 +305,11 @@ async def test_contra_tool_is_offered_with_prompt_addendum_and_grounds_the_answe
     model = ScriptedModel(response(contra_call()), response(text_block("등록된 자료에서 병용금기로 확인돼요.")))
     contra = FakeContraTool(CONTRA_FOUND)
     agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), contra_tool=contra)
-    result = await agent.run("와파린이랑 아스피린 같이 먹어도 돼요?", product_key="drug:1")
+    result = await agent.run("와파린이랑 아스피린 같이 먹어도 돼요?")
     assert [t["name"] for t in model.calls[0]["tools"]] == [TOOL_NAME, CONTRA_TOOL_NAME]
     assert model.calls[0]["system"] == SYSTEM_PROMPT + CONTRA_PROMPT_ADDENDUM
     assert result.grounded and result.sources == ["와파린정 × 아스피린 · 병용금기(DUR)"] and result.tools_used == [CONTRA_TOOL_NAME]
-    assert contra.calls == [{"products": ["와파린정", "아스피린"]}]  # 호출자가 정한 product_key 는 검색 도구에만 주입된다
+    assert contra.calls == [{"products": ["와파린정", "아스피린"]}]
     assert result.answer.endswith(SAFETY_FOOTER)
 
 
@@ -490,6 +493,39 @@ async def test_products_are_sent_as_data_block_and_prompt_explains_them():
 
     assert "[확인된 제품명]" in SYSTEM_PROMPT and "check_contraindication" not in SYSTEM_PROMPT and result.grounded
     assert "6개 이상이면" in CONTRA_PROMPT_ADDENDUM and "[확인된 제품명]" in CONTRA_PROMPT_ADDENDUM
+
+
+async def test_tool_name_is_expanded_to_the_longer_given_spelling_so_manufacturer_narrows_candidates():
+    model = ScriptedModel(response(search_call("a", product_name="고려인삼분말캡슐")), response(text_block("정리")))
+    tool = FakeTool(FOUND)
+    await make_agent(model, tool).run("고려인삼분말캡슐 주의할 점", products=["고려인삼분말캡슐 (고려인삼과학주식회사)", "코데농정"])
+    assert tool.calls[0]["product_name"] == "고려인삼분말캡슐 (고려인삼과학주식회사)"
+
+
+async def test_tool_name_is_kept_when_given_list_has_no_longer_unique_match():
+    model = ScriptedModel(response(search_call("a", product_name="고려인삼분말캡슐")), response(text_block("x")))
+    tool = FakeTool(FOUND)
+    await make_agent(model, tool).run("질문", products=["코데농정"])
+    assert tool.calls[0]["product_name"] == "고려인삼분말캡슐"
+
+
+def test_combination_questions_merge_question_products_with_given_list_in_the_prompt():
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM, SYSTEM_PROMPT
+
+    assert "질문에서 말한 제품과 [확인된 제품명] 전체를 합쳐 products 에 넣어" in CONTRA_PROMPT_ADDENDUM
+    assert "병용 질문은 질문의 제품에 목록 전체를 합쳐" in SYSTEM_PROMPT
+
+
+def test_expand_with_given_rules():
+    from app.llm.v2.names import expand_with_given
+
+    given = ["고려인삼분말캡슐 (고려인삼과학주식회사)", "코데농정", "타이레놀정500밀리그램", "타이레놀정160밀리그램"]
+    assert expand_with_given("고려인삼분말캡슐", given) == "고려인삼분말캡슐 (고려인삼과학주식회사)"
+    assert expand_with_given("고려 인삼분말캡슐", given) == "고려인삼분말캡슐 (고려인삼과학주식회사)"  # 공백 무시
+    assert expand_with_given("코데농정", given) == "코데농정"  # 정확히 같으면 그대로
+    assert expand_with_given("타이레놀", given) == "타이레놀"  # 앞부분이 맞는 항목이 둘이면 고르지 않는다
+    assert expand_with_given("셉트린", given) == "셉트린" and expand_with_given("정", given) == "정"
+    assert expand_with_given("고려인삼분말캡슐", []) == "고려인삼분말캡슐"
 
 
 async def test_no_products_means_no_block():

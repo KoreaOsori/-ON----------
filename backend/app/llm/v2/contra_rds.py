@@ -13,11 +13,15 @@ SQLite 인덱스(contra_store.ContraStore)와 같은 모양의 저장소다. 도
   성분 단위라 제형 같은 제품별 조건은 반영되지 않고 복합제 규칙은 정확히 맞지 않을 수 있다(결과에 그대로 밝힌다).
 - gold 스키마는 데이터 파이프라인 소유다. 우리는 읽기만 하며, 조회가 느리면 (item_seq, mixture_item_seq) 인덱스를 그쪽에 요청한다.
 """
+import logging
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
 
-from app.llm.v2.contra_store import ContraRule, LookupResult, PairCheck
+from app.llm.v2.contra_store import ContraRule, EfficacyOverlap, LookupResult, PairCheck
+from app.llm.v2.db import safe_error_name
+
+logger = logging.getLogger(__name__)
 
 TABLE = "gold.drug_contraindication"
 INGREDIENT_TABLE = "gold.drug_ingredient"
@@ -44,6 +48,17 @@ _INGREDIENT_PAIR_SQL = (
     "ORDER BY CASE WHEN c.basis = '품목 DUR' THEN 0 ELSE 1 END, c.ingr_code, c.mixture_ingr_code, c.prohbt_content "
     "LIMIT :limit"
 )
+
+OVERLAP_TABLE = "gold.dur_ingredient_rule"
+MAX_OVERLAP_ROWS = 200
+# 효능군중복 규칙(단일 성분만). 같은 효능군(sers_name)에 서로 다른 성분이 여러 제품에 나뉘어 있으면 중복 주의다.
+_OVERLAP_SQL = (
+    f"SELECT DISTINCT sers_name, ingr_code, ingr_name FROM {OVERLAP_TABLE} "
+    "WHERE caution_type = '효능군중복' AND mix_type = '단일' AND ingr_code = ANY(:codes) "
+    "ORDER BY sers_name, ingr_code LIMIT :limit"
+)
+_ROUTE_SQL = "SELECT item_seq, route FROM gold.drug WHERE item_seq = ANY(:seqs)"
+NON_ORAL_ROUTE = "경구 외"
 
 
 @dataclass(frozen=True)
@@ -117,15 +132,17 @@ class RdsContraStore:
             product_rules = [rule for rule in rules if rule.basis != "성분 규칙"]  # 규칙 종류가 비어 있으면 품목 단위로 본다
             if product_rules:
                 # 품목 단위 병용금기가 있으면 그것만 보여 준다(성분 규칙 행은 같은 조합의 부수 정보라 섞지 않는다)
-                rules, level = product_rules, "product"
+                rules, level, check = product_rules, "product", ""
             else:
                 # 품목 병용금기가 없을 때만 두 제품의 성분끼리 비교해 '성분 기준 주의'를 찾는다
-                rules = await self._with_ingredient_rules(reader, first, second, rules, drug_codes)
+                rules, check = await self._with_ingredient_rules(reader, first, second, rules, drug_codes)
                 level = "ingredient" if rules else "product"
             if rules:
                 has_rules[first] = has_rules[second] = True
-            pairs.append(PairCheck(first, second, rules, level=level))
-        return LookupResult(pairs, has_rules), None
+            pairs.append(PairCheck(first, second, rules, level=level, ingredient_check=check))
+        # 병용금기와 별개로 같은 효능군 중복을 본다. 실패해도 병용금기 결과는 그대로 전하도록 마지막에, 오류는 삼킨다.
+        overlaps = await self._overlaps(reader, seqs, drug_codes)
+        return LookupResult(pairs, has_rules, overlaps), None
 
     @staticmethod
     def _rule(row: Any, swapped: bool, basis: str | None = None) -> ContraRule:
@@ -141,14 +158,15 @@ class RdsContraStore:
 
     async def _with_ingredient_rules(
         self, reader: Any, first: str, second: str, existing: list[ContraRule], cache: dict[str, list[str]]
-    ) -> list[ContraRule]:
+    ) -> tuple[list[ContraRule], str]:
         """제품 쌍에 품목 병용금기가 없을 때: 이미 풀려 들어온 성분 규칙(existing)에 두 제품의 성분 코드끼리 비교한 규칙을 더한다.
 
         성분 코드를 모르는 쪽이 있으면 비교하지 않는다(제품 단위 조회는 이미 했으므로 '확인 불가'로 바꾸지 않는다). 모든 규칙은 '성분 규칙'으로 표시한다."""
         first_codes, second_codes = await self._codes_of(reader, first, cache), await self._codes_of(reader, second, cache)
         merged = [ContraRule(**{**vars(rule), "basis": "성분 규칙"}) for rule in existing]
+        logger.info("ingredient_compare codes=%d/%d existing=%d", len(first_codes), len(second_codes), len(merged))
         if not first_codes or not second_codes:
-            return merged
+            return merged, "no_codes"
         for live in await self._ingredient_rules(reader, first_codes, second_codes, basis="성분 규칙"):
             duplicate = any(
                 rule.content == live.content and rule.remark == live.remark
@@ -157,7 +175,7 @@ class RdsContraStore:
             )
             if not duplicate:
                 merged.append(live)
-        return merged[: self._limit]
+        return merged[: self._limit], "compared"
 
     async def _ingredient_rules(self, reader: Any, first_codes: list[str], second_codes: list[str], basis: str | None = None) -> list[ContraRule]:
         rows = await reader.fetch(_INGREDIENT_PAIR_SQL, {"first_codes": first_codes, "second_codes": second_codes, "limit": self._limit})
@@ -193,3 +211,35 @@ class RdsContraStore:
             return PairCheck(first, second, [], level="ingredient", unresolved=unresolved)
         rules = await self._ingredient_rules(reader, first_codes, second_codes)
         return PairCheck(first, second, rules, level="ingredient")
+
+    async def _overlaps(self, reader: Any, keys: list[str], cache: dict[str, list[str]]) -> list[EfficacyOverlap]:
+        """조회 대상들 사이의 효능군 중복. 서로 다른 두 대상에 같은 효능군의 서로 다른 성분이 있으면 해당 효능군을 돌려준다.
+
+        먹는 약이 아닌 제품(gold.drug.route = '경구 외')은 뺀다. 이 단계의 어떤 오류도 병용금기 결과를 막지 않는다."""
+        try:
+            if len(keys) < 2:
+                return []
+            codes_by_key = {key: await self._codes_of(reader, key, cache) for key in keys}
+            product_seqs = [key for key in keys if not _is_ingredient(key) and codes_by_key[key]]
+            routes: dict[str, str | None] = {}
+            if product_seqs:
+                routes = {row["item_seq"]: row["route"] for row in await reader.fetch(_ROUTE_SQL, {"seqs": product_seqs})}
+            eligible = [key for key in keys if codes_by_key[key] and routes.get(key) != NON_ORAL_ROUTE]
+            if len(eligible) < 2:
+                return []
+            all_codes = sorted({code for key in eligible for code in codes_by_key[key]})
+            rows = await reader.fetch(_OVERLAP_SQL, {"codes": all_codes, "limit": MAX_OVERLAP_ROWS})
+            series_codes: dict[str, dict[str, str]] = {}
+            for row in rows:
+                series_codes.setdefault(row["sers_name"], {})[row["ingr_code"]] = row["ingr_name"]
+            overlaps: list[EfficacyOverlap] = []
+            for series, names in series_codes.items():
+                members = [(key, [code for code in codes_by_key[key] if code in names]) for key in eligible]
+                members = [(key, codes) for key, codes in members if codes]
+                distinct_pair = any(a != b for i, (_, ca) in enumerate(members) for _, cb in members[i + 1:] for a in ca for b in cb)
+                if len(members) >= 2 and distinct_pair:
+                    overlaps.append(EfficacyOverlap(series, tuple((key, ", ".join(names[c] for c in codes)) for key, codes in members)))
+            return overlaps
+        except Exception as exc:  # noqa: BLE001
+            logger.error("효능군 중복 조회 실패: %s", safe_error_name(exc))
+            return []

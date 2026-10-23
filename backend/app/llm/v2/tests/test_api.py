@@ -30,8 +30,8 @@ class FakeAgent:
 
     tool_names = ["search_drug_info", "check_contraindication"]
 
-    async def run(self, question, profile_context=None, product_key=None, products=None):
-        self.calls.append((question, profile_context, product_key))
+    async def run(self, question, profile_context=None, products=None):
+        self.calls.append((question, profile_context))
         self.products_seen.append(products)
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -66,17 +66,16 @@ def test_ask_returns_structured_answer():
     assert body["usage"] == {"input_tokens": 1200, "output_tokens": 80}
     assert body["latency_ms"] == 1234 and body["model_id"] == "test-model"
     assert "tool_trace" not in body and "evidence" not in body  # 내부 계측은 노출하지 않는다
-    assert agent.calls == [("타이레놀 효능이 뭐예요?", None, None)]  # 앞뒤 공백 제거
+    assert agent.calls == [("타이레놀 효능이 뭐예요?", None)]  # 앞뒤 공백 제거
 
 
-def test_ask_passes_product_key_and_profile():
+def test_ask_passes_profile_and_rejects_product_key():
     client, agent = client_for()
     with client:
-        response = client.post(
-            "/llm/v2/ask", json={"question": "보관은?", "product_key": "drug:195700010", "profile_context": "30대 임산부"}
-        )
-    assert response.status_code == 200
-    assert agent.calls == [("보관은?", "30대 임산부", "drug:195700010")]
+        response = client.post("/llm/v2/ask", json={"question": "보관은?", "profile_context": "30대 임산부"})
+        assert response.status_code == 200
+        assert agent.calls == [("보관은?", "30대 임산부")]
+        assert client.post("/llm/v2/ask", json={"question": "보관은?", "product_key": "drug:1"}).status_code == 422  # 더 이상 받지 않는 필드
 
 
 def test_ask_passes_products_list():
@@ -105,8 +104,6 @@ def test_ask_validation_errors():
         assert post({}) == 422
         assert post({"question": "   "}) == 422  # 공백만
         assert post({"question": "x" * 1001}) == 422  # 스키마 상한
-        assert post({"question": "a", "product_key": "drug:1; DROP TABLE x"}) == 422  # 형식 위반
-        assert post({"question": "a", "product_key": "unknown:123"}) == 422
         assert post({"question": "a", "extra": 1}) == 422  # 알 수 없는 필드
         assert post({"question": "a", "profile_context": "p" * 1001}) == 422
     assert agent.calls == []  # 검증 실패는 에이전트에 도달하지 않는다
