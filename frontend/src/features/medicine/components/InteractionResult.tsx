@@ -6,6 +6,7 @@ import {
   checkInteractions,
   type DuplicateCaution,
   type InteractionPair,
+  type MedicineCautions,
   type MedicineSummary,
 } from "../api"
 import { slotLabels } from "./InteractionSelection"
@@ -14,6 +15,7 @@ import { slotLabels } from "./InteractionSelection"
 export default function InteractionResult({ selected }: { selected: MedicineSummary[] }) {
   const [pairs, setPairs] = useState<InteractionPair[] | null>(null)
   const [duplicates, setDuplicates] = useState<DuplicateCaution[]>([])
+  const [medicineCautions, setMedicineCautions] = useState<MedicineCautions[]>([])
   const [error, setError] = useState(false)
 
   useEffect(() => {
@@ -21,6 +23,7 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
       .then((response) => {
         setPairs(response.pairs)
         setDuplicates(response.duplicates)
+        setMedicineCautions(response.medicineCautions)
       })
       .catch(() => setError(true))
   }, [selected])
@@ -33,6 +36,19 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
     .filter((pair) => pair.contraindicated)
     .sort((a, b) => Number(b.level === "금기") - Number(a.level === "금기"))
   const others = pairs.filter((pair) => !pair.contraindicated)
+  // DUR 주의를 유형별로 묶는다 (백엔드가 임부금기 → 특정연령대금기 → 노인주의 … 순서로 준다)
+  const cautionGroups = new Map<string, string[]>()
+  for (const medicine of medicineCautions) {
+    for (const caution of medicine.cautions) {
+      const detail = [caution.grade, caution.ageBase, caution.maxDosageTerm, caution.ingredient]
+        .filter(Boolean)
+        .join(", ")
+      const line = detail ? `${medicine.name} (${detail})` : medicine.name
+      const lines = cautionGroups.get(caution.type) ?? []
+      // 내용만 다른 같은 성분 규칙은 한 줄로
+      if (!lines.includes(line)) cautionGroups.set(caution.type, [...lines, line])
+    }
+  }
 
   return (
     <section className="mb-6 space-y-4">
@@ -116,6 +132,26 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
             </div>
           ))}
           <p className="text-xs text-slate-500">먹는 약끼리만 비교해요 · 식약처 DUR 효능군중복 · 용량주의 기준</p>
+        </div>
+      )}
+      {/* 약마다의 DUR 주의: 프로필 없이 모두 보여주고, 해당 여부는 사용자가 확인한다 */}
+      {cautionGroups.size > 0 && (
+        <div className="space-y-3 rounded-2xl border p-5">
+          <div>
+            <h3 className="font-bold">복용 대상별 주의</h3>
+            <p className="mt-1 text-sm text-slate-500">임신 중이거나 나이에 해당하면 확인이 필요해요.</p>
+          </div>
+          {[...cautionGroups].map(([type, lines]) => (
+            <div key={type} className="rounded-xl bg-slate-100 p-4 leading-7">
+              <b className="text-sm">{type}</b>
+              {lines.map((line) => (
+                <p key={line} className="text-sm text-slate-600">
+                  {line}
+                </p>
+              ))}
+            </div>
+          ))}
+          <p className="text-xs text-slate-500">식약처 DUR 기준 · 자세한 내용은 약 상세정보에서 볼 수 있어요</p>
         </div>
       )}
       {others.length > 0 && (

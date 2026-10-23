@@ -10,9 +10,17 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.integrations import public_data
 from app.modules.medicines.mock_data import MOCK_CONTRAINDICATED_PAIRS, MOCK_MEDICINES
-from app.modules.medicines.schemas import ContraindicationRow, IngredientRow, MedicineDetail, MedicineSummary
+from app.modules.medicines.schemas import (
+    ContraindicationRow,
+    DurCaution,
+    IngredientRow,
+    MedicineDetail,
+    MedicineSummary,
+)
 
 SEARCH_LIMIT = 50
+# 약 상세에 보여주는 DUR 주의 (이 순서로)
+DUR_CAUTION_TYPES = ("임부금기", "특정연령대금기", "노인주의", "투여기간주의", "서방정분할주의")
 
 
 class MedicineRepository(Protocol):
@@ -162,6 +170,18 @@ class GoldMedicineRepository:
         row = result.first()
         if row is None:
             return None
+        # 약 하나에 해당하는 DUR 주의. 용량주의·효능군중복은 병용 확인의 "중복 주의"에서 보여준다.
+        # 품목 규칙의 내용·비고가 없으면 연결된 성분 규칙의 것을 쓴다
+        cautions = await self.session.execute(
+            text(
+                "SELECT DISTINCT caution_type, ingr_name, grade, age_base, max_dosage_term, "
+                "coalesce(prohbt_content, rule_prohbt_content) AS content, coalesce(remark, rule_remark) AS remark, "
+                "array_position(CAST(:types AS text[]), caution_type) AS type_order "
+                "FROM gold.drug_dur_caution WHERE item_seq = :item_seq AND caution_type = ANY(:types) "
+                "ORDER BY type_order, ingr_name, grade"
+            ),
+            {"item_seq": medicine_id, "types": list(DUR_CAUTION_TYPES)},
+        )
         # 일반인용 e약은요가 있으면 그것을, 없으면 허가 문서(전문가용 원문)를 보여준다
         easy_precautions = "\n".join(filter(None, [row.easy_atpn_warn, row.easy_atpn]))
         return MedicineDetail(
@@ -173,6 +193,18 @@ class GoldMedicineRepository:
             source="식품의약품안전처 의약품개요정보(e약은요)"
             if row.easy_efcy
             else "식품의약품안전처 의약품 제품 허가정보",
+            dur_cautions=[
+                DurCaution(
+                    type=c.caution_type,
+                    ingredient=c.ingr_name,
+                    grade=c.grade,
+                    age_base=c.age_base,
+                    max_dosage_term=c.max_dosage_term,
+                    content=c.content,
+                    remark=c.remark,
+                )
+                for c in cautions
+            ],
         )
 
     async def find_in_text(self, text: str) -> MedicineDetail | None:
