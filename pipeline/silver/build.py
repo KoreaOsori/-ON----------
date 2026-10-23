@@ -362,6 +362,12 @@ def collapse_rows(t, table, key, collected):
         conflicts = pc.sum(pc.greater(grouped[f"{name}_count_distinct"], 1)).as_py() or 0
         if conflicts:
             raise BuildError(f"[{table.name}] {key} 가 같은데 {name} 값이 다른 그룹 {conflicts}개")
+    # resolve 가 None(값 있는 행 우선)인 컬럼: null 과 값만 다른 것은 값으로 채우고, 값끼리 다르면 실패
+    for name in [name for name, preferred in table.resolve.items() if preferred is None]:
+        valid = t.filter(pc.is_valid(t[name])).group_by(key, use_threads=False).aggregate([(name, "count_distinct")])
+        conflicts = pc.sum(pc.greater(valid[f"{name}_count_distinct"], 1)).as_py() or 0
+        if conflicts:
+            raise BuildError(f"[{table.name}] {key} 가 같은데 {name} 값(null 제외)이 다른 그룹 {conflicts}개")
     columns = {}
     for name in t.column_names:
         if name in key:
