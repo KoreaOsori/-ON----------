@@ -7,15 +7,23 @@ export const slotLabels = "ABCDE"
 export default function InteractionSelection({
   selected,
   onRemove,
+  onLoadMine,
 }: {
   selected: MedicineSummary[]
   onRemove: (id: string) => void
+  /** 마이페이지에 등록한 복용약이 있을 때만 */
+  onLoadMine?: () => void
 }) {
   return (
     <>
       <p className="mb-5 leading-7">
         궁금한 약을 최대 5개까지 담으면 서로 함께 먹어도 되는지 확인해드려요.
       </p>
+      {onLoadMine && (
+        <button onClick={onLoadMine} className="mb-4 min-h-11 text-blue-600">
+          내 복용약 불러오기
+        </button>
+      )}
       <div className="mb-5 flex flex-wrap gap-2">
         {selected.map((drug, order) => (
           <span
