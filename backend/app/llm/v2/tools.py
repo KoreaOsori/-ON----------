@@ -39,8 +39,8 @@ SECTION_LABELS = {
 
 MAX_NAME_CHARS = 100
 MAX_QUESTION_CHARS = 300
-MAX_CONTENT_CHARS = 1200  # 문단 하나를 모델에 줄 최대 글자 수(문장 경계에서 자른다)
-MAX_SEARCH_RESULT_CHARS = 4500  # search_drug_info 결과 전체 상한. 넘으면 유사도가 낮은 문단부터 뺀다
+MAX_CONTENT_CHARS = 800  # 문단 하나를 모델에 줄 최대 글자 수(문장 경계에서 자른다)
+MAX_SEARCH_RESULT_CHARS = 3000  # search_drug_info 결과 전체 상한. 넘으면 유사도가 낮은 문단부터 뺀다
 MAX_RESULT_CHARS = 9000  # check_contraindication 등 다른 도구 결과의 상한
 
 

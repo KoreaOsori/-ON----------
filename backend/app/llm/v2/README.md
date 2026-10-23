@@ -147,7 +147,7 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
 - `usage`: `input_tokens`는 **캐시 없이 처리된 입력**만(사용자 메시지·도구 결과 등)이고, 시스템 프롬프트·도구 정의는 프롬프트 캐시를 쓰므로 `cache_read_tokens`(캐시 읽기, 저렴한 단가)로 따로 나옵니다. 캐시를 새로 쓴 첫 호출은 `cache_write_tokens`(1.25배 단가)에 잡히고, 캐시는 마지막 사용 후 약 5분 유지됩니다. 실제 처리량 = 세 값의 합이므로 비용은 `input` + 0.1×`cache_read` + 1.25×`cache_write` 기준으로 봅니다.
 - 모델 호출마다 `model_call round=… model_stop=… blocks=… input=… output=… cache_read=… cache_write=…` 한 줄이 서버 로그(INFO)에 남습니다. `model_stop=max_tokens`면 출력 한도(`LLM_V2_MAX_TOKENS`)에 걸린 것이고, `blocks`에 `thinking` 같은 보이지 않는 블록이 있으면 출력 토큰이 그만큼 더 쓰인 것입니다. 질문·답변 내용은 남기지 않습니다.
 - 답변이 `max_tokens`에 걸려 끊기면 마지막 미완성 문장을 지우고 "답변이 길어 여기서 줄였어요…" 안내를 붙이며(`stop_reason`은 `done` 그대로, 내부 `AgentAnswer.truncated=True`), 도구 요청이 도중에 끊기면 `error`로 처리합니다.
-- 검색 결과(`search_drug_info`)는 문단당 1200자(문장 경계에서 자름), 전체 4500자까지만 모델에 전달합니다. 상한을 넘으면 유사도가 낮은 뒤쪽 문단부터 빼고 "관련도가 낮은 문단 N개는 생략" 안내를 붙입니다(첫 문단은 항상 포함).
+- 검색 결과(`search_drug_info`)는 문단당 800자(문장 경계에서 자름), 전체 3000자까지만 모델에 전달합니다. 상한을 넘으면 유사도가 낮은 뒤쪽 문단부터 빼고 "관련도가 낮은 문단 N개는 생략" 안내를 붙입니다(첫 문단은 항상 포함).
 
 | `status` | HTTP | 의미 |
 |---|---|---|
