@@ -54,7 +54,7 @@ variable "data_bucket_name" {
 }
 
 variable "upload_bucket_name" {
-  description = "운영 업로드 버킷 이름 (팀 확인 전에는 빈 값 → 해당 권한 생략)"
+  description = "운영 업로드 버킷 이름 (팀 Terraform이 만듦, pill/ 아래 사진만 읽음). 빈 값이면 해당 권한 생략"
   type        = string
   default     = ""
 }

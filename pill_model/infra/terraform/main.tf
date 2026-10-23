@@ -20,7 +20,7 @@ data "aws_s3_bucket" "data" {
   bucket = var.data_bucket_name
 }
 
-# 업로드 버킷은 이름이 정해졌을 때만 조회
+# 업로드 버킷 (팀 Terraform 소유, 2026-10-22 생성 확인) — 읽기만. 이름이 빈 값이면 조회 생략
 data "aws_s3_bucket" "upload" {
   count  = var.upload_bucket_name == "" ? 0 : 1
   bucket = var.upload_bucket_name
@@ -33,6 +33,7 @@ data "aws_ssm_parameter" "al2023" {
 
 locals {
   model_bucket_name = "${var.name_prefix}-model-${data.aws_caller_identity.current.account_id}"
+  # 버킷이 실제로 있는지 data 조회로 확인한 ARN을 쓴다 (이름 오타면 plan 단계에서 실패)
   upload_bucket_arn = var.upload_bucket_name == "" ? null : data.aws_s3_bucket.upload[0].arn
 }
 
@@ -172,7 +173,8 @@ data "aws_iam_policy_document" "worker" {
     resources = ["${aws_s3_bucket.model.arn}/crops/*"]
   }
 
-  # 데이터 버킷(팀): silver 낱알 식별 데이터 읽기만 → image_url 붙이기
+  # 데이터 버킷(팀): silver 읽기만 → image_url 붙이기
+  # 낱알식별 데이터는 별도 테이블이 아니라 drug_product 의 pills 목록 안에 있다 (인프라 담당 확인, 2026-10-23)
   statement {
     sid       = "SilverList"
     actions   = ["s3:ListBucket"]
@@ -180,7 +182,7 @@ data "aws_iam_policy_document" "worker" {
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["silver/pill_identification/*"]
+      values   = ["silver/drug_product/*"]
     }
   }
   statement {
@@ -188,7 +190,7 @@ data "aws_iam_policy_document" "worker" {
     actions = ["s3:GetObject"]
     resources = [
       "${data.aws_s3_bucket.data.arn}/silver/_latest.json",
-      "${data.aws_s3_bucket.data.arn}/silver/pill_identification/*",
+      "${data.aws_s3_bucket.data.arn}/silver/drug_product/*",
     ]
   }
 

@@ -36,10 +36,10 @@
 | EC2 | t3.medium, **credit standard**, Amazon Linux 2023, gp3 30GB 암호화, IMDSv2, 퍼블릭 서브넷(NAT 없음) |
 | 접근 | 워커 SG 인바운드 = 백엔드 SG에서 TCP 8000만. 인터넷 인바운드 없음. 접속은 SSM |
 | 사진 전달 | 백엔드는 S3 `object_key`(purpose=`pill`)만 넘긴다. 워커가 업로드 버킷에서 읽는다 |
-| 낱알 공식 사진 | silver `pill_identification`의 `item_image`(URL)를 시작 시 읽어 후보에 `image_url`로 붙인다 |
+| 낱알 공식 사진 | silver `drug_product`의 `pills[].item_image`(URL)를 시작 시 읽어 후보에 `image_url`로 붙인다 (별도 pill_identification 테이블 없음) |
 | 저장 정책 | 처방전·약봉투 사진은 저장 안 함. 알약은 **배경 제거된 조각만**, 사용자 동의 시 모델 버킷 `crops/`에 저장. 경로에 사용자 ID 넣지 않음 |
 | 배경 제거 | 워커에서 rembg (모델은 `PLAN.md` 실험으로 결정, **기본값 bria-rmbg 사용 금지** — 상업 이용 유료). 요청 1건 **33초 이상**이면 브라우저 방식 검토를 사용자에게 제안 |
-| 팀 자원 참조 | 실제 계정 이름(`agent-de-ai-01-*`)이 저장소 팀 Terraform(`pill-check-dev-*`)과 다름 → **ID를 tfvars 변수로** 받음(이름 조회 금지). 워커 SG는 새로 만들고 기존 ec2-sg를 붙이지 않음 |
+| 팀 자원 참조 | 백엔드는 `pill-check-dev-ec2`/`pill-check-dev-vpc` (2026-10-22 조회 정정). **ID를 tfvars 변수로** 받음(이름 조회 금지). 워커 SG는 새로 만들고 기존 ec2 SG를 붙이지 않음 |
 | 생성 방식 | 콘솔 생성 안 함. 이 스택의 `terraform plan` → 사용자 `apply` |
 | 실행 권한 | `terraform apply`는 사용자(교육 계정 `de-ai-21`)가 직접 실행 |
 | OCR 설정 | `config.json` 그대로 (검출 640, 4방향, rec batch 16) — 바꾸지 않음 |

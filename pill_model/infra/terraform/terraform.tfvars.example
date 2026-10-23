@@ -6,8 +6,8 @@ subnet_id        = "subnet-xxxxxxxx" # 백엔드와 같은 VPC의 퍼블릭 서�
 backend_sg_id    = "sg-xxxxxxxx"     # 백엔드 EC2에 붙은 SG
 data_bucket_name = "pill-check-data-123456789012"
 
-# 운영 업로드 버킷 (팀 확인 전에는 빈 값)
-upload_bucket_name = ""
+# 운영 업로드 버킷 (팀 Terraform 소유, data 로 존재 확인 — 없는 이름이면 plan 실패)
+upload_bucket_name = "pill-check-uploads-123456789012"
 
 # name_prefix   = "pill-worker"
 # instance_type = "t3.medium"

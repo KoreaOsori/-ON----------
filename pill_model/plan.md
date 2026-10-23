@@ -95,16 +95,17 @@ infra/terraform/backend.hcl
 ## 2. Terraform 별도 스택 (`pill_model/infra/terraform`)
 
 ### 2-1. 팀 자원 — 읽기만 (`data`, **ID는 변수로 받는다**)
-⚠ 실제 교육 계정의 자원 이름(`agent-de-ai-01-*`)이 저장소 팀 Terraform의 이름 규칙(`pill-check-dev-*`)과 다르다(2026-10-22 콘솔 확인).
-→ 이름 태그로 찾지 말고, 사용자가 콘솔에서 확인한 **ID를 `terraform.tfvars`(gitignore)로 받아** `data` 블록에서 존재만 검증한다.
+✅ (2026-10-22 조회로 정정) 약ON 백엔드는 교육 계정 `de-ai-21`의 **`pill-check-dev-ec2`** (VPC `pill-check-dev-vpc`) — 팀 Terraform 이름 규칙과 같다.
+   `agent-de-ai-01-vpc`는 인스턴스가 없는 다른 VPC라 쓰지 않는다.
+→ 그래도 이름 태그로 찾지 않고 **ID를 `terraform.tfvars`(gitignore)로 받아** `data` 블록에서 존재만 검증한다(이름이 바뀌어도 안전).
 
-| 변수 (`variables.tf`, 기본값 없음) | 콘솔에서 확인한 값 (예시 — 실제 값은 tfvars에만) | 검증용 data |
+| 변수 (`variables.tf`, 기본값 없음) | 실제로 넣은 자원 (ID는 tfvars에만) | 검증용 data |
 |---|---|---|
-| `vpc_id` | `agent-de-ai-01-vpc`의 ID | `aws_vpc` id |
-| `subnet_id` | 백엔드와 같은 VPC의 **퍼블릭** 서브넷 (예: `agent-de-ai-01-public-*`) | `aws_subnet` id → vpc_id 일치 검사(`precondition`) |
-| `backend_sg_id` | 백엔드 EC2에 붙은 SG (예: `agent-de-ai-01-ec2-sg`) — **백엔드 인스턴스 화면에서 확인** | `aws_security_group` id → vpc_id 일치 검사 |
-| `data_bucket_name` | silver가 있는 데이터 버킷 (`aws s3 ls`로 확인) | `aws_s3_bucket` |
-| `upload_bucket_name` | 운영 업로드 버킷 (hesouu 확인 전엔 `""`) | 빈 값이면 생략 |
+| `vpc_id` | `pill-check-dev-vpc` | `aws_vpc` id |
+| `subnet_id` | `pill-check-dev-public-us-east-1a` (백엔드와 같은 퍼블릭 서브넷) | `aws_subnet` id → vpc_id 일치·퍼블릭 검사(`precondition`) |
+| `backend_sg_id` | `pill-check-dev-ec2` (백엔드 EC2에 붙은 SG) | `aws_security_group` id → vpc_id 일치 검사 |
+| `data_bucket_name` | `pill-check-data-<계정>` | `aws_s3_bucket` |
+| `upload_bucket_name` | `pill-check-uploads-<계정>` (팀 Terraform 소유, 2026-10-22 생성 확인) | data 조회 없이 이름으로 ARN 생성, 빈 값이면 생략 |
 | AMI | 변수 아님 — `aws_ssm_parameter` `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64` | |
 
 - `terraform.tfvars.example`에는 **자리표시자만**(`vpc-xxxxxxxx`) 넣는다. 실제 ID는 커밋 금지.
@@ -122,8 +123,9 @@ infra/terraform/backend.hcl
 - **IAM 역할·인스턴스 프로필** `${name_prefix}-role` (생성 권한 없으면 plan/apply 오류 → 멈추고 사용자에게 보고):
   - `AmazonSSMManagedInstanceCore`
   - 모델 버킷: `models/*` Get, `crops/*` Put, ListBucket(prefix models/)
-  - 데이터 버킷: `silver/_latest.json`, `silver/pill_identification/*` Get, ListBucket(prefix silver/pill_identification/)
-  - 업로드 버킷: `pill/*` Get — 변수 `upload_bucket_name`이 빈 값이면 이 문장 생략 (팀 확인 대기)
+  - 데이터 버킷: `silver/_latest.json`, `silver/drug_product/*` Get, ListBucket(prefix silver/drug_product/)
+    (낱알식별은 별도 테이블이 아니라 drug_product의 `pills` 목록 안에 있음 — 인프라 담당 확인 2026-10-23)
+  - 업로드 버킷: `pill/*` Get — 변수 `upload_bucket_name`이 빈 값이면 이 문장 생략
 - **EC2** `${name_prefix}`: t3.medium, 키 페어 없음(SSM 접속), 퍼블릭 IP 자동 할당, `credit_specification { cpu_credits = "standard" }`,
   gp3 30GB encrypted, `metadata_options { http_tokens = "required", http_put_response_hop_limit = 2 }`
   (⚠ hop limit 2: 이게 1이면 Docker 컨테이너 안에서 IMDSv2로 IAM 역할 자격 증명을 못 받는다),
@@ -157,7 +159,11 @@ backend "s3" {
 
 ### 3-1. 시작 시
 1. `deploy/` 모델 확인(없으면 종료하며 `scripts/fetch_models.sh` 안내) → `PillIdentifier(deploy_dir, load_ocr=True)`.
-2. silver `_latest.json` → `pill_identification/snapshot=…/data.parquet` 읽어 `{item_seq: item_image}` 사전. 실패해도 서비스는 시작(`image_url=null`), `/health`에 표시.
+2. silver `_latest.json`의 `tables.drug_product` 날짜 → `drug_product/snapshot=…/data.parquet`에서 **`item_seq`, `pills` 두 컬럼만** 읽어
+   `{item_seq: pills[].item_image}` 사전. 실패해도 서비스는 시작(`image_url=null`), `/health`에 표시.
+   - 파일 전체는 370MB라 통째로 읽으면 t3.medium(4GB)에 부담 → 컬럼만 읽기 (2개 컬럼 = 메모리 약 7.7MB, S3 범위 읽기 약 15초, 2026-10-23 실측)
+   - 실측(snapshot 2026-10-23): 품목 39,814 중 pills 있음 21,690 / 낱알 행 21,707 / 사진 2장 이상 품목 10개 / item_image 빈 값 0 / URL 호스트 전부 `nedrug.mfds.go.kr`
+   - 사진이 여러 장이면 `image_id` 순 첫 장 사용(파이프라인 정렬 그대로). 허가 취소 등으로 silver에서 빠진 낱알 3,756행은 image_url 없음
 3. 워밍업: 더미 이미지 1장으로 OCR·CNN 1회(첫 요청 지연 제거).
 
 ### 3-2. API (워커 내부용, 백엔드만 호출)
@@ -227,6 +233,6 @@ backend "s3" {
 - [ ] devlog.md 기록
 
 ## 7. 아직 열린 항목 (진행 중 막히면 사용자에게 질문)
-- 운영 업로드 버킷 이름 (hesouu 확인 중) → `upload_bucket_name` 변수
+- ~~운영 업로드 버킷 이름~~ → `pill-check-uploads-<계정>` 확인 (2026-10-23). 현재 presign 업로드는 운영에서 미동작(팀 작업 중)
 - 배경 제거 모델 (3-4 실험 후 사용자 선택)
 - crop 저장 동의 UI 문구 위치 (프런트 팀)
