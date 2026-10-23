@@ -28,7 +28,7 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.repo.ingredient_rules = AsyncMock(return_value=[])
         self.repo.dur_ingredient_rules = AsyncMock(return_value=[])
         self.bedrock = MagicMock()
-        self.bedrock.embed = AsyncMock(return_value=[0.1])
+        self.bedrock.embed_with_usage = AsyncMock(return_value=([0.1], {'inputTokens': 3, 'outputTokens': 0, 'totalTokens': 3}))
         self.bedrock.generate = AsyncMock(return_value={'answer': '친절한 모델 답변', 'usage': {'outputTokens': 20}, 'stop_reason': 'end_turn'})
         self.route = Route(intent='information', sections=['benefits'], product_names=[])
         patcher = patch('app.llm.v1.service.classify', new_callable=AsyncMock)
@@ -48,7 +48,8 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(response.model_dump()), {'status', 'answer', 'usage'})
         self.assertEqual(response.answer, '친절한 모델 답변')
         self.assertEqual(response.usage['routing']['inputTokens'], 10)
-        self.assertEqual(response.usage, {'routing': {'inputTokens': 10}})
+        self.assertEqual(response.usage['routing']['inputTokens'], 10)
+        self.assertGreaterEqual(response.usage['answer']['calls'], 1)
 
     async def test_uncertain_names_sent_to_llm_without_candidates(self):
         self.repo.resolve.side_effect = [([], False), ([product('drug:2', '다른 후보')], False)]
@@ -59,7 +60,7 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('다른 후보', self.bedrock.generate.call_args.args[2])
         self.assertNotIn('candidates', self.payload())
         self.repo.prepare_vectors.assert_not_called()
-        self.bedrock.embed.assert_not_called()
+        self.bedrock.embed_with_usage.assert_not_called()
         self.repo.safety.assert_not_called()
 
     async def test_names_merge_and_deduplicate(self):
@@ -84,7 +85,7 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([p['product_name'] for p in self.payload()['products']], ['약A'])
         self.assertNotIn('unresolved', self.payload())
         self.assertNotIn('가짜약123', self.bedrock.generate.call_args.args[2])
-        self.assertNotIn('가짜약123', self.bedrock.embed.call_args.args[0])
+        self.assertNotIn('가짜약123', self.bedrock.embed_with_usage.call_args.args[0])
         self.assertIn('조회했다고 주장하지 마라', self.bedrock.generate.call_args.args[1])
 
     async def test_truncated_answer_rewritten_once_from_full_evidence(self):
@@ -96,7 +97,8 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         response = await self.service.ask(self.request())
         self.assertEqual(response.status, 'answered')
         self.assertEqual(response.answer, '완성된 답변')
-        self.assertEqual(response.usage, {'routing': {'inputTokens': 10}})
+        self.assertEqual(response.usage['routing']['inputTokens'], 10)
+        self.assertGreaterEqual(response.usage['answer']['calls'], 1)
         first, retry = self.bedrock.generate.await_args_list
         self.assertEqual(first.args[2], retry.args[2])
         self.assertIn('주의 원문과 예외 조건', retry.args[2])
@@ -125,7 +127,7 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.repo.documents.assert_awaited_once_with('health_food:2', 'precautions')
         self.repo.safety.assert_not_called()
         self.repo.dur_ingredient_rules.assert_not_called()
-        self.bedrock.embed.assert_not_called()
+        self.bedrock.embed_with_usage.assert_not_called()
         self.assertIn('섭취 주의사항 전체', self.bedrock.generate.call_args.args[2])
 
     async def test_new_dur_rules_reach_answer_prompt(self):

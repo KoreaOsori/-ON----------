@@ -30,7 +30,9 @@ class AskResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["answered", "needs_clarification", "insufficient_data", "refused", "error"]
     answer: str
-    usage: dict = Field(default_factory=dict)
+    usage: dict = Field(default_factory=dict, description=
+        '요청 전체 토큰 합계와 routing/answer/embedding 단계별 사용량. answer에는 표시 순서 결정과 재작성 포함. '
+        '사용량 미수신 시 해당 합계는 null, complete=false. 비용이 아닌 토큰 수이며 공급자가 반환한 사용량 기준.')
 
 
 class IngredientProduct(StrictModel):

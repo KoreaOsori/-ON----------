@@ -4,6 +4,7 @@ from .interactions import compare_gold
 from .grounded_answer import interaction_blocks, render_interactions
 from .routing import classify, scoped_question
 from .schemas import AskResponse
+from .usage import Usage
 
 SYSTEM = """약과 건강기능식품 정보를 친절하고 자연스러운 한국어 존댓말로 안내한다.
 overview=true이면 모든 제품을 이름별로 나눠 각각 1~2문장으로 용도·효능을 설명한다.
@@ -60,6 +61,16 @@ code_match=false여도 정확한 제품쌍의 공식 DUR를 취소하지 마라.
 class Service:
     def __init__(self, repository, bedrock, settings):
         self.repo, self.bedrock, self.settings = repository, bedrock, settings
+        self.usage = Usage()
+
+    async def generate_answer(self, *args, **kwargs):
+        try:
+            result = await self.bedrock.generate(*args, **kwargs)
+        except Exception:
+            self.usage.add('answer', {})
+            raise
+        self.usage.add('answer', result.get('usage', {}))
+        return result
 
     async def respond(self, model_id, routing_usage, status, payload):
         if (payload.get('intent') == 'interactions' and payload.get('checks')
@@ -69,14 +80,14 @@ class Service:
             # from verified facts, so generated classifications/advice cannot leak.
             prompt = json.dumps({'blocks': [{'id': i, 'heading': block.split('\n', 1)[0]}
                                             for i, block in enumerate(blocks)]}, ensure_ascii=False)
-            result = await self.bedrock.generate(model_id,
+            result = await self.generate_answer(model_id,
                 '사용자가 읽기 좋은 순서로 모든 블록 ID를 정확히 한 번씩 정렬한다. '
                 '제품쌍 결과를 먼저, 확인 범위와 원문을 뒤에 둔다. '
                 '다른 설명 없이 JSON만 출력: {"order":[0,1,...]}.', prompt)
             if result.get('stop_reason') in {'guardrail_intervened', 'content_filtered', 'refusal'}:
                 return AskResponse(status='refused', answer='죄송해요. 지금은 답변을 드리기 어려워요. 약사나 의사에게 확인해 주세요.',
-                                   usage={'routing': routing_usage})
-            return AskResponse(status=status, answer=render_interactions(blocks, result), usage={'routing': routing_usage})
+                                   usage=self.usage.snapshot())
+            return AskResponse(status=status, answer=render_interactions(blocks, result), usage=self.usage.snapshot())
         prompt = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), default=str)
         if len(prompt) > self.settings.context_chars:
             status = 'insufficient_data'
@@ -84,17 +95,17 @@ class Service:
             prompt = json.dumps({'task': '질문 범위를 줄이도록 친절히 안내',
                                  'reason': '정확히 확인해야 할 자료가 많아 한 번에 설명하기 어렵습니다.',
                                  'products': [p.get('product_name') for p in payload.get('products', [])]}, ensure_ascii=False)
-        result = await self.bedrock.generate(model_id, SYSTEM, prompt)
+        result = await self.generate_answer(model_id, SYSTEM, prompt)
         if result['stop_reason'] == 'max_tokens':
             # Rewrite from intact evidence, never continue an incomplete clinical sentence.
             # One bounded retry; refusals and other failures are not retried.
-            result = await self.bedrock.generate(
+            result = await self.generate_answer(
                 model_id,
                 SYSTEM + '\n직전 생성은 출력 한도에 도달했다. 아래 원자료로 처음부터 간결하게 다시 작성한다. '
                 '서론·제목·반복·일반적인 추가 조언을 생략하되 금기 조건·예외·확인 한계는 보존한다.',
                 prompt,
             )
-        usage = {'routing': routing_usage}
+        usage = self.usage.snapshot()
         if result['stop_reason'] in {'guardrail_intervened', 'content_filtered', 'refusal'}:
             return AskResponse(status='refused', answer='죄송해요. 지금은 이 질문에 답변을 드리기 어려워요. 약사나 의사에게 확인해 주세요.', usage=usage)
         if result['stop_reason'] != 'end_turn' or not result['answer'].strip():
@@ -103,7 +114,13 @@ class Service:
 
     async def ask(self, request):
         model_id = self.settings.model_id(request.model)
-        route, routing_usage = await classify(self.bedrock, model_id, request.question)
+        self.usage = Usage()
+        try:
+            route, routing_usage = await classify(self.bedrock, model_id, request.question)
+        except Exception:
+            self.usage.add('routing', {})
+            raise
+        self.usage.add('routing', routing_usage)
         names = []
         for name in request.products + route.product_names:
             if ''.join(name.split()).casefold() not in {''.join(n.split()).casefold() for n in names}:
@@ -148,7 +165,12 @@ class Service:
                 checks = compare_gold(selected, ingredients, rules, ingredient_rules, dur_rules)
         query_vector = None
         if vector_ready and (route.intent in ('information', 'both') or len(keys) >= 2):
-            query_vector = await self.bedrock.embed(question)
+            try:
+                query_vector, embedding_usage = await self.bedrock.embed_with_usage(question)
+            except Exception:
+                self.usage.add('embedding', {})
+                raise
+            self.usage.add('embedding', embedding_usage)
         for product in selected:
             if interactions and len(keys) >= 2 and product['product_type'] == 'drug':
                 label_docs = await self.repo.documents(product['product_key'], 'interactions')
