@@ -23,9 +23,10 @@ module "data_bucket" {
 }
 
 module "uploads_bucket" {
-  source          = "../../modules/uploads"
-  bucket_name     = "${var.project}-uploads-${data.aws_caller_identity.current.account_id}"
-  allowed_origins = ["http://${module.ec2.public_ip}"]
+  source      = "../../modules/uploads"
+  bucket_name = "${var.project}-uploads-${data.aws_caller_identity.current.account_id}"
+  # IP 주소와 EC2 도메인 이름 둘 다 같은 웹 서비스 주소 (브라우저는 둘을 다른 출처로 취급) — 2026-10-23 CORS 오류로 추가
+  allowed_origins = ["http://${module.ec2.public_ip}", "http://${module.ec2.public_dns}"]
 }
 
 module "secrets" {

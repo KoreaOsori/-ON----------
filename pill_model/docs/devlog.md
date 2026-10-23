@@ -246,3 +246,10 @@
     파일 안에도 `snapshot`(string) 컬럼이 있어 스키마 병합 실패. PC 로컬에서 같은 경로·컬럼으로 재현:
     `Unable to merge: Field snapshot has incompatible types: string vs dictionary<values=string, ...>`
   - 해결: PC 실측 때 쓴 `pq.ParquetFile(path).read(columns=["item_seq","pills"])` 로 변경 (`images.read_urls`), 재현 테스트 추가 (unit+api 25 passed).
+
+## 2026-10-23 — 운영 첫 실사용: 업로드 CORS 오류 → 팀 인프라 CORS 수정 (사용자 요청, 인프라 담당자 부재)
+- 증상: 브라우저에서 S3 presigned PUT 이 CORS 로 차단. 접속 주소가 EC2 도메인 이름(`ec2-…compute-1.amazonaws.com`) 이었는데
+  업로드 버킷 CORS 는 `http://<EIP>` 만 허용 (`infra/terraform/envs/dev/main.tf` allowed_origins).
+- 수정(사용자 지시로 claude.md "infra/ 읽기만" 규칙 예외): `modules/ec2/outputs.tf` 에 `public_dns` 출력, `envs/dev/main.tf` allowed_origins 에 `http://${public_dns}` 추가.
+- `terraform plan -lock=false`(팀 state 읽기만): CORS 1개 update in-place, 0 add / 0 destroy → 사용자가 `terraform apply tfplan` → 이후 plan "No changes".
+- 그 전: 워커 EC2 배포 완료(/health imageIndex ok 21,690), 백엔드 EC2 .env 3줄 + 재빌드, 백엔드 → 워커 /health 확인, 운영 사이트에 새 화면·/api/v1/pill 반영 확인(외부 curl).
