@@ -2,16 +2,33 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Plus } from "lucide-react"
+import { LoaderCircle, Plus } from "lucide-react"
+import {
+  analyzePill,
+  errorMessage,
+  recognizePrescription,
+  uploadPhoto,
+  type PhotoPurpose,
+  type PillStep,
+  type RxResult,
+} from "@/features/photo/api"
 import { useSession } from "@/providers/SessionProvider"
 import useChat from "../hooks/useChat"
 import ChatComposer from "./ChatComposer"
 import ChatMessageItem from "./ChatMessageItem"
 import ChatStatusNotice from "./ChatStatusNotice"
 import ChatWelcome from "./ChatWelcome"
-import DrugCandidates from "./DrugCandidates"
 import GuestProfileModal from "./GuestProfileModal"
 import PhotoSourceModal from "./PhotoSourceModal"
+import PillDialog from "./PillDialog"
+import RxCandidates from "./RxCandidates"
+
+/** 사진 인식 진행 상태: 업로드 → 인식 → 결과(알약 대화 / 처방전 약 목록) */
+type PhotoState =
+  | { phase: "working"; text: string }
+  | { phase: "pill"; step: PillStep }
+  | { phase: "rx"; result: RxResult }
+  | { phase: "error"; message: string }
 
 /** 로고를 누르면 homeRevision이 바뀌어 대화가 초기화된다 */
 export default function ChatScreen() {
@@ -28,9 +45,12 @@ function ChatView() {
   const [profileOpen, setProfileOpen] = useState(false)
   const [healthConsent, setHealthConsent] = useState(false)
   const [sheet, setSheet] = useState(false)
-  const [candidates, setCandidates] = useState(false)
-  const [rejected, setRejected] = useState<string[]>([])
-  const [photoType, setPhotoType] = useState("")
+  const [photo, setPhoto] = useState<PhotoState | null>(null)
+  const [purpose, setPurpose] = useState<PhotoPurpose>("pill")
+  const [saveCrops, setSaveCrops] = useState(false)
+  const [prevSession, setPrevSession] = useState<string | undefined>()
+  // 사진 결과를 확인하는 동안에는 일반 질문을 막는다 (오류 화면은 제외)
+  const candidates = photo !== null && photo.phase !== "error"
   const upload = useRef<HTMLInputElement>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
@@ -48,7 +68,43 @@ function ChatView() {
     if (send(question, confirmed)) setText("")
   }
   const login = () => router.push("/mypage")
-  const isEmpty = !messages.length && status === "idle" && !candidates
+
+  // 사진 선택 → 업로드(presign) → 사진 종류에 따라 알약(OCR+CNN) / 처방전(OCR+LLM) 인식
+  const recognize = async (files: File[]) => {
+    setStatus("idle")
+    try {
+      setPhoto({ phase: "working", text: "사진을 올리고 있어요" })
+      if (purpose === "pill") {
+        const [frontKey, backKey] = await Promise.all(files.slice(0, 2).map((file) => uploadPhoto(file, "pill")))
+        setPhoto({ phase: "working", text: "알약을 확인하고 있어요 (최대 1분)" })
+        const step = await analyzePill({ frontKey, backKey, saveCrops, prevSessionId: prevSession })
+        setPhoto({ phase: "pill", step })
+      } else {
+        const key = await uploadPhoto(files[0], "prescription")
+        setPhoto({ phase: "working", text: "처방전을 읽고 있어요 (최대 1분)" })
+        setPhoto({ phase: "rx", result: await recognizePrescription(key) })
+      }
+    } catch (error) {
+      setPhoto({ phase: "error", message: errorMessage(error) })
+    } finally {
+      setPrevSession(undefined)
+    }
+  }
+  const askAbout = (drugName: string) => {
+    setPhoto(null)
+    setTimeout(() => ask(`${drugName}에 대해 알려주세요`, true), 0)
+  }
+  const reopen = (prev?: string) => {
+    setPhoto(null)
+    setPrevSession(prev)
+    if (prev) {
+      // 재촬영은 같은 알약 종류로 바로 사진 선택
+      setPurpose("pill")
+      if (upload.current) upload.current.multiple = true
+      upload.current?.click()
+    } else setSheet(true)
+  }
+  const isEmpty = !messages.length && status === "idle" && photo === null
 
   return (
     <div className="relative mx-auto max-w-[1120px]">
@@ -63,7 +119,7 @@ function ChatView() {
                 className="min-h-11 px-3"
                 onClick={() => {
                   reset()
-                  setCandidates(false)
+                  setPhoto(null)
                 }}
               >
                 새 대화 <Plus size={15} className="ml-1 inline" />
@@ -78,20 +134,25 @@ function ChatView() {
                 onFollowUp={(question) => ask(question)}
               />
             ))}
-            {candidates && (
-              <DrugCandidates
-                photoType={photoType}
-                rejected={rejected}
-                onConfirm={(drugName) => {
-                  setCandidates(false)
-                  setTimeout(() => ask(`${drugName}에 대해 알려주세요`, true), 0)
-                }}
-                onReject={(drugName) => setRejected((previous) => [...previous, drugName])}
-                onRetry={() => {
-                  setCandidates(false)
-                  setSheet(true)
-                }}
-              />
+            {photo?.phase === "working" && (
+              <div className="flex items-center gap-3 rounded-2xl border p-5 text-slate-600">
+                <LoaderCircle className="animate-spin text-blue-600" size={24} />
+                {photo.text}
+              </div>
+            )}
+            {photo?.phase === "error" && (
+              <div className="rounded-2xl border p-5">
+                <p className="text-sm text-red-600">{photo.message}</p>
+                <button className="mt-3 min-h-11 text-sm text-blue-600" onClick={() => reopen()}>
+                  다시 사진 첨부하기
+                </button>
+              </div>
+            )}
+            {photo?.phase === "pill" && (
+              <PillDialog initial={photo.step} onConfirm={askAbout} onRetake={(sid) => reopen(sid)} />
+            )}
+            {photo?.phase === "rx" && (
+              <RxCandidates result={photo.result} onAsk={askAbout} onRetry={() => reopen()} />
             )}
             <ChatStatusNotice
               status={status}
@@ -119,13 +180,11 @@ function ChatView() {
         ref={upload}
         type="file"
         accept="image/*"
+        multiple={purpose === "pill"}
         className="hidden"
         onChange={(event) => {
-          if (event.target.files?.length) {
-            setRejected([])
-            setCandidates(true)
-            setStatus("idle")
-          }
+          const files = Array.from(event.target.files ?? [])
+          if (files.length) recognize(files)
           event.target.value = ""
         }}
       />
@@ -143,9 +202,13 @@ function ChatView() {
       )}
       {sheet && (
         <PhotoSourceModal
-          onSelect={(label) => {
-            setPhotoType(label)
+          saveCrops={saveCrops}
+          setSaveCrops={setSaveCrops}
+          onSelect={(value) => {
+            setPurpose(value)
             setSheet(false)
+            // 다시 그리기 전에 바로 열리므로 여러 장 선택 여부를 직접 지정
+            if (upload.current) upload.current.multiple = value === "pill"
             upload.current?.click()
           }}
           onClose={() => setSheet(false)}

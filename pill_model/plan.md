@@ -237,15 +237,17 @@ pill_model/
 - [x] IAM 2차 apply (prescription·Bedrock) (2026-10-23) / [ ] Bedrock 첫 호출 AccessDenied 없음 (EC2)
 - [x] (PC) 빌드 검사: cv2 4.10.0 · opencv 패키지 1개 · numpy 2.1.3 · pillow 11.3.0 · rembg 1회 실행
 - [x] (PC) OCR 모델 "Using cached files", --network none 에서 엔진 생성
-- [ ] `/health` 정상, image_index_size > 0
+- [x] (PC) 워커 API + pytest 30개 통과(실제 모델 통합 6개 = Colab 동일) (2026-10-23)
+- [ ] `/health` 정상, image_index_size > 0 (EC2 — PC 는 데이터 버킷 권한 없음)
 - [x] (PC) fixtures 대조 3-5 — 지문까지 전부 동일 / [ ] EC2 재확인: 알약 3쌍 + 처방전 3장 모두 글자 동일·최종 결과 동일 (다르면 원인 보고)
 - [ ] 알약 1건 평균 ≤ 30초 (배경 제거 포함 따로), 처방전 1건 EC2 5회 평균 기록
-- [ ] 백엔드 → 워커 호출 성공, 인터넷에서 8000 접근 불가 확인
+- [x] (PC) 백엔드 `modules/pill`·`ocr(worker)` → 워커 컨테이너 호출 성공 (2026-10-23)
+- [ ] (EC2) 백엔드 → 워커 호출 성공, 인터넷에서 8000 접근 불가 확인
 - [ ] `git diff`에 계정 번호·버킷 이름·토큰·모델 파일·사진·노트북 없음
 - [ ] devlog.md 기록
 
 ## 7. 아직 열린 항목
 - 배경 제거 모델 (3-4 실험 후 사용자 선택, 라이선스 포함)
-- crop 저장 동의 UI 문구 위치, 처방전 "빈칸"(null) 표시 (프런트 팀)
-- 업로드 presign 운영 동작 (팀 작업 중 — 10-23 기준 미동작)
+- ~~crop 저장 동의 UI·처방전 빈칸 표시~~ → 10-23 프런트 반영(채팅 사진 첨부 모달, 마이페이지 약 등록)
+- ~~업로드 presign 운영 동작~~ → 백엔드는 동작, 프런트 연결 10-23 반영 (운영 반영은 master 머지·배포 후)
 - CPU 크레딧(standard): 알약·처방전이 CPU를 나눠 씀 → EC2 측정 후 인스턴스 크기 재검토

@@ -1,25 +1,41 @@
 import { Bell, CalendarDays, Camera, ChevronRight, Pill, Settings, UserRound } from "lucide-react"
-import type { HealthProfile } from "@/types/health"
-import { intakeSlots, type MedicationDraft, type MyPageViewName } from "../types"
+import type { HealthProfile, RegisteredMedication } from "@/types/health"
+import { intakeSlots, type MyPageViewName } from "../types"
+
+/** 복용 정보 한 줄: 1일 3회 · 1회 1정 · 7일분 (모르는 값은 빼고 표시) */
+const dosageText = (item: RegisteredMedication) =>
+  [
+    item.times && `1일 ${item.times}회`,
+    item.amount && `1회 ${item.amount}정`,
+    item.days && `${item.days}일분`,
+    item.start && `${item.start} 시작`,
+  ]
+    .filter(Boolean)
+    .join(" · ")
 
 export default function MyPageHome({
   profile,
   checked,
   toggleCheck,
-  savedMedication,
   onNavigate,
   onRegisterMedicine,
 }: {
   profile: HealthProfile
   checked: string[]
   toggleCheck: (key: string) => void
-  /** OCR로 등록한 약 (없으면 null) */
-  savedMedication: MedicationDraft | null
   onNavigate: (view: MyPageViewName) => void
   onRegisterMedicine: () => void
 }) {
+  // 건강정보에서 고른 약 + 약 등록(처방전 인식)으로 저장한 약. 같은 이름이면 하나로 합치고 복용 정보를 붙인다
+  const registered = profile.registeredMedications ?? []
+  const byName = new Map(registered.map((item) => [item.name, item]))
   const profileMedicines = profile.medicines || []
-  const medicines = [...profileMedicines, ...(savedMedication ? [savedMedication.name] : [])]
+  const medicines = [
+    ...profileMedicines.map((name) => ({ name, info: byName.get(name), source: "건강정보에서 등록" })),
+    ...registered
+      .filter((item) => !profileMedicines.includes(item.name))
+      .map((item) => ({ name: item.name, info: item, source: "약 등록(처방전 인식)" })),
+  ]
   const shortcuts = [
     { label: "약 등록", icon: Camera, action: onRegisterMedicine },
     { label: "복약 캘린더", icon: CalendarDays, action: () => onNavigate("calendar") },
@@ -77,16 +93,15 @@ export default function MyPageHome({
               {profile.medicineStatus || "아직 등록한 약이 없어요."}
             </p>
           )}
-          {medicines.map((drug, index) => (
-            <div key={`${drug}-${index}`} className="flex min-h-20 items-center gap-3">
-              <Pill className="text-blue-600" size={22} />
+          {medicines.map((drug) => (
+            <div key={drug.name} className="flex min-h-20 items-center gap-3">
+              <Pill className="shrink-0 text-blue-600" size={22} />
               <div>
-                <b className="font-medium">{drug}</b>
-                <p className="mt-1 text-sm text-slate-500">
-                  {savedMedication && index === profileMedicines.length
-                    ? `1회 ${savedMedication.amount}정 · 하루 ${savedMedication.times}회 · ${savedMedication.days}일`
-                    : "건강정보에서 등록"}
+                <b className="font-medium">{drug.name}</b>
+                <p className="mt-1 text-sm text-slate-600">
+                  {drug.info ? dosageText(drug.info) : "복용 정보 없음 · 약 등록에서 입력할 수 있어요"}
                 </p>
+                <p className="text-xs text-slate-400">{drug.source}</p>
               </div>
             </div>
           ))}

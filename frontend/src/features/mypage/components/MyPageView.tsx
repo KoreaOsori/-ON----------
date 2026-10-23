@@ -36,7 +36,6 @@ export default function MyPageView() {
   const [checked, setChecked] = useState<string[]>([])
   const [ocr, setOcr] = useState<OcrStep>(0)
   const [draft, setDraft] = useState<MedicationDraft>(initialDraft)
-  const [saved, setSaved] = useState(false)
 
   const toggleCheck = (key: string) =>
     setChecked((previous) =>
@@ -45,8 +44,8 @@ export default function MyPageView() {
 
   const deleteData = () => {
     setChecked([])
-    setSaved(false)
     setDraft(initialDraft)
+    setProfile({ ...profile, registeredMedications: [] })
     setConsents([false, false, false, false])
   }
 
@@ -83,7 +82,12 @@ export default function MyPageView() {
         draft={draft}
         setDraft={setDraft}
         onSave={() => {
-          setSaved(true)
+          const { name, amount, times, days, start } = draft
+          const others = (profile.registeredMedications ?? []).filter((item) => item.name !== name.trim())
+          setProfile({
+            ...profile,
+            registeredMedications: [...others, { name: name.trim(), amount, times, days, start }],
+          })
           setOcr(4)
         }}
         onDone={() => {
@@ -110,7 +114,6 @@ export default function MyPageView() {
           profile={profile}
           checked={checked}
           toggleCheck={toggleCheck}
-          savedMedication={saved ? draft : null}
           onNavigate={setView}
           onRegisterMedicine={() => setOcr(1)}
         />

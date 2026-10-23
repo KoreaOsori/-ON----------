@@ -165,3 +165,76 @@
 - 처방전 3장(bag_0001·rx_0001·약봉투7): **지문 3/3 동일**, 줄 수 27·20·116 동일, `decide(lines, llm_result)` = fixture drugs (다른 약 0).
 - 결과 `{"pill_pass": true, "rx_pass": true, "fingerprints_all_same": true}`
 - 참고 시간(PC 8 CPU, 측정 1회라 평균 아님): 알약 사진 1장 prepare 6.9~9.9초, 처방전 OCR 8.5~10.4초. EC2(t3.medium 2 vCPU)는 더 느릴 것(추론) → EC2 5회 평균 필요.
+
+## 2026-10-23 — S3 모델 업로드, presign 확인, 워커 권한 시뮬레이션
+
+### S3 업로드 (사용자 요청으로 실행)
+- `aws s3 sync deploy/ s3://<model_bucket>/models/ --exclude "*/.cache/*" --exclude "*Thumbs.db"` → 19개 객체, 191,174,651 바이트.
+  dryrun 으로 목록 먼저 확인. cnn_v5.pt·gallery_v5.npy·config_rx.json·server_det pdiparams 크기 로컬과 동일.
+
+### 업로드(presign) 동작 확인
+- 운영 백엔드 `POST /api/v1/uploads/presign` (guest, purpose=pill) → HTTP 200, 업로드 버킷 `pill/2026/10/23/guest/<uuid>.png` URL 발급(300초, 10MB). PUT 은 하지 않음.
+- 백엔드 역할 `pill-check-dev-ec2-app`: 업로드 버킷 Put/Get 있음. 버킷 CORS: 백엔드 EC2 공인 IP 오리진에서 GET·PUT 허용.
+- 버킷에는 `pill/2026/10/22/guest/…png` 26바이트 1개(테스트 흔적)만 있음, `prescription/` 없음.
+- 원인: 프런트 `features/mypage/api.ts` 에 presign·ocr 함수는 있으나 `MedicineRegistration.tsx` 는 호출하지 않고 `setTimeout` 데모 흐름 → **백엔드 presign 은 동작, 프런트 미연결**.
+- 백엔드 `core/config.py` 는 `extra="ignore"` → `.env` 에 PILL_* 를 먼저 넣어도 기동에는 영향 없음(코드에서 아직 안 읽음).
+
+### 백엔드 EC2 SSM 원격 명령 — 실행 못 함
+- `.env` 키 이름만 보는 읽기 전용 `aws ssm send-command` 가 Claude Code 자동 모드 보안 판정으로 거부됨 → 우회하지 않고 사용자에게 수동 절차 안내.
+
+### 워커 역할 권한 (iam simulate-principal-policy, 조회)
+- allowed: Bedrock InvokeModel(프로필·us-east-2/us-west-2 기반 모델), 모델 버킷 models/* Get, crops/* Put, silver drug_product Get, 업로드 prescription/*·pill/* Get
+- implicitDeny(의도대로): 다른 모델(sonnet), models/* Put, 다른 silver 테이블, 업로드 버킷 Put
+- 정책 평가 기준 확인이며 실제 호출은 EC2 컨테이너에서 확인 필요.
+- 워커 EC2: running ok/ok, SSM Online, CPUCreditBalance 480 (t3.medium 최대 576).
+
+## 2026-10-23 — 워커 API · 백엔드 연결 · 프런트 연동 (PC)
+
+### 워커 API (`app/main.py` 외 6개, yakon_* 수정 없음)
+- `settings.py`(환경변수) · `schemas.py`(camelCase, yakon 출력 dict 는 키만 변환) · `sessions.py`(메모리 TTL 10분, 처방전은 drugs 만 보관) ·
+  `storage.py`(key 형식 검사·10MB·crop 저장, 경로에 사용자 ID 없음) · `images.py`(silver item_seq·pills 두 컬럼 범위 읽기, 실패해도 기동) · `bg.py`(알파 없을 때만 rembg, 긴 변 2048 축소, bria 금지)
+- 엔드포인트: `/health`, `/pill/analyze|reject|imprint-choice|refine|confirm`, `/rx/analyze|confirm`. 인증 `X-Worker-Token`(hmac 비교), 동시성 1(Semaphore, 60초 대기 후 503 busy).
+- 오류 코드: 400 bad_key/bad_image, 404 not_found, 410 expired, 413 too_large, 502 llm_unavailable(Bedrock 예외, OCR 결과 버림), 503 not_ready/busy.
+- 재촬영: `prevSessionId` 로 시도 횟수를 이어받아 on_reject 흐름(각인 입력 → 재촬영 → 종료) 유지.
+
+### 테스트 (컨테이너, pytest 8.4.2 는 실행 때만 설치) — 30 passed (119초)
+- 단위·API(가짜 모델) 24개: 인증 401, key 규칙, 대화 흐름 전체, crop 동의 시에만 저장, 세션 만료 410, rx 502 등.
+- **통합(실제 모델 + fixture, LLM 은 fixture llm_result 재생) 6개**: 알약 3쌍 step·band·imprintMatch·Top-3 = Colab, 처방전 3장 API 응답 drugs = fixture drugs.
+
+### 백엔드 (승인: "교체 배포 하면 좋을 것 같은데")
+- 새 `modules/pill` (워커 전달, 업로드 owner(회원 ID/guest) 확인) · `modules/ocr` 에 `OCR_PROVIDER=worker` 추가(기존 mock/claude/textract 유지),
+  응답은 (b) 기존 candidates 유지(숫자는 ui=미리 채움만, 나머지 null) + drugs·sessionId·privacy 등 추가, `/ocr/prescriptions/confirm` 추가.
+- `/ocr/prescriptions` 를 비회원(guest 경로)도 쓸 수 있게 CurrentUser → OptionalUser (채팅 사진 첨부가 비회원도 가능하므로).
+- config: `pill_worker_url`, `pill_worker_token`, `pill_worker_timeout_seconds=90`. httpx 는 이미 의존성에 있음(uv.lock 변경 없음).
+- 백엔드 pytest 16 passed (새 7개). ruff: 새·수정 파일 오류 0 (기존 44건은 그대로).
+- PC 실연결: 워커 컨테이너(8001, LOCAL_UPLOAD_DIR) ↔ 로컬 백엔드(8000) — 알약 analyze→reject(top1)→reject(top3)→imprint-choice→refine→confirm 전부 200,
+  1위 201505259·Top-3 fixture 동일. 남의 owner key 403, 토큰 없이 워커 직접 401, LLM 미설정 rx 503.
+  (이때 analyze 69초는 백그라운드 벤치와 CPU 를 같이 써서 측정값 아님)
+
+### 프런트 (사용자가 프런트 담당 겸임 — 직접 요청)
+- `features/photo/api.ts`: 업로드(presign → S3 PUT, jpg/png/webp 아니거나 10MB 초과면 브라우저에서 JPEG 변환), 알약·처방전 API, 오류 문장.
+- 채팅 사진 첨부: 사진 종류 선택(알약 앞·뒤 2장 / 처방전 1장) + crop 저장 동의 체크박스(동의 문구 + 면책 문장) → `PillDialog`(top1·top3·각인·색·재촬영·종료, 문장·버튼은 워커 응답 그대로) / `RxCandidates`.
+  약 확정 → 기존 챗봇 질문으로 연결. 데모 `DrugCandidates.tsx` 삭제.
+- 사진 종류 판단: 사용자가 고르는 방식(Plan A) + 잘못 고른 경우 안내(처방전에서 약 0개 → 알약으로 다시, 알약 quality 문제 → 종류 바꿔 다시).
+- 마이페이지 약 등록: 실제 인식 → 약 여러 개면 선택, 이름 미확정이면 후보 선택(→ `/ocr/prescriptions/confirm` 으로 용법 상한 검증), ui 가 "미리 채움"이 아닌 칸 강조, 빈칸은 비워 둠.
+  저장하면 **내 복용약에 누적**(건강정보와 함께 브라우저 저장), 각 약 아래 "1일 n회 · 1회 n정 · n일분 · 시작일" 표시.
+- typecheck·lint 통과.
+
+### 막힌 것
+- 워커 EC2 SSM 명령·AWS 조회가 Claude Code 자동 모드 보안 판정으로 거부(설정 규칙 추가 전) → EC2 점검은 아직 못 함.
+
+### PC 벤치 (컨테이너 `--network none`, 8 CPU — EC2 t3.medium 은 더 느릴 것, 추론)
+- 알약 1건(사진 2장, 배경 이미 제거된 fixture): 29002 평균 16.4초 · 34342 15.2초 · 39916 17.2초 (첫 요청 제외 3회), Top-3 전부 Colab 동일.
+- 배경 제거 3개 비교 — fixture 알약을 단색/체크무늬 배경에 **합성**해 JPEG 로 만든 뒤 rembg 로 다시 지움 (코드당 2쌍, 총 6쌍):
+
+| 모델 | 배경 | 배경 제거 평균(최대) 초 | quality 통과 | Colab 1위 일치 | 정답 Top-3 안 |
+|---|---|---|---|---|---|
+| u2netp | 단색 | 1.74 (2.68) | 2/6 | 4/6 | 6/6 |
+| u2netp | 무늬 | 1.49 (1.93) | 2/6 | 4/6 | 6/6 |
+| isnet-general-use | 단색 | 8.68 (20.42) | 2/6 | 3/6 | 4/6 |
+| isnet-general-use | 무늬 | 5.31 (7.27) | 2/6 | 4/6 | 6/6 |
+| silueta | 단색 | 2.10 (2.70) | 2/6 | 4/6 | 6/6 |
+| silueta | 무늬 | 2.38 (3.08) | 2/6 | 4/6 | 6/6 |
+
+- 해석(확신 낮음): 합성 사진이라 실제 촬영과 다름. quality 2/6 은 세 모델 공통이라 모델보다 합성 방식(알약 가장자리 등) 영향일 가능성. isnet 은 느리고 단색에서 정확도도 낮음.
+  → 기본값 u2netp 유지(가장 빠름, 정확도 동률). 최종 선택은 실제 촬영 사진으로 EC2 에서 재측정 후.
