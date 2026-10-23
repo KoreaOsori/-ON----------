@@ -347,3 +347,10 @@ def test_prompt_rules_for_style_changes_requested_after_swagger_review():
         assert needle in SYSTEM_PROMPT
     for needle in ("한 번에 요약", "고시일(날짜)은 말하지 않습니다", "먹는 약, 바르는 약"):
         assert needle in CONTRA_PROMPT_ADDENDUM
+
+
+def test_prompt_has_short_answer_examples():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    for needle in ("답변 예시", "상담을 권하는 문장을 따로 붙이지 않습니다", "목록을 붙이지 않습니다", "주의사항은 다음과 같아요"):
+        assert needle in SYSTEM_PROMPT

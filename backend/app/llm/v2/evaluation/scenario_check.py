@@ -21,6 +21,7 @@ from typing import Any
 
 from app.llm.v2.agent import build_agent
 from app.llm.v2.config import V2Settings
+from app.llm.v2.db import database_label
 from app.llm.v2.evaluation.dataset import GENERATED_DIR
 from app.llm.v2.prompts import SAFETY_FOOTER
 
@@ -169,7 +170,7 @@ async def main(args: argparse.Namespace) -> int:
     settings = V2Settings.from_env()
     if args.model:
         settings = dataclasses.replace(settings, default_model=args.model)
-    print(f"DB={settings.db_host}:{settings.db_port}/{settings.db_name}  모델={settings.llm_model_id or settings.default_model}\n")
+    print(f"DB={database_label(settings)}  모델={settings.llm_model_id or settings.default_model}\n")
 
     agent = build_agent(settings)
     try:

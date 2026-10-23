@@ -114,11 +114,13 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
 {
   "question": "라식스주사랑 알보젠겐타마이신황산염주 같이 써도 돼요?",
   "product_key": "drug:195700010",
+  "products": ["라식스주사", "알보젠겐타마이신황산염주"],
   "profile_context": "30대 임산부"
 }
 ```
 
 - `product_key`는 `status`가 `needs_clarification`일 때 사용자가 고른 후보의 값입니다. 서버는 대화 상태를 저장하지 않으므로 같은 질문에 이 값을 붙여 다시 보냅니다.
+- `products`는 처방전·약 사진(OCR) 등으로 이미 알고 있는 제품명 목록입니다(최대 8개, 이름당 120자 이하, 중복·빈 값 제거). 질문에 약 이름이 없어도("이 약들 같이 먹어도 돼요?") 이 목록으로 조회하고 이름을 다시 묻지 않습니다. 병용 확인은 5개까지라 6개 이상이면 줄여 달라고 안내합니다(나눠 확인하면 묶음 사이 조합이 빠지기 때문). 정확한 이름이 아니면 일반 질문과 같은 방식으로 후보 되묻기·근거 없음이 나옵니다.
 - `profile_context`는 모델에 **데이터로만** 전달됩니다(1000자 이하). 질문이 500자(설정값 `max_question_chars`)를 넘으면 422입니다.
 
 응답:
@@ -220,12 +222,12 @@ LLM_V2_AUTH_MODE=ec2_role
 - 검사는 `build_agent`(= HTTP API 시작, `answer()` 첫 호출)에서만 합니다. 평가 스크립트(`retrieval_eval` 등)는 영향받지 않습니다.
 - 오류 메시지에는 자격증명 값이 아니라 방식 이름(`env`, `iam-role` 등)만 나옵니다.
 
-**DB 연결** — `PGHOST`(또는 `DB_HOST`)가 **없으면** v1(`database.py`)과 같은 고정 RDS 설정을 씁니다: 호스트 `pill-check-dev-postgres…rds.amazonaws.com`, DB `pill`, 포트 5432, Secrets Manager 시크릿 `rds!db-71cf9992-…`(연결마다 새로 읽음), TLS `verify-full` + v2 폴더의 RDS CA 번들(`v2/certs/us-east-1-bundle.pem`, v1의 같은 파일을 복사해 둔 것이라 v1과 독립적). 그래서 EC2에서는 DB 환경변수가 필요 없습니다.
+**DB 연결** — `PGHOST`(또는 `DB_HOST`)가 **없으면** DB 위치(호스트·포트·DB 이름)를 코드에 적지 않고 앱 시크릿 `pill-check/dev/app`의 `DB_HOST`, `DB_PORT`, `DB_NAME`에서 읽습니다(`db.resolve_endpoint`, 프로세스 안에서 한 번만 읽고 보관). 시크릿 이름은 `DB_SECRET_ID`로 바꿀 수 있습니다(백엔드와 같은 이름). 접속 계정은 RDS가 관리하는 시크릿 `rds!db-71cf9992-…`에서 연결마다 새로 읽고, 앱 시크릿의 `DB_USERNAME`·`DB_PASSWORD`는 쓰지 않습니다. TLS는 `verify-full` + v2 폴더의 RDS CA 번들(`v2/certs/us-east-1-bundle.pem`)입니다. 시크릿을 읽지 못하면 DB 연결 오류(503)가 됩니다. EC2 인스턴스 역할에 `pill-check/dev/app`과 RDS 시크릿 읽기 권한이 필요합니다.
 
-- `PGHOST`가 **있으면** 고정 설정을 쓰지 않고 환경변수만 씁니다(아래 "로컬 개발 DB"의 평가용 로컬 DB). 일부만 주면 나머지는 비어 오류로 드러납니다.
-- 고정 설정 위에서도 `PGDATABASE`, `RDS_SECRET_ARN`, `PGSSLROOTCERT`, `PGSSLMODE`로 항목별로 바꿀 수 있습니다.
+- `PGHOST`가 **있으면** 앱 시크릿을 쓰지 않고 환경변수만 씁니다(아래 "로컬 개발 DB"의 평가용 로컬 DB). 일부만 주면 나머지는 비어 오류로 드러납니다.
+- 시크릿 설정 위에서도 `PGPORT`, `PGDATABASE`, `RDS_SECRET_ARN`, `PGSSLROOTCERT`, `PGSSLMODE`로 항목별로 바꿀 수 있습니다(환경변수가 우선).
 - `PGHOST`를 RDS 호스트(`*.rds.amazonaws.com`)로 직접 주고 `PGSSLROOTCERT`를 생략하면 같은 CA 번들을 씁니다. 그 밖의 호스트에는 적용하지 않습니다.
-- 주의: 로컬에서 `PGHOST`를 설정하지 않고 실행하면 위 고정 RDS에 연결을 시도합니다(VPC 밖이면 실패, 읽기 전용 연결).
+- 주의: 로컬에서 `PGHOST`를 설정하지 않고 실행하면 AWS 자격증명으로 앱 시크릿을 읽어 RDS에 연결을 시도합니다(VPC 밖이면 실패, 읽기 전용 연결).
 - `v2/certs/us-east-1-bundle.pem`은 AWS 공식 RDS CA 번들(공개 신뢰 앵커 3개, 개인 키 아님)이며 `certs/.gitignore`로 git에 포함됩니다. CA가 바뀌면 [공식 번들](https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem)로 갱신하세요.
 
 ## 환경변수
@@ -233,8 +235,9 @@ LLM_V2_AUTH_MODE=ec2_role
 | 이름 | 설명 | 기본값 |
 |---|---|---|
 | (리전) | **us-east-1 고정**. 임베딩·Claude·Secrets Manager 모두 이 리전을 쓰고, 환경변수로 바꿀 수 없다(`config.REGION`) | us-east-1 |
-| `PGHOST`, `PGPORT`, `PGDATABASE` (`DB_HOST` 등도 인식) | DB 위치. **`PGHOST`를 주면 v1 고정 RDS 설정 대신 환경변수만 사용** | v1 고정 RDS / 5432 / `pill` |
-| `RDS_SECRET_ARN` | 연결마다 여기서 사용자/비밀번호를 읽는다(시크릿 이름도 가능) | v1 고정 시크릿(`PGHOST`가 없을 때) |
+| `PGHOST`, `PGPORT`, `PGDATABASE` (`DB_HOST` 등도 인식) | DB 위치. **`PGHOST`를 주면 앱 시크릿 대신 환경변수만 사용** | 앱 시크릿의 `DB_HOST`, `DB_PORT`, `DB_NAME` |
+| `RDS_SECRET_ARN` | 연결마다 여기서 사용자/비밀번호를 읽는다(시크릿 이름도 가능) | RDS 관리 시크릿(`PGHOST`가 없을 때) |
+| `DB_SECRET_ID` | DB 위치(`DB_HOST`, `DB_PORT`, `DB_NAME`)를 읽을 앱 시크릿 이름. `PGHOST`가 없을 때만 사용 | `pill-check/dev/app` |
 | `PGUSER`, `PGPASSWORD` | 시크릿을 쓰지 않을 때(로컬 개발) | — |
 | `PGSSLMODE`, `PGSSLROOTCERT` | `verify-full`(기본) / `require` / `disable`, RDS CA 번들 경로 | verify-full / `v2/certs` CA 번들(RDS 호스트일 때) |
 | `LLM_V2_AUTH_MODE` | AWS 자격증명 정책 `auto` / `ec2_role` / `default_chain` (위 "AWS 자격증명과 DB 연결") | auto |
@@ -365,13 +368,19 @@ uv run python -m app.llm.v2.evaluation.scenario_check --model sonnet   # 모델�
 
 팀 규칙상 EC2에서 코드를 직접 고치지 않으므로, 프롬프트를 다듬는 반복은 내 PC에서 실제 RDS(`product_search`)에 붙어서 하고, 마지막에 PR → master → EC2 pull·재빌드 후 같은 점검을 한 번 더 합니다.
 
-1. 터미널 하나에서 터널을 열어 둡니다(팀 문서 5-1. 내 PC의 5432가 쓰이고 있으면 `localPortNumber=15432`).
+1. RDS 호스트를 확인합니다(저장소에는 주소를 적지 않습니다). 시크릿 전체를 화면에 찍지 않도록 호스트만 꺼냅니다.
 
 ```powershell
-aws ssm start-session --target i-00d9e7255e6bcc7c6 --region us-east-1 --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com,portNumber=5432,localPortNumber=5432
+aws secretsmanager get-secret-value --secret-id pill-check/dev/app --region us-east-1 --query SecretString --output text | python -c "import sys,json; print(json.load(sys.stdin)['DB_HOST'])"
 ```
 
-2. 다른 터미널에서 연결 정보를 설정합니다. 비밀번호는 AWS 콘솔 Secrets Manager에서 찾고, 화면에 보이지 않게 입력해 명령 기록에 남기지 않습니다.
+2. 터미널 하나에서 터널을 열어 둡니다(팀 문서 5-1. 내 PC의 5432가 쓰이고 있으면 `localPortNumber=15432`).
+
+```powershell
+aws ssm start-session --target i-00d9e7255e6bcc7c6 --region us-east-1 --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=<RDS 호스트>,portNumber=5432,localPortNumber=5432
+```
+
+3. 다른 터미널에서 연결 정보를 설정합니다. 비밀번호는 AWS 콘솔 Secrets Manager에서 찾고, 화면에 보이지 않게 입력해 명령 기록에 남기지 않습니다.
 
 ```powershell
 cd backend
@@ -380,7 +389,7 @@ $p = Read-Host "RDS 비밀번호" -AsSecureString
 $env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p))
 ```
 
-3. 위의 점검 명령을 실행합니다. 이 계정은 팀이 공유하는 마스터 계정이므로, v2가 하는 읽기 전용 조회 외에는 아무것도 하지 않도록 주의하세요. 끝나면 `Remove-Item Env:PGPASSWORD`로 지웁니다.
+4. 위의 점검 명령을 실행합니다. 이 계정은 팀이 공유하는 마스터 계정이므로, v2가 하는 읽기 전용 조회 외에는 아무것도 하지 않도록 주의하세요. 끝나면 `Remove-Item Env:PGPASSWORD`로 지웁니다.
 
 - 연결은 `localhost`라서 인증서 호스트명 검사(`verify-full`)가 맞지 않아 `PGSSLMODE=require`를 씁니다. 이 설정은 이 방식(터널)에서만 쓰세요.
 - 병용금기는 `dev_data/contraindication.sqlite`가 있으면 그 파일로, 없으면 RDS `gold.drug_contraindication`으로 켜집니다(로컬 DB에 `gold`가 없으면 `LLM_V2_CONTRA_SOURCE=off`).

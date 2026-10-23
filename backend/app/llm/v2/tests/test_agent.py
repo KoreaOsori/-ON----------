@@ -466,3 +466,33 @@ async def test_clarification_for_food_combination_adds_consult_note():
 
 def test_crisis_answer_uses_plain_hotline_name():
     assert "상담전화 109" in CRISIS_ANSWER and "자살예방" not in CRISIS_ANSWER
+
+
+# ---- 제품명 목록(products, OCR 등) 입력
+
+def test_clean_product_names_dedupes_and_limits():
+    from app.llm.v2.names import clean_product_names
+
+    assert clean_product_names(None) == [] and clean_product_names([]) == []
+    assert clean_product_names(["  아로나민 골드정 ", "아로나민골드정", "", "코푸시럽에스"]) == ["아로나민 골드정", "코푸시럽에스"]
+    assert len(clean_product_names([f"약{i}" for i in range(20)])) == 8
+    assert len(clean_product_names(["가" * 500])[0]) == 120
+
+
+async def test_products_are_sent_as_data_block_and_prompt_explains_them():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(response(search_call()), response(text_block("한 문장")))
+    result = await make_agent(model, FakeTool(FOUND)).run("이 약 하루에 몇 번 먹어요?", products=["타이레놀정500밀리그람", " 타이레놀정500밀리그람 "])
+    first_user = model.calls[0]["messages"][0]["content"]
+    assert "[확인된 제품명]\n- 타이레놀정500밀리그람" in first_user and first_user.count("타이레놀정500밀리그람") == 1
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM
+
+    assert "[확인된 제품명]" in SYSTEM_PROMPT and "check_contraindication" not in SYSTEM_PROMPT and result.grounded
+    assert "6개 이상이면" in CONTRA_PROMPT_ADDENDUM and "[확인된 제품명]" in CONTRA_PROMPT_ADDENDUM
+
+
+async def test_no_products_means_no_block():
+    model = ScriptedModel(response(text_block("x")))
+    await make_agent(model, FakeTool(FOUND)).run("질문")
+    assert "[확인된 제품명]" not in model.calls[0]["messages"][0]["content"]

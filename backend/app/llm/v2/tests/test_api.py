@@ -26,11 +26,13 @@ class FakeAgent:
     def __init__(self, result=GOOD, delay=0.0, error=None):
         self.result, self.delay, self.error = result, delay, error
         self.calls, self.closed, self.active, self.peak = [], False, 0, 0
+        self.products_seen = []
 
     tool_names = ["search_drug_info", "check_contraindication"]
 
-    async def run(self, question, profile_context=None, product_key=None):
+    async def run(self, question, profile_context=None, product_key=None, products=None):
         self.calls.append((question, profile_context, product_key))
+        self.products_seen.append(products)
         self.active += 1
         self.peak = max(self.peak, self.active)
         try:
@@ -75,6 +77,25 @@ def test_ask_passes_product_key_and_profile():
         )
     assert response.status_code == 200
     assert agent.calls == [("보관은?", "30대 임산부", "drug:195700010")]
+
+
+def test_ask_passes_products_list():
+    client, agent = client_for()
+    with client:
+        response = client.post("/llm/v2/ask", json={"question": "이 약들 같이 먹어도 돼요?", "products": ["아로나민골드정", "코푸시럽에스"]})
+    assert response.status_code == 200
+    assert agent.products_seen == [["아로나민골드정", "코푸시럽에스"]]
+
+
+def test_ask_products_validation():
+    client, agent = client_for()
+    with client:
+        post = lambda products: client.post("/llm/v2/ask", json={"question": "a", "products": products}).status_code  # noqa: E731
+        assert post([f"약{i}" for i in range(9)]) == 422  # 최대 8개
+        assert post([""]) == 422
+        assert post(["x" * 121]) == 422
+        assert post("아로나민골드정") == 422  # 배열이 아니다
+    assert agent.calls == []
 
 
 def test_ask_validation_errors():

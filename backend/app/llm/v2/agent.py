@@ -51,6 +51,7 @@ from app.llm.v2.prompts import (
     build_clarification_answer,
     build_user_content,
 )
+from app.llm.v2.names import clean_product_names
 from app.llm.v2.safety import is_crisis, is_emergency, is_stop_question
 from app.llm.v2.tools import TOOL_NAME, DrugSearchTool, Evidence
 
@@ -186,7 +187,11 @@ class DrugInfoAgent:
         return result(outcome.text, outcome.is_error)
 
     async def run(
-        self, question: str, profile_context: str | None = None, product_key: str | None = None
+        self,
+        question: str,
+        profile_context: str | None = None,
+        product_key: str | None = None,
+        products: list[str] | None = None,
     ) -> AgentAnswer:
         started = time.monotonic()
         question = (question or "").strip()[: self._limits.max_question_chars]
@@ -199,7 +204,7 @@ class DrugInfoAgent:
         if not emergency and is_stop_question(question):  # 끊어도 되는지는 근거 검색 없이 상담 안내로 답한다(응급이면 아래 일반 경로의 119 안내가 우선)
             return AgentAnswer(STOP_CONSULT_ANSWER, stop_reason="consult")
         budget = Budget(self._limits)
-        messages: list[dict[str, Any]] = [{"role": "user", "content": build_user_content(question, profile_context, product_key)}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": build_user_content(question, profile_context, product_key, clean_product_names(products))}]
         evidence: list[Evidence] = []
         candidates: list[dict[str, Any]] = []
         tools_used: list[str] = []
@@ -353,17 +358,21 @@ async def _get_agent() -> DrugInfoAgent:
 
 
 async def answer(
-    question: str, profile_context: str | None = None, product_key: str | None = None
+    question: str,
+    profile_context: str | None = None,
+    product_key: str | None = None,
+    products: list[str] | None = None,
 ) -> AgentAnswer:
     """채팅 라우터가 부를 단일 진입점. 예외를 밖으로 던지지 않고 항상 AgentAnswer 를 돌려준다.
 
     사용 예(나중에 라우터에서 한 줄):  result = await llm_v2.agent.answer(question, profile_context)
     stop_reason 이 "needs_clarification" 이면 result.candidates 를 사용자에게 보여 주고, 사용자가 고른 제품의
     product_key 를 넣어 같은 질문으로 다시 호출한다: answer(question, profile_context, product_key="drug:...").
+    OCR 등으로 제품명 목록을 이미 알고 있으면 products=[...](최대 8개)로 넘긴다. 약 이름을 다시 묻지 않고 그 목록으로 조회한다.
     """
     try:
         agent = await _get_agent()
-        return await agent.run(question, profile_context, product_key)
+        return await agent.run(question, profile_context, product_key, products)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - 설정 누락 등. 상세 메시지(비밀 가능성)는 남기지 않는다.
