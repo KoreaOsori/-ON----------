@@ -50,8 +50,10 @@ from app.llm.v3.prompts import (
     STOP_CONSULT_ANSWER,
     SYSTEM_PROMPT,
     TIMEOUT_ANSWER,
+    TOO_MANY_MARKER,
     TOO_MANY_PRODUCTS_ANSWER,
     TRUNCATED_NOTICE,
+    build_no_match_answer,
     build_not_found_answer,
     build_single_product_combination_answer,
     not_found_line,
@@ -217,6 +219,7 @@ class DrugInfoAgent:
         missing: list[str] | None = None,
         terminal: list[bool] | None = None,
         clarifications: list[str] | None = None,
+        unmatched: list[str] | None = None,
     ) -> dict[str, Any]:
         def result(text: str, is_error: bool = False) -> dict[str, Any]:
             item = {"type": "tool_result", "tool_use_id": block["id"], "content": text}
@@ -253,6 +256,8 @@ class DrugInfoAgent:
         evidence.extend(outcome.evidence)
         if missing is not None:
             missing.extend(outcome.missing)
+        if unmatched is not None:
+            unmatched.extend(outcome.unmatched)
         if terminal is not None:
             terminal.append(outcome.terminal)
         # 되묻기(제품 후보)는 풀릴 때까지 '해결 안 됨'으로 들고 간다. 같은 이름으로 다시 찾아 근거가 나오면 풀린 것이다.
@@ -292,6 +297,7 @@ class DrugInfoAgent:
         final_text = ""
         truncated = False
         missing: list[str] = []  # 이름으로 찾지 못한 제품
+        unmatched: list[str] = []  # 제품은 찾았지만 관련 문단이 없었던 제품
         stop = "done"
         tokens_in = tokens_out = cache_read = cache_write = 0
 
@@ -332,7 +338,7 @@ class DrugInfoAgent:
                 messages.append({"role": "assistant", "content": blocks})
                 terminal: list[bool] = []
                 results = [
-                    await self._run_tool(b, budget, evidence, tools_used, pending, trace, given, missing, terminal, clarifications)
+                    await self._run_tool(b, budget, evidence, tools_used, pending, trace, given, missing, terminal, clarifications, unmatched)
                     for b in tool_uses
                 ]
                 if clarifications or (not evidence and terminal and all(terminal)):
@@ -349,6 +355,8 @@ class DrugInfoAgent:
             logger.error("agent 실패: %s", safe_error_name(exc))
             stop = "error"
 
+        if stop == "done" and not clarifications and final_text.strip().startswith(TOO_MANY_MARKER):
+            clarifications.append(TOO_MANY_PRODUCTS_ANSWER)  # 모델이 '합친 제품이 6개 이상'이라고 표시했다
         if (
             stop == "done" and not clarifications and not evidence and not tools_used
             and not final_text.strip().startswith(OFF_TOPIC_MARKER) and COMBINATION_QUESTION.search(question)
@@ -359,7 +367,7 @@ class DrugInfoAgent:
             elif len(given) == 1:
                 clarifications.append(build_single_product_combination_answer(given[0]))
         candidates = next(iter(pending.values()), [])  # 먼저 생긴 해결 안 된 되묻기
-        answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates, notice, missing)
+        answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates, notice, missing, unmatched)
         if clarifications and not emergency and stop not in ("error", "timeout", "budget", "refusal"):
             answer = AgentAnswer(clarifications[-1], stop_reason="needs_clarification", tools_used=tools_used, rounds=budget.rounds, candidates=candidates)
         answer.evidence = list(evidence)
@@ -388,9 +396,11 @@ class DrugInfoAgent:
         candidates: list[dict[str, Any]] | None = None,
         notice: str = EMERGENCY_NOTICE,
         missing: list[str] | None = None,
+        unmatched: list[str] | None = None,
     ) -> AgentAnswer:
         candidates = candidates or []
         missing = missing or []
+        unmatched = unmatched or []
         sources = list(dict.fromkeys(e.label for e in evidence))
         grounded = False
         if stop == "timeout":
@@ -411,7 +421,12 @@ class DrugInfoAgent:
         elif not evidence:
             # 근거가 하나도 없으면 모델의 문장은 쓰지 않는다. 도구를 한 번도 못 쓴 경우(약 이름 없음·범위 밖 질문)는 할 수 있는 일을 안내한다.
             if tools_used:
-                text = build_not_found_answer(missing) if missing else NO_EVIDENCE_ANSWER
+                if missing:
+                    text = build_not_found_answer(missing)
+                elif unmatched:
+                    text = build_no_match_answer(unmatched)
+                else:
+                    text = NO_EVIDENCE_ANSWER
             elif final_text.strip().startswith(OFF_TOPIC_MARKER):  # 모델이 약과 무관한 질문이라고 표시했다
                 text = NON_DRUG_ANSWER
             else:

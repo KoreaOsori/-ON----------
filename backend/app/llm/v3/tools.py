@@ -68,7 +68,7 @@ def build_tool_spec(allow_global_search: bool = False) -> dict[str, Any]:
                 "product_name": {
                     "type": "string",
                     "maxLength": MAX_NAME_CHARS,
-                    "description": "사용자가 언급한 제품명. 예: '타이레놀'. 모르면 생략하지 말고 사용자에게 되묻는다.",
+                    "description": "사용자가 언급한 제품명을 줄이거나 바꾸지 않고 그대로(예: '타이레놀 8시간'을 '타이레놀'로 줄이지 않기). 모르면 생략하지 말고 사용자에게 되묻는다.",
                 },
                 "question": {
                     "type": "string",
@@ -117,10 +117,13 @@ class ToolResult:
     clarification: str = ""
     # 병용 확인에서 이 결과가 가리키는 사용자 입력 이름(확정 못 한 제품 안내에 쓴다)
     requested: str = ""
+    # 제품은 찾았지만 질문과 관련된 문단이 없었던 제품명(코드가 '그 제품 정보에서 찾지 못했어요' 안내를 만든다)
+    unmatched: list[str] = field(default_factory=list)
 
     @property
     def terminal(self) -> bool:
         """근거 없이 되묻기나 '찾지 못함'으로만 끝나는 결과. 모델이 이 결과로 더 할 일이 없다."""
+        # unmatched(제품은 찾았지만 관련 문단 없음)는 넣지 않는다: 모델이 다른 표현·항목으로 다시 찾을 수 있다
         return bool(self.clarification) or (not self.evidence and not self.other_problem and bool(self.candidates or self.missing))
 
 
@@ -169,7 +172,11 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
         return ToolResult("\n".join(lines), candidates=candidates)
     if not outcome.hits:
         dropped = f" (거리 기준으로 제외된 문단 {outcome.filtered}개)" if outcome.filtered else ""
-        return ToolResult(f"[검색 결과 없음] '{shown}'에서 질문과 충분히 관련된 정보를 찾지 못했습니다.{dropped}")
+        found = short_name(outcome.products[0]["product_name"]) if len(outcome.products) == 1 else (requested_name or "")
+        return ToolResult(
+            f"[검색 결과 없음] '{shown}'에서 질문과 충분히 관련된 정보를 찾지 못했습니다.{dropped}",
+            unmatched=[found] if found else [],
+        )
 
     blocks: list[str] = []
     evidence: list[Evidence] = []
