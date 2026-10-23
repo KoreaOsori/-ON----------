@@ -293,3 +293,32 @@ async def test_name_without_manufacturer_or_with_unknown_one_keeps_all_candidate
     for text in ("고려인삼분말캡슐", "고려인삼분말캡슐 (없는제약)"):
         found = await _find_twins(text)
         assert [p["product_key"] for p in found["products"]] == ["health_food:1", "health_food:2"], text
+
+
+
+async def test_add_contraindication_hits_appends_marked_precaution_chunks():
+    from app.llm.v2.search import CONTRAINDICATION_PATTERNS, SearchHit, SearchOutcome, add_contraindication_hits
+
+    def handler(sql, params):
+        if "AS distance" in sql:
+            assert "v.content LIKE :cp0" in sql and params["cp0"] == CONTRAINDICATION_PATTERNS[0]
+            assert params["section_type"] == "precautions" and params["product_keys"] == ["drug:1"]
+            return [
+                {"content_hash": "old", "content": "기존", "product_type": "drug", "section_type": "precautions", "distance": 0.2},
+                {"content_hash": "new", "content": "임부에게 투여하지 말 것", "product_type": "drug", "section_type": "precautions", "distance": 0.8},
+            ]
+        return [{"product_key": "drug:1", "product_name": "A", "manufacturer": "M", "source_refs": [], "metadata": {},
+                 "source_s3_key": "k", "snapshot": "2026-10-13", "sale_status": None, "total": 1}]
+
+    old = SearchHit("old", "기존", "drug", "precautions", 0.2, 1, [])
+    outcome = SearchOutcome("ok", "run1", "exact", [{"product_key": "drug:1", "product_name": "A", "manufacturer": "M"}], [old])
+    merged = await add_contraindication_hits(FakeReader(handler), outcome, "[1]")
+    assert [h.content_hash for h in merged.hits] == ["old", "new"]  # 거리 0.8 이어도 넣고, 이미 있는 문단은 다시 넣지 않는다
+
+
+async def test_add_contraindication_hits_skips_unresolved_or_multi_product():
+    from app.llm.v2.search import SearchOutcome, add_contraindication_hits
+
+    reader = FakeReader(lambda s, p: (_ for _ in ()).throw(AssertionError("DB 를 부르면 안 된다")))
+    for outcome in (SearchOutcome("product_not_found", "run1"), SearchOutcome("ok", "run1", products=[{"product_key": "a"}, {"product_key": "b"}])):
+        assert await add_contraindication_hits(reader, outcome, "[1]") is outcome

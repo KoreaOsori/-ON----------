@@ -298,3 +298,33 @@ def test_no_hit_message_mentions_filtered_count_only_when_any():
     plain = format_outcome(SearchOutcome("ok", "r", hits=[]), "A").text
     assert "제외된" not in plain
     assert "제외된 문단 3개" in format_outcome(SearchOutcome("ok", "r", hits=[], filtered=3), "A").text
+
+
+async def test_tool_adds_contraindication_chunks_for_precautions_and_contra_questions():
+    def db(sql, params):
+        if "AS distance" in sql and "LIKE :cp0" in sql:
+            return [{"content_hash": "k", "content": "임부에게는 투여하지 말 것.", "product_type": "drug", "section_type": "precautions", "distance": 0.9}]
+        return _db(sql, params)
+
+    for args in ({"section": "precautions", "question": "부작용"}, {"question": "먹으면 안 되는 사람은?"}):
+        tool, reader, _ = _tool(db)
+        result = await tool.run({"product_name": "타이레놀", **args})
+        assert "임부에게는 투여하지 말 것" in result.text, args  # 거리 0.9 여도 금기 문단은 싣는다
+    tool, reader, _ = _tool(db)
+    await tool.run({"product_name": "타이레놀", "question": "하루 몇 번", "section": "usage"})
+    assert not any("LIKE :cp0" in sql for sql, _ in reader.calls)  # 용법 질문에는 따로 찾지 않는다
+
+
+def test_contra_intent_pattern():
+    from app.llm.v2.tools import CONTRA_INTENT
+
+    for q in ("먹으면 안 되는 사람은?", "임신 중에 복용하면 안 되나요", "금기 대상", "어떤 사람은 못 먹어요?", "드시면 안 되는 경우"):
+        assert CONTRA_INTENT.search(q), q
+    for q in ("하루 몇 번 먹어요?", "부작용 알려줘", "보관 방법"):
+        assert not CONTRA_INTENT.search(q), q
+
+
+def test_not_found_result_is_terminal_and_names_product():
+    result = format_outcome(SearchOutcome("product_not_found", "run1"), "없는약정")
+    assert result.missing == ["없는약정"] and result.terminal
+    assert not format_outcome(SearchOutcome("ok", "run1", hits=[]), "A").terminal  # 제품은 찾았고 문단만 없다 → 모델이 다시 찾을 수 있다

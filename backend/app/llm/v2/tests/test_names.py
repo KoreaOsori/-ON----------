@@ -60,3 +60,14 @@ def test_narrow_by_manufacturer_only_when_input_names_one_maker():
     assert narrow_by_manufacturer("약 고려인삼과학주식회사 케이지앤에프", [a, b]) == [a, b]  # 둘 다 적었으면 좁히지 않는다
     assert narrow_by_manufacturer("약 (모르는회사)", [a, b, c]) == [a, b, c]
     assert narrow_by_manufacturer("약 (고려인삼과학주식회사)", [a]) == [a]
+
+
+
+def test_unit_spellings_are_tried_right_after_original():
+    from app.llm.v2.names import unit_spellings
+
+    variants = [text for text, _ in name_variants("타이레놀정500밀리그램")]
+    assert variants[:2] == ["타이레놀정500밀리그램", "타이레놀정500밀리그람"]
+    assert dict(name_variants("타이레놀정500밀리그램"))["타이레놀정500밀리그람"] is False  # 뜻이 같아 근사 일치가 아니다
+    assert "타이레놀500밀리그람" in unit_spellings("타이레놀500mg") and "타이레놀500밀리그램" in unit_spellings("타이레놀500mg")
+    assert unit_spellings("타이레놀") == [] and unit_spellings("mg정") == []
