@@ -15,6 +15,7 @@ from app.modules.interactions.schemas import (
     DuplicateCaution,
     DuplicateMedicine,
     InteractionPair,
+    MedicineCautions,
 )
 from app.modules.medicines.service import MedicineRepository
 
@@ -59,6 +60,16 @@ async def check_pairs(repository: MedicineRepository, medicine_ids: list[str]) -
             )
         )
     return pairs
+
+
+async def collect_cautions(repository: MedicineRepository, medicine_ids: list[str]) -> list[MedicineCautions]:
+    """고른 약마다 DUR 주의 (약 상세와 같은 것). 프로필이 없어도 보여주고, 해당 여부는 사용자가 판단한다"""
+    result = []
+    for medicine_id in dict.fromkeys(medicine_ids):
+        medicine = await repository.get(medicine_id)
+        if medicine and medicine.dur_cautions:
+            result.append(MedicineCautions(name=medicine.name, cautions=medicine.dur_cautions))
+    return result
 
 
 async def check_duplicates(repository: MedicineRepository, medicine_ids: list[str]) -> list[DuplicateCaution]:

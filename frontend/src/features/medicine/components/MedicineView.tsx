@@ -5,6 +5,7 @@ import { Search } from "lucide-react"
 import Notice from "@/components/ui/Notice"
 import { button, inputClass } from "@/components/ui/styles"
 import { MAX_INTERACTION_DRUGS } from "@/lib/constants"
+import { useSession } from "@/providers/SessionProvider"
 import { searchMedicines, type MedicineSummary, type MedicineType } from "../api"
 import CategoryFilter from "./CategoryFilter"
 import DrugCard from "./DrugCard"
@@ -20,6 +21,7 @@ const tabs: [Tab, string][] = [
 ]
 
 export default function MedicineView() {
+  const { logged, memberProfile } = useSession()
   const [tab, setTab] = useState<Tab>("search")
   const [query, setQuery] = useState("")
   const [type, setType] = useState<MedicineType | undefined>()
@@ -56,6 +58,14 @@ export default function MedicineView() {
     }
   }
 
+  // 마이페이지 건강정보에 등록한 복용약 (로그인했을 때만). 이미 담은 약은 빼고 5개까지
+  const mine = logged ? (memberProfile.medicineItems ?? []) : []
+  const loadMine = () => {
+    const added = mine.filter((drug) => !isSelected(drug))
+    setSelected([...selected, ...added].slice(0, MAX_INTERACTION_DRUGS))
+    setResult(false)
+  }
+
   const switchTab = (value: Tab) => {
     setTab(value)
     setResult(false)
@@ -87,6 +97,7 @@ export default function MedicineView() {
             setSelected(selected.filter((item) => item.id !== id))
             setResult(false)
           }}
+          onLoadMine={mine.length ? loadMine : undefined}
         />
       )}
       <div className="relative">

@@ -149,7 +149,8 @@ def fetch_with_retry(service, operation, page_no, rows, key):
             return None, exc
         except Exception as exc:
             last_error = exc
-            time.sleep(2 * attempt)
+            if attempt < MAX_RETRIES:
+                time.sleep(2 * attempt)
     return None, last_error
 
 
@@ -234,7 +235,11 @@ def collect_operation(operation, snapshot, store, rows, key):
 
     # 1쪽으로 totalCount 확인
     if 1 in existing:
-        first = store.get_json(page_key(1))["response"]
+        saved = store.get_json(page_key(1))
+        if saved["meta"]["num_of_rows"] != rows:  # 쪽 크기가 다르면 이미 받은 쪽과 겹치거나 빠진다
+            raise SystemExit(f"[{operation}] 이미 받은 쪽은 {saved['meta']['num_of_rows']}건씩인데 지금 {rows}건씩 — "
+                             f"같은 --rows 로 이어받을 것")
+        first = saved["response"]
         page_items[1] = count_items_of(first, operation)
     else:
         first, error = fetch_with_retry(service, operation, 1, rows, key)
@@ -358,9 +363,13 @@ def main():
         raise SystemExit(f"오퍼레이션을 지정하세요. 알 수 없는 이름: {unknown}\n사용 가능: {list(ALL_OPERATIONS)}")
 
     store = Store(args.bucket)
+    mismatched = []
     for operation in targets:
         rows = args.rows or (FOOD_SAFETY_ROWS if is_food_safety(operation) else DEFAULT_ROWS)
-        collect_operation(operation, args.snapshot, store, rows, get_service_key(operation))
+        if not collect_operation(operation, args.snapshot, store, rows, get_service_key(operation))["count_match"]:
+            mismatched.append(operation)
+    if mismatched:  # 종료 코드 1 (운영은 run_pipeline.py 가 매니페스트로 따로 검증한다)
+        raise SystemExit(f"수집 불일치: {mismatched}")
 
 
 if __name__ == "__main__":

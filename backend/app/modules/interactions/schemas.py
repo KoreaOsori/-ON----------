@@ -1,6 +1,7 @@
 from pydantic import Field
 
 from app.core.schemas import CamelModel
+from app.modules.medicines.schemas import DurCaution
 
 
 class InteractionCheckRequest(CamelModel):
@@ -39,7 +40,15 @@ class DuplicateCaution(CamelModel):
     daily_max: list[str]  # 해당 성분의 1일 최대 (식약처 DUR 용량주의, 단일 성분 기준). 없으면 비움
 
 
+class MedicineCautions(CamelModel):
+    """고른 약 하나의 DUR 주의 (임부·연령·노인 등). 사용자 프로필 없이 모두 보여준다"""
+
+    name: str
+    cautions: list[DurCaution]
+
+
 class InteractionCheckResponse(CamelModel):
     pairs: list[InteractionPair]
     duplicates: list[DuplicateCaution] = []
+    medicine_cautions: list[MedicineCautions] = []  # DUR 주의가 있는 약만
     notice: str = "3개 이상 동시 복용 시의 복합 상호작용은 확인할 수 없으며, 2개씩 비교한 결과만 제공합니다."
