@@ -13,6 +13,8 @@ export type ChatMessage = {
   candidates: LlmCandidate[]
   /** 이 질문과 함께 보낸 제품명 (사진 확인·후보 선택) */
   products: string[]
+  /** 질문과 함께 보낸 사진 미리보기 (브라우저 안에서만 쓰는 주소, 서버에 보내지 않음) */
+  images?: string[]
 }
 
 export type ChatStatus = "idle" | "loading" | "error" | "limit"
