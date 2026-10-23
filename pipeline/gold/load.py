@@ -31,7 +31,7 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from build import TABLE_COLUMNS, TABLES  # noqa: E402
-from s3store import DEFAULT_BUCKET, Store  # noqa: E402
+from s3store import Store  # noqa: E402
 
 SCHEMA_SQL = Path(__file__).resolve().parent / "schema.sql"
 APP_SECRET = "pill-check/dev/app"
@@ -140,7 +140,7 @@ def load(conn, store, root, force=False):
 
 def main():
     parser = argparse.ArgumentParser(description="S3 gold → RDS 적재")
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument("--bucket")
     parser.add_argument("--host", help="DB 호스트 덮어쓰기 (SSM 터널이면 localhost)")
     parser.add_argument("--dsn", help="Secrets Manager 대신 이 접속 문자열 사용")
     parser.add_argument("--force", action="store_true", help="이미 적재한 gold 여도 다시 적재")

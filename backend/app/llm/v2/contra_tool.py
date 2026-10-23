@@ -38,7 +38,7 @@ MIN_FOOD_CHARS = 1500  # 제품당 최소 예산. 첫 문단은 예산과 상관
 FOOD_LABEL = "건강기능식품"
 INGREDIENT_TYPE = "ingredient"
 INGREDIENT_CAVEAT = (
-    "[성분 기준 조회] 성분 이름이 낀 조합은 DUR 성분 코드로 조회했습니다. 제형 등 제품별 조건은 반영되지 않았고 복합제 규칙은 정확히 "
+    "[성분 기준 조회] 성분 이름이 낀 조합이나 성분 기준 주의는 DUR 성분 코드로 조회했습니다. 제형 등 제품별 조건은 반영되지 않았고 복합제 규칙은 정확히 "
     "맞지 않을 수 있습니다. 답변에서 이 점을 밝히고, 특정 제품 기준의 정확한 확인은 제품명으로 다시 물어보거나 약사·의사에게 확인하도록 안내하세요."
 )
 
@@ -50,7 +50,6 @@ def build_contra_spec() -> dict[str, Any]:
             "의약품 2~5개를 함께 복용해도 되는지, 등록된 병용금기(DUR) 자료에서 조합별로 확인한다. "
             "제품명은 사용자가 말한 이름을 그대로 넣는다(괄호 안 내용을 말했다면 포함, 말하지 않았다면 추측해서 넣지 않는다). "
             "사용자가 제품이 아니라 성분 이름(예: 아세트아미노펜)을 말했으면 그 이름을 그대로 넣는다. "
-            "[확인 필요] 후보 중 사용자가 고른 제품은 그 product_key를 이름 대신 넣는다. "
             "건강기능식품이 섞여 있으면 병용금기 판정은 할 수 없고, 그 제품의 섭취 주의사항만 보여 준다."
         ),
         "input_schema": {
@@ -61,7 +60,7 @@ def build_contra_spec() -> dict[str, Any]:
                     "minItems": MIN_PRODUCTS,
                     "maxItems": MAX_PRODUCTS,
                     "items": {"type": "string", "maxLength": MAX_NAME_CHARS},
-                    "description": "함께 복용하려는 약·건강기능식품의 제품명(또는 성분 이름, product_key) 목록. 예: ['와파린정', '아스피린장용정100밀리그램']",
+                    "description": "함께 복용하려는 약·건강기능식품의 제품명(또는 성분 이름) 목록. 예: ['와파린정', '아스피린장용정100밀리그램']",
                 }
             },
             "required": ["products"],
@@ -135,12 +134,11 @@ class ContraindicationTool:
             if len(products) > 1:
                 shown = products[:10]
                 lines = [
-                    f"[확인 필요] '{text}'과(와) 일치하는 의약품이 {len(products)}개 있습니다. 임의로 고르지 말고 사용자에게 어느 제품인지 "
-                    "물어보세요. 사용자가 고르면 이름 대신 그 product_key를 products 에 넣어 다시 확인하세요."
+                    f"[확인 필요] '{text}'과(와) 일치하는 의약품이 {len(products)}개 있습니다. 임의로 고르지 말고 사용자에게 해당하는 제품을 "
+                    "제품명(제조사 포함)으로 다시 입력해 질문해 달라고 안내하세요."
                 ]
                 lines += [
-                    f"- {'[건강기능식품] ' if p['product_type'] == 'health_food' else ''}{p['product_name']} ({p['manufacturer']}) "
-                    f"/ product_key={p['product_key']}"
+                    f"- {'[건강기능식품] ' if p['product_type'] == 'health_food' else ''}{p['product_name']} ({p['manufacturer']})"
                     for p in shown
                 ]
                 if len(products) > len(shown):
@@ -309,15 +307,33 @@ def format_lookup(
             coverage = (
                 f" (이 자료에 병용금기 규칙이 하나도 등록돼 있지 않은 제품: {', '.join(missing)})" if missing else ""
             )
+            scope = {
+                "compared": " 품목 단위와 성분(DUR 성분 코드) 기준 모두 비교했습니다.",
+                "no_codes": " 성분 코드를 찾지 못한 제품이 있어 성분 기준 비교는 하지 못했고 품목 단위로만 확인했습니다.",
+            }.get(pair.ingredient_check, "")
             lines = [
                 f"■ {label} — 병용금기 규칙 없음",
                 f"[출처 | {label} | 병용금기 자료 조회]",
-                "등록된 병용금기 자료에서 이 조합의 규칙을 찾지 못했습니다" + coverage + ". 이것은 함께 복용해도 안전하다는 뜻이 아닙니다"
+                "등록된 병용금기 자료에서 이 조합의 규칙을 찾지 못했습니다." + scope + coverage + " 이것은 함께 복용해도 안전하다는 뜻이 아닙니다"
                 "(자료에 없는 제품·성분이거나, 병용금기가 아닌 다른 주의사항이 있을 수 있습니다). "
                 "'확인되지 않았다'고만 말하고 약사·의사 확인을 권하세요.",
             ]
             evidence.append(Evidence(label, "", "contraindication_none", 1, display=label))
         blocks.append("\n".join(lines))
+    for overlap in lookup.overlaps:
+        who = ", ".join(f"{names[key]}({ingredients})" for key, ingredients in overlap.members if key in names)
+        label = " × ".join(names[key] for key, _ in overlap.members if key in names)
+        blocks.append(
+            "\n".join([
+                f"■ {label} — 효능군 중복 주의 규칙 있음(병용금기는 아님)",
+                f"[출처 | {label} | 효능군 중복 주의(성분 기준)]",
+                f"- 같은 계열: {overlap.series}",
+                f"  해당 제품(성분): {who}",
+                "안내: 병용금기가 아니라 같은 계열의 서로 다른 성분이 겹친다는 중복 주의입니다. '병용금기'라고 하지 말고 "
+                "'같은 계열 약이라 겹쳐 드시면 중복될 수 있다'고 전하세요. 먹는 약만 비교했고 용량·제형 조건은 반영되지 않았습니다.",
+            ])
+        )
+        evidence.append(Evidence(label, "", "efficacy_overlap", 1, display=label))
     text = "\n\n".join(blocks)
     if len(text) > MAX_RESULT_CHARS:
         text = text[:MAX_RESULT_CHARS] + "\n…(길이 제한으로 이하 생략)"

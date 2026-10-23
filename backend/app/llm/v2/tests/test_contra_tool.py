@@ -95,7 +95,7 @@ async def test_three_products_check_every_pair():
 async def test_ambiguous_name_asks_instead_of_choosing_and_skips_lookup():
     tool, _ = _tool([_row("100", "300")])
     result = await tool.run({"products": ["와파린정", "타이레놀"]})
-    assert result.text.startswith("[확인 필요]") and "product_key=drug:300" in result.text and "product_key=drug:310" in result.text
+    assert result.text.startswith("[확인 필요]") and "product_key" not in result.text and "타이레놀8시간정 (C사)" in result.text
     assert result.evidence == [] and {c["product_key"] for c in result.candidates} == {"drug:300", "drug:310"}
 
 
@@ -302,8 +302,8 @@ async def test_ambiguous_names_mark_health_foods_in_candidates():
     tool, _ = _tool([_row("100", "200")])
     result = await tool.run({"products": ["와파린정", "비타민"]})
     assert result.text.startswith("[확인 필요]")
-    assert "- [건강기능식품] 비타민C (F사) / product_key=health_food:10" in result.text
-    assert "- [건강기능식품] 비타민D (F사) / product_key=health_food:11" in result.text and result.evidence == []
+    assert "- [건강기능식품] 비타민C (F사)" in result.text and "product_key" not in result.text
+    assert "- [건강기능식품] 비타민D (F사)" in result.text and result.evidence == []
 
 
 async def test_food_precaution_text_is_data_and_not_cut_by_the_general_result_limit():
@@ -331,3 +331,26 @@ def test_prompt_style_rules_for_tone_jargon_and_repetition():
     for needle in ("해요체로 통일", "마크다운", "맺음말", "같은 내용을 요약과 목록에서 두 번"):
         assert needle in SYSTEM_PROMPT
     assert "식약처가 정한 병용금기" in CONTRA_PROMPT_ADDENDUM and "두 번 말하지 않습니다" in CONTRA_PROMPT_ADDENDUM
+
+
+def test_prompt_prioritizes_contraindications_and_blocks_unrelated_filler():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    for needle in ("복용하면 안 되는 경우", "직접 관련된 내용만", "관련 없는 주의사항을", "\"투여\" 대신 \"복용\""):
+        assert needle in SYSTEM_PROMPT
+
+
+def test_prompt_rules_for_style_changes_requested_after_swagger_review():
+    from app.llm.v2.prompts import CONTRA_PROMPT_ADDENDUM, SYSTEM_PROMPT
+
+    for needle in ("[범위밖]", "별도 문장을 덧붙이거나", "1인칭으로 답을 거절", "알려 달라는 권유는 하지 않습니다"):
+        assert needle in SYSTEM_PROMPT
+    for needle in ("한 번에 요약", "고시일(날짜)은 말하지 않습니다", "먹는 약, 바르는 약"):
+        assert needle in CONTRA_PROMPT_ADDENDUM
+
+
+def test_prompt_has_short_answer_examples():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    for needle in ("답변 예시", "상담을 권하는 문장을 따로 붙이지 않습니다", "목록을 붙이지 않습니다", "주의사항은 다음과 같아요"):
+        assert needle in SYSTEM_PROMPT

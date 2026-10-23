@@ -26,7 +26,7 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from s3store import DEFAULT_BUCKET, Store  # noqa: E402
+from s3store import Store  # noqa: E402
 
 BATCH_ROWS = 1000        # silver 를 읽는 단위 (허가 문서가 커서 작게)
 RULE_BATCH_ROWS = 50000  # 성분 규칙을 거르는 단위
@@ -687,7 +687,7 @@ def download_silver(store, root, latest):
 
 def main():
     parser = argparse.ArgumentParser(description="S3 silver → S3 gold")
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument("--bucket")
     parser.add_argument("--force", action="store_true", help="이미 만든 silver 여도 다시 만들기")
     parser.add_argument("--work", help="임시 폴더 (지정하면 끝나도 지우지 않음. 기본: 새 임시 폴더를 만들고 끝나면 삭제)")
     args = parser.parse_args()

@@ -71,3 +71,65 @@ def short_name(name: str) -> str:
     if len(shortened) > MAX_DISPLAY_CHARS:
         shortened = shortened[: MAX_DISPLAY_CHARS - 1] + "…"
     return shortened
+
+
+MAX_GIVEN_PRODUCTS = 8
+MAX_GIVEN_NAME_CHARS = 120
+
+
+def clean_product_names(names: list[str] | None) -> list[str]:
+    """호출자가 넘긴 제품명 목록(OCR 등) 정리: 공백 정리, 빈 값·중복(공백·대소문자 무시) 제거, 최대 개수 제한. 원문 표기는 유지한다."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in names or []:
+        name = collapse_spaces(str(raw))[:MAX_GIVEN_NAME_CHARS]
+        key = name.replace(" ", "").casefold()
+        if name and key not in seen:
+            seen.add(key)
+            cleaned.append(name)
+    return cleaned[:MAX_GIVEN_PRODUCTS]
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", text).casefold()
+
+
+def expand_with_given(name: str, given: list[str]) -> str:
+    """도구에 넣을 이름이 호출자가 넘긴 제품명(OCR 등) 중 하나의 앞부분이면 그 전체 표기로 바꾼다.
+
+    예: 모델이 '고려인삼분말캡슐'을 넣었고 givens 에 '고려인삼분말캡슐 (고려인삼과학주식회사)'가 있으면 제조사까지 적힌 표기를 쓴다
+    (사용자가 되묻기 목록의 한 줄을 다시 입력하는 것과 같은 효과). 앞부분이 맞는 항목이 정확히 하나일 때만 바꾸고, 정확히 같거나
+    여럿이면 그대로 둔다. 질문이 가리킨 이름을 임의로 다른 제품으로 바꾸지 않도록 '앞부분이 같은 더 긴 표기'만 대상으로 한다."""
+    key = _compact(name)
+    if len(key) < 2:
+        return name
+    keys = [(_compact(item), item) for item in given]
+    if any(k == key for k, _ in keys):
+        return name
+    longer = [item for k, item in keys if k.startswith(key)]
+    return longer[0] if len(longer) == 1 else name
+
+
+_COMPANY_WORDS = re.compile(r"\(주\)|㈜|주식회사|\(유\)|㈲|유한회사|\(합\)")
+
+
+def _company_key(text: str) -> str:
+    """제조사 비교용 정규화: 회사 형태 표기·공백·괄호·대소문자를 무시한다."""
+    folded = unicodedata.normalize("NFKC", text).lower()
+    folded = _COMPANY_WORDS.sub("", folded)
+    return re.sub(r"[\s()\[\]·.,-]", "", folded)
+
+
+def narrow_by_manufacturer(raw_name: str, products: list[dict]) -> list[dict]:
+    """이름이 같은 제품이 여럿일 때, 사용자가 입력에 제조사까지 적었으면 그 제조사 제품만 남긴다.
+
+    되묻기 목록의 한 줄('제품명 (제조사)')을 그대로 다시 입력하는 흐름을 위한 것이다. 제조사가 입력에 없거나,
+    모든 후보가 맞거나, 하나도 안 맞으면 그대로 돌려준다(임의로 고르지 않는다)."""
+    if len(products) < 2:
+        return products
+    text = _company_key(raw_name)
+    matched = [
+        p for p in products
+        if len(key := _company_key(str(p.get("manufacturer") or ""))) >= 2 and key in text
+    ]
+    return matched if 0 < len(matched) < len(products) else products

@@ -10,7 +10,7 @@ import argparse
 import asyncio
 
 from app.llm.v2.config import V2Settings
-from app.llm.v2.db import build_engine, open_connection, reader_factory_for
+from app.llm.v2.db import build_engine, database_label, open_connection, reader_factory_for
 from app.llm.v2.search import active_run_id, check_config, find_products
 
 CATALOG_QUERIES = (
@@ -72,7 +72,7 @@ async def through_reader(settings: V2Settings, name: str) -> None:
 
 async def main(args: argparse.Namespace) -> None:
     settings = V2Settings.from_env()
-    print(f"DB={settings.db_host}:{settings.db_port}/{settings.db_name} user={settings.db_user} ssl={settings.db_ssl_mode}\n")
+    print(f"DB={database_label(settings)} user={settings.db_user} ssl={settings.db_ssl_mode}\n")
     await catalog(settings)
     await through_reader(settings, args.name)
 

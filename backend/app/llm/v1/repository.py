@@ -9,9 +9,9 @@ class DataUnavailable(Exception):
 
 CATALOG = """SELECT 'drug:'||item_seq AS product_key, item_seq AS source_id,
     item_name AS product_name, entp_name AS manufacturer, 'drug' AS product_type,
-    sale_status FROM gold.drug
+    sale_status, route FROM gold.drug
     UNION ALL SELECT 'health_food:'||prdlst_report_no, prdlst_report_no,
-    prdlst_nm,bssh_nm,'health_food',NULL FROM gold.health_food"""
+    prdlst_nm,bssh_nm,'health_food',NULL,NULL FROM gold.health_food"""
 
 FIELDS = {
     'drug': {'benefits': ['doc_efficacy', 'easy_efcy'], 'usage': ['doc_dosage', 'easy_use_method'],
@@ -123,6 +123,14 @@ class Repository:
                     row['mapping_source'] = 'gold.drug_ingredient exact unique ingredient name'
                 elif not row['dur_ingr_code'] and len(codes) > 1:
                     row['mapping_issue'] = '동일 성분명에 여러 DUR 코드가 있어 자동 선택하지 않음'
+            for row in ingredients:
+                if not row['dur_ingr_code'] and not row.get('mapping_issue'):
+                    row['mapping_issue'] = ('성분명이 없어 비교용 코드를 보완할 수 없음' if not row.get('ingr_name')
+                                            else '같은 성분명으로 비교용 코드를 찾지 못함')
+        else:
+            for row in ingredients:
+                if not row['dur_ingr_code']:
+                    row['mapping_issue'] = '성분명이 없어 비교용 코드를 보완할 수 없음'
         # Product scope preserves route/form restrictions and composite-code mappings from gold.
         rules = await self.rows('''SELECT * FROM gold.drug_contraindication
             WHERE item_seq=ANY(CAST(:ids AS text[])) AND mixture_item_seq=ANY(CAST(:ids AS text[]))
@@ -138,6 +146,7 @@ class Repository:
         if not codes:
             return []
         return await self.rows('''SELECT ingr_code,mixture_ingr_code,
+            min(ingr_names[1]) AS ingr_name, min(mixture_ingr_names[1]) AS mixture_ingr_name,
             count(*) FILTER (WHERE basis='품목 DUR') AS item_rows,
             count(*) FILTER (WHERE basis='성분 규칙') AS rule_rows,
             array_agg(DISTINCT prohbt_content) FILTER (WHERE prohbt_content IS NOT NULL) AS contents,
@@ -145,5 +154,17 @@ class Repository:
             FROM gold.drug_contraindication
             WHERE ingr_code=ANY(CAST(:codes AS text[]))
               AND mixture_ingr_code=ANY(CAST(:codes AS text[]))
-              AND ingr_code <= mixture_ingr_code
+              AND ingr_code < mixture_ingr_code
             GROUP BY ingr_code,mixture_ingr_code ORDER BY ingr_code,mixture_ingr_code''', codes=codes)
+
+    async def dur_ingredient_rules(self, ingredients):
+        codes = sorted({r['dur_ingr_code'] for rows in ingredients.values() for r in rows if r['dur_ingr_code']})
+        if not codes:
+            return []
+        # Keep original quantities and formulation/route conditions; no numeric parsing.
+        return await self.rows('''SELECT caution_type,mix_type,sers_name,ingr_code,ingr_name,
+            max_qty,form_name,route FROM gold.dur_ingredient_rule
+            WHERE ingr_code=ANY(CAST(:codes AS text[])) AND mix_type='단일'
+              AND (caution_type='효능군중복' OR
+                   (caution_type='용량주의' AND route IS DISTINCT FROM '경구 외'))
+            ORDER BY caution_type,sers_name,ingr_code,form_name''', codes=codes)

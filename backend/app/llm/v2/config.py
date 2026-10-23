@@ -22,11 +22,12 @@ SCHEMA_VERSION = 2
 # 리전은 us-east-1 로 고정한다(환경변수로 바꾸지 않는다). 임베딩·Claude·Secrets Manager 모두 이 리전을 쓴다.
 REGION = "us-east-1"
 
-# DB 기본값은 v1(backend/app/llm/v1/database.py)의 고정 RDS 설정과 같다. EC2 에서는 환경변수 없이 이 값으로 연결한다.
-# PGHOST(또는 DB_HOST)가 있으면 이 기본값은 쓰지 않고 환경변수만 쓴다(로컬 개발 DB 용도).
-DEFAULT_DB_HOST = "pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com"
-DEFAULT_DB_NAME = "pill"
-DEFAULT_DB_SECRET_ID = "rds!db-71cf9992-e13e-4601-88da-425ac219f336"  # Secrets Manager 시크릿 이름(비밀값 아님)
+# DB 위치(호스트·포트·DB 이름)는 코드에 적지 않고 앱 시크릿(pill-check/dev/app)의 DB_HOST, DB_PORT, DB_NAME 에서 읽는다(db.resolve_endpoint).
+# 시크릿 이름은 비밀값이 아니다(docker-compose.yml 에도 있다). 다른 시크릿을 쓰려면 DB_SECRET_ID 환경변수로 바꾼다(백엔드와 같은 이름).
+# PGHOST(또는 DB_HOST)가 있으면 시크릿을 쓰지 않고 환경변수만 쓴다(로컬 개발 DB·SSM 터널 용도).
+DEFAULT_APP_SECRET_ID = "pill-check/dev/app"
+# 접속 계정(username/password)은 RDS 가 관리하는 이 시크릿에서 연결마다 새로 읽는다(비밀값 아님, 이름뿐).
+DEFAULT_DB_SECRET_ID = "rds!db-71cf9992-e13e-4601-88da-425ac219f336"
 # RDS 호스트일 때 PGSSLROOTCERT 가 없으면 v2 폴더에 둔 AWS 공식 RDS CA 번들(us-east-1)을 쓴다. v1 의 같은 파일을 복사한 것이라 v1 과 독립적이다.
 # CA 가 바뀌면 AWS 공식 번들(https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem)로 갱신한다.
 DEFAULT_DB_CA_FILE = str(Path(__file__).resolve().parent / "certs" / "us-east-1-bundle.pem")
@@ -75,9 +76,10 @@ class V2Settings:
     auth_mode: str = "auto"
 
     # --- DB (읽기 전용 연결) ---
-    db_host: str | None = None
-    db_port: int = 5432
-    db_name: str | None = None
+    db_host: str | None = None  # None 이면 app_secret_id 시크릿의 DB_HOST 를 연결할 때 읽는다
+    db_port: int | None = None  # None 이면 시크릿의 DB_PORT(없으면 5432)
+    db_name: str | None = None  # None 이면 시크릿의 DB_NAME
+    app_secret_id: str | None = None
     db_user: str | None = None
     db_password: str | None = field(default=None, repr=False)
     rds_secret_arn: str | None = None
@@ -148,12 +150,16 @@ class V2Settings:
         if auth_mode not in ("auto", "ec2_role", "default_chain"):
             raise ConfigError("LLM_V2_AUTH_MODE 는 auto, ec2_role, default_chain 중 하나여야 합니다.")
 
-        # PGHOST 가 없으면 v1 과 같은 고정 RDS 설정(호스트·DB·시크릿·CA)을 쓰고, 있으면 환경변수만 쓴다.
+        # PGHOST 가 없으면 앱 시크릿에서 호스트·포트·DB 이름을 읽고(계정은 RDS 시크릿), 있으면 환경변수만 쓴다.
         env_host = _first(env, "PGHOST", "DB_HOST")
-        db_host = env_host or DEFAULT_DB_HOST
-        db_name = _first(env, "PGDATABASE", "DB_NAME") or (None if env_host else DEFAULT_DB_NAME)
+        db_host = env_host  # 없으면 연결할 때 시크릿에서
+        db_name = _first(env, "PGDATABASE", "DB_NAME")
+        app_secret_id = None if env_host else (env.get("DB_SECRET_ID") or DEFAULT_APP_SECRET_ID)
         secret_id = env.get("RDS_SECRET_ARN") or (None if env_host else DEFAULT_DB_SECRET_ID)
-        ssl_root_cert = env.get("PGSSLROOTCERT") or (DEFAULT_DB_CA_FILE if db_host.endswith(".rds.amazonaws.com") else None)
+        # 호스트를 아직 모르면(시크릿에서 읽을 때) 이 서비스는 RDS 이므로 RDS CA 번들을 쓴다.
+        ssl_root_cert = env.get("PGSSLROOTCERT") or (
+            DEFAULT_DB_CA_FILE if db_host is None or db_host.endswith(".rds.amazonaws.com") else None
+        )
 
         ssl_mode = env.get("PGSSLMODE") or "verify-full"
         if ssl_mode not in ("verify-full", "require", "disable"):
@@ -177,8 +183,9 @@ class V2Settings:
             embedding_dimensions=dimensions,
             auth_mode=auth_mode,
             db_host=db_host,
-            db_port=int(_first(env, "PGPORT", "DB_PORT") or 5432),
+            db_port=int(_first(env, "PGPORT", "DB_PORT")) if _first(env, "PGPORT", "DB_PORT") else None,
             db_name=db_name,
+            app_secret_id=app_secret_id,
             db_user=_first(env, "PGUSER", "DB_USERNAME"),
             db_password=_first(env, "PGPASSWORD", "DB_PASSWORD"),
             rds_secret_arn=secret_id,

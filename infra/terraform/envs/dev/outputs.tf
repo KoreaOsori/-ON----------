@@ -16,6 +16,10 @@ output "data_bucket" {
   value = module.data_bucket.bucket_name
 }
 
+output "upload_bucket" {
+  value = module.uploads_bucket.bucket_name
+}
+
 output "rds_endpoint" {
   value = module.rds.address
 }

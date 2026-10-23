@@ -15,7 +15,7 @@ from app.llm.v2.config import V2Settings
 from app.llm.v2.db import ReaderFactory, safe_error_name
 from app.llm.v2.embedder import QueryEmbedder, to_vector_text
 from app.llm.v2.names import short_name
-from app.llm.v2.search import PRODUCT_KEY_PATTERN, SECTION_TYPES, SearchOutcome, retrieve
+from app.llm.v2.search import SECTION_TYPES, SearchOutcome, retrieve
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ SECTION_LABELS = {
     "contraindication": "병용금기(DUR)",
     "contraindication_ingredient": "병용 주의(성분 기준)",
     "contraindication_none": "병용금기 자료 조회(해당 규칙 없음)",
+    "efficacy_overlap": "효능군 중복 주의(성분 기준)",
 }
 
 MAX_NAME_CHARS = 100
@@ -59,11 +60,6 @@ def build_tool_spec(allow_global_search: bool = False) -> dict[str, Any]:
                     "type": "string",
                     "maxLength": MAX_NAME_CHARS,
                     "description": "사용자가 언급한 제품명. 예: '타이레놀'. 모르면 생략하지 말고 사용자에게 되묻는다.",
-                },
-                "product_key": {
-                    "type": "string",
-                    "maxLength": 120,
-                    "description": "[선택한 제품 ID]가 주어졌거나 [확인 필요] 후보 중 사용자가 고른 제품의 product_key. 그 밖에는 생략.",
                 },
                 "question": {
                     "type": "string",
@@ -130,9 +126,9 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
         listed = outcome.products[:10]
         lines = [
             f"[확인 필요] '{shown}'과(와) 일치하는 제품이 {len(outcome.products)}개 있습니다. 임의로 고르지 말고 "
-            "사용자에게 어느 제품인지 물어보세요. 사용자가 고르면 해당 product_key로 다시 검색하세요."
+            "사용자에게 해당하는 제품을 제품명(제조사 포함)으로 다시 입력해 질문해 달라고 안내하세요."
         ]
-        lines += [f"- {p['product_name']} ({p['manufacturer']}) / product_key={p['product_key']}" for p in listed]
+        lines += [f"- {p['product_name']} ({p['manufacturer']})" for p in listed]
         if len(outcome.products) > len(listed):
             lines.append(f"- …외 {len(outcome.products) - len(listed)}개")
         candidates = [{k: p[k] for k in ("product_key", "product_name", "manufacturer")} for p in outcome.products]
@@ -207,9 +203,6 @@ class DrugSearchTool:
             product_name = _clean_str(arguments.get("product_name"), MAX_NAME_CHARS)
             question = _clean_str(arguments.get("question"), MAX_QUESTION_CHARS)
             section = _clean_str(arguments.get("section"), 30)
-            product_key = _clean_str(arguments.get("product_key"), 120, nfkc=True)
-            if product_key is not None and not PRODUCT_KEY_PATTERN.match(product_key):
-                raise ValueError("product_key 형식이 올바르지 않습니다.")
             if not question:
                 raise ValueError("question 이 필요합니다.")
             if section is not None and section not in SECTION_TYPES:
@@ -225,7 +218,7 @@ class DrugSearchTool:
             vector_text = to_vector_text(await self._embedder.embed(question))
             async with self._reader_factory() as reader:
                 search_args = dict(
-                    product_name=product_name, product_key=product_key, top_k=top_k, max_distance=self._settings.max_distance
+                    product_name=product_name, top_k=top_k, max_distance=self._settings.max_distance
                 )
                 outcome = await retrieve(reader, self._settings, vector_text, section_type=section, **search_args)
                 if section and outcome.status == "ok" and not outcome.hits:

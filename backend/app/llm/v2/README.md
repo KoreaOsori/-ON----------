@@ -13,11 +13,11 @@ langchain/langgraph 없이 anthropic SDK의 `tools` 기능으로 루프를 직�
 
 | 파일 | 역할 | 강의 대응 |
 |---|---|---|
-| `agent.py` | 도구 호출 루프, 외부 진입점 `answer(question, profile_context, product_key)` | `graph.py` |
+| `agent.py` | 도구 호출 루프, 외부 진입점 `answer(question, profile_context, products)` | `graph.py` |
 | `api.py` | HTTP API(FastAPI): `POST /llm/v2/ask`, `GET /llm/v2/models`, `GET /llm/v2/health`. API 키 인증·동시 요청 제한 | — |
 | `harness.py` | `Limits`(라운드/호출/시간), `Budget`, `ALLOWED_TOOLS` | `harness.py` |
 | `tools.py` | `search_drug_info` 도구 정의·실행·`[출처 \| 제품명 \| 섹션]` 포매터 | `tools/rag_tools.py` |
-| `search.py` | 제품명 식별(이름 변형·`product_key`) + 제품 범위 exact 벡터 검색 (`CAST(:q AS vector)`) | `retrieval.py` |
+| `search.py` | 제품명 식별(이름 변형·제조사 좁히기) + 제품 범위 exact 벡터 검색 (`CAST(:q AS vector)`) | `retrieval.py` |
 | `contra_tool.py`, `contra_rds.py`, `contra_store.py`, `contra_index.py` | 병용금기 도구 `check_contraindication`(정확 조회), RDS(`gold.drug_contraindication`) 조회, 읽기 전용 SQLite 조회, parquet→SQLite 변환 | — |
 | `names.py` | 제품명 입력 변형(전각/공백/괄호 제거)과 표시용 줄임(`(수출명:…)` 제거) | — |
 | `embedder.py` | 질문 임베딩(Titan V2 · 1024 · normalize), `asyncio.to_thread` | Bedrock 임베딩 호출 |
@@ -52,7 +52,7 @@ result = await answer("타이레놀 하루에 몇 번 먹어요?", profile_conte
 result.answer      # 사용자에게 보여줄 문장 (근거가 있으면 면책 문구 포함)
 result.sources     # ["타이레놀정500밀리그램 · 용법·용량", ...]  실제 검색 결과 기반
 result.grounded    # 검색 근거가 있었는가
-result.stop_reason # done | no_evidence | needs_clarification | budget | timeout | error | refusal | crisis | empty
+result.stop_reason # done | no_evidence | needs_clarification | consult | budget | timeout | error | refusal | crisis | empty
 result.candidates  # needs_clarification 일 때 [{product_key, product_name, manufacturer}, ...]
 ```
 
@@ -60,8 +60,8 @@ result.candidates  # needs_clarification 일 때 [{product_key, product_name, ma
 
 - 제품명 DB 값은 그대로 두고 **입력 쪽만** 변형해 찾습니다(`names.name_variants`): 원문 → 전각 괄호만 반각 → NFKC → (각각) 공백 제거 → 괄호 내용 제거 순서(NFKC는 `Ⅱ`·`㎎` 같은 글자를 바꾸므로 뒤에 둡니다)이고, 단계는 정확 일치 → 접두 → 포함 순입니다. `lower(product_name)` 인덱스를 그대로 씁니다.
 - 괄호 내용을 버려서 찾은 경우는 `approximate`로 표시되고, 도구 결과에 `[참고]`가 붙어 모델이 "어떤 제품 기준인지" 밝히게 합니다.
-- 후보가 2~20개면 임의로 고르지 않고 `needs_clarification`(되묻기)입니다. 근거 없이 끝나면 코드가 후보 목록 문구를 만들어 `result.answer`로 줍니다. 21개 이상이면 더 구체적인 이름을 요청합니다.
-- `answer()`는 상태를 저장하지 않으므로, 사용자가 후보를 고르면 호출하는 쪽이 `answer(question, product_key=선택한 키)`로 다시 부릅니다. 형식은 `drug:123` / `health_food:…` 이며, 형식이 틀리면 거부합니다.
+- 후보가 2~20개면 임의로 고르지 않고 `needs_clarification`(되묻기)입니다. 되묻기가 풀리지 않은 채 끝나면(같은 질문에 다른 제품의 근거가 있어도) 되묻기가 우선하고, 모델 문장 대신 코드가 후보 목록 문구를 만들어 `result.answer`로 줍니다. 21개 이상이면 더 구체적인 이름을 요청합니다.
+- `answer()`는 상태를 저장하지 않으므로, 사용자가 제품명을 제조사까지 적어 다시 질문하면 호출하는 쪽이 그 질문으로 다시 부릅니다. `product_key` 입력은 없습니다(후보의 `product_key`는 응답에만 담깁니다).
 - 화면에 보이는 제품명은 `(수출명:…)`·`(수출용)` 꼬리표를 떼고 60자로 줄인 `short_name`입니다(DB 값·`product_key`는 그대로).
 - 데이터 쪽 정규화(`vector_pipeline`에서 이름 컬럼을 정리해 재임베딩)는 v2 범위 밖이라 하지 않았습니다.
 
@@ -82,12 +82,14 @@ app\llm\v2\dev_data\pipeline-venv\Scripts\python -m app.llm.v2.contra_index --pa
 ```
 
 - **자료 출처** (`LLM_V2_CONTRA_SOURCE`, 기본 `auto`): ① `LLM_V2_CONTRA_DB`를 지정했으면 그 SQLite(파일이 없으면 오류) ② `dev_data/contraindication.sqlite`가 있으면 그 파일 ③ 둘 다 없으면 **RDS의 `gold.drug_contraindication`**을 읽습니다(EC2는 파일이 없으므로 환경변수 없이 이쪽). 값을 `rds`/`sqlite`로 고정하거나 `off`로 끌 수 있습니다(`off`면 도구도 시스템 프롬프트의 안내도 빠짐). 로컬 개발 DB에 `gold` 스키마가 없으면 `off`로 두세요(켜 두면 병용금기 질문에 "조회할 수 없다"는 안내가 나갑니다).
-- **RDS 읽기** (`contra_rds.py`): 검색과 같은 읽기 전용 트랜잭션에서 SELECT만 하고 값은 모두 바인딩합니다. 테이블에는 `품목 DUR`(약 79.5만 행, SQLite 쌍 수와 거의 같음)과 `성분 규칙`(약 31.5만 행, 성분 단위 규칙이 제품 쌍으로 풀린 것)이 함께 있고, 한 쌍이 양방향으로 저장돼 있어 `item_seq=앞 제품 AND mixture_item_seq=뒤 제품`으로 조회합니다(한쪽만 있는 쌍을 위해 비면 반대 방향도 조회). 결과에 `규칙 종류`(품목 DUR / 성분 규칙)가 붙고, 품목 DUR이 먼저 나옵니다. 판정은 데이터 담당 쪽 기준을 따릅니다: **품목 DUR이 하나라도 있으면 '병용금기'**(식약처가 제품에 적용), **성분 규칙만 있으면 '성분 기준 주의'**(헤더·출처 라벨·모델 지시가 달라지고 '병용금기'라고 단정하지 않음). 이 테이블에는 적재 기준일이 없어 "자료 기준일"은 표시하지 않습니다. `gold` 스키마는 데이터 파이프라인 소유라 읽기만 하며, 느리면 `(item_seq, mixture_item_seq)` 인덱스를 그쪽에 요청합니다.
-- **성분 이름도 받습니다 (RDS 저장소일 때)**: 제품명으로 정확히 찾지 못한 이름은 `gold.drug_ingredient`에서 성분 이름으로 한 번 더 찾아 DUR 성분 코드(D코드)로 바꿉니다("아세트아미노펜 × 와파린정" 같은 입력). 제품 × 제품은 지금처럼 `item_seq` 쌍으로, 성분이 하나라도 낀 조합은 `drug_contraindication`의 `ingr_code`/`mixture_ingr_code`로 조회합니다(제품 쪽 코드는 `drug_ingredient`에서 가져옴). 이름이 정확히 같은 제품이 있으면 제품이 먼저입니다. 정확히 같은 제품이 없고(없거나, 앞부분·일부만 맞는 제품이 여럿이거나 너무 많을 때) 성분 이름과는 정확히 같으면 성분으로 확인합니다(예: '케토코나졸'은 '케토코나졸크림', '더마졸정(케토코나졸)' 등 20개가 넘는 제품에 걸리지만 성분으로 처리). 정확히 같은 이름의 제품이 여럿이면 성분으로 넘어가지 않고 되묻습니다. 성분 단위라 **제형 같은 제품별 조건은 반영되지 않고 복합제 규칙은 정확히 맞지 않을 수 있어**, 결과에 `[성분 기준 조회]` 안내를 코드가 붙이고 모델이 답변에서 밝히게 합니다. 이름은 있으나 D코드가 없는 성분, 성분 코드를 찾지 못한 제품은 "규칙 없음"이 아니라 `[확인 불가]`로 알립니다. 판정 기준(품목 DUR이 있으면 금기, 성분 규칙만이면 성분 기준 주의)은 제품 조회와 같습니다. "이 성분이 든 약 목록" 찾기는 하지 않습니다. 조회 SQL은 임시 PostgreSQL 16에서 문법과 결과를 확인했지만 RDS에서 돌려 본 것은 아닙니다. `(ingr_code, mixture_ingr_code)` 인덱스는 `pipeline/gold/schema.sql`에 추가됐고 다음 적재부터 생깁니다(그 전에는 전체 스캔이라 느릴 수 있음). SQLite 저장소는 성분 조회를 지원하지 않습니다.
-- **안전 규칙(코드)**: 이름이 여러 제품으로 갈리면 임의로 고르지 않고 `[확인 필요]`로 되묻습니다(사용자가 고르면 `products`에 `product_key`를 넣어 다시 호출). 규칙이 없으면 "병용금기 규칙 없음 — 안전하다는 뜻이 아님"으로 전달하고, 근거 목록에는 "병용금기 자료 조회(해당 규칙 없음)"으로만 남깁니다.
+- **RDS 읽기** (`contra_rds.py`): 검색과 같은 읽기 전용 트랜잭션에서 SELECT만 하고 값은 모두 바인딩합니다. 테이블에는 `품목 DUR`(약 79.5만 행, SQLite 쌍 수와 거의 같음)과 `성분 규칙`(약 31.5만 행, 성분 단위 규칙이 제품 쌍으로 풀린 것)이 함께 있고, 한 쌍이 양방향으로 저장돼 있어 `item_seq=앞 제품 AND mixture_item_seq=뒤 제품`으로 조회합니다(한쪽만 있는 쌍을 위해 비면 반대 방향도 조회). 결과에 `규칙 종류`(품목 DUR / 성분 규칙)가 붙고, 품목 DUR이 먼저 나옵니다. 판정은 데이터 담당 쪽 기준을 따릅니다: **품목 DUR이 하나라도 있으면 '병용금기'**(식약처가 제품에 적용), **성분 규칙만 있으면 '성분 기준 주의'**(헤더·출처 라벨·모델 지시가 달라지고 '병용금기'라고 단정하지 않음). 제품 × 제품 조합은 **품목 DUR이 있으면 그 규칙만** 보여 주고(성분 규칙·성분 비교는 섞지 않음), **없을 때만** 두 제품의 DUR 성분 코드(`drug_ingredient`)끼리 `ingr_code`/`mixture_ingr_code`로 한 번 더 비교해 규칙이 나오면 '성분 기준 주의'(`[성분 기준 조회]` 안내 포함, 규칙 종류는 모두 '성분 규칙')로 전합니다. 한쪽 성분 코드를 모르면 성분 비교는 건너뛰고 제품 단위 결과(규칙 없음 등)만 전합니다. 이 테이블에는 적재 기준일이 없어 "자료 기준일"은 표시하지 않습니다. `gold` 스키마는 데이터 파이프라인 소유라 읽기만 하며, 느리면 `(item_seq, mixture_item_seq)` 인덱스를 그쪽에 요청합니다.
+- **성분 이름도 받습니다 (RDS 저장소일 때)**: 제품명으로 정확히 찾지 못한 이름은 `gold.drug_ingredient`에서 성분 이름으로 한 번 더 찾아 DUR 성분 코드(D코드)로 바꿉니다("아세트아미노펜 × 와파린정" 같은 입력). 제품 × 제품은 지금처럼 `item_seq` 쌍으로, 성분이 하나라도 낀 조합은 `drug_contraindication`의 `ingr_code`/`mixture_ingr_code`로 조회합니다(제품 쪽 코드는 `drug_ingredient`에서 가져옴). 이름이 정확히 같은 제품이 있으면 제품이 먼저입니다. 정확히 같은 제품이 없고(없거나, 앞부분·일부만 맞는 제품이 여럿이거나 너무 많을 때) 성분 이름과는 정확히 같으면 성분으로 확인합니다(예: '케토코나졸'은 '케토코나졸크림', '더마졸정(케토코나졸)' 등 20개가 넘는 제품에 걸리지만 성분으로 처리). 정확히 같은 이름의 제품이 여럿이면 성분으로 넘어가지 않고 되묻습니다. 성분 단위라 **제형 같은 제품별 조건은 반영되지 않고 복합제 규칙은 정확히 맞지 않을 수 있어**, 결과에 `[성분 기준 조회]` 안내를 코드가 붙이고 모델이 답변에서 밝히게 합니다. 이름은 있으나 D코드가 없는 성분, 성분 코드를 찾지 못한 제품은 "규칙 없음"이 아니라 `[확인 불가]`로 알립니다. 판정 기준(품목 DUR이 있으면 금기, 성분 규칙만이면 성분 기준 주의)은 제품 조회와 같습니다. "이 성분이 든 약 목록" 찾기는 하지 않습니다. 조회 SQL은 임시 PostgreSQL 16에서 문법과 결과를 확인했지만 RDS에서 돌려 본 것은 아닙니다. `(ingr_code, mixture_ingr_code)` 인덱스는 2026-10-23 적재본 RDS에 이미 있습니다(데이터 담당 확인, 조회 약 20ms). SQLite 저장소는 성분 조회를 지원하지 않습니다.
+- **안전 규칙(코드)**: 이름이 여러 제품으로 갈리면 임의로 고르지 않고 `[확인 필요]`로 되묻습니다(사용자가 제품명을 제조사까지 넣어 다시 질문하면 확정됩니다.). 규칙이 없으면 "병용금기 규칙 없음 — 안전하다는 뜻이 아님"으로 전달하고, 근거 목록에는 "병용금기 자료 조회(해당 규칙 없음)"으로만 남깁니다.
   조건·비고(예: "48시간 이내", "methotrexate 15mg 이상")는 반드시 함께 전합니다.
 - **건강기능식품이 섞인 조합**: 병용금기(DUR) 자료는 의약품 전용이라 판정하지 않습니다(v1과 같은 정책). 대신 건강기능식품의 **섭취 주의사항(`precautions`)을 문단 단위로 전부** 돌려주고(임베딩 순위 없이 `fetch_section_texts`로 읽음), 모델에게는 "적힌 내용만 전하고 상호작용을 추정하거나 안전하다고 말하지 말 것"을 도구 결과와 프롬프트로 지시합니다. 의약품이 둘 이상이면 의약품끼리는 평소처럼 병용금기를 조회합니다. 글자 예산은 전체 6,000자(제품 수로 나눔, 제품당 최소 1,500자)이며 **문단 중간에서 자르지 않고**, 첫 문단은 항상 담습니다. 예산을 넘겨 못 담은 문단이 있으면 결과에 "일부 문단을 생략했습니다"를 적어 모델이 그 사실을 밝히게 합니다. 등록된 주의사항이 없는 제품은 "[확인 불가]"로 알립니다.
 - **한계**: 이 자료에 한 번도 등장하지 않는 제품은 "규칙 없음"과 "자료에 없음"을 구분할 수 없어, 결과에 "이 자료에 규칙이 하나도 등록돼 있지 않은 제품"을 표시합니다. 용량·질환 조건별 주의, 효능군 중복 등은 다루지 않습니다.
+- **효능군 중복 (RDS 저장소일 때)**: 병용금기와 별개로, 조회한 제품·성분들 사이에 **같은 효능군(계열)의 서로 다른 성분**이 있으면 "효능군 중복 주의"를 함께 알립니다(예: 이부프로펜정 + 덱시부프로펜정 → 비스테로이드성 소염제). 데이터는 `gold.dur_ingredient_rule`(`caution_type='효능군중복'`, `mix_type='단일'`)이고, 두 제품의 DUR 성분 코드(`drug_ingredient`)로 맞춥니다. 서로 다른 두 대상에 서로 다른 성분이 있어야 하며(같은 성분이 겹치는 경우는 해당 없음), `gold.drug.route = '경구 외'`인 제품은 뺍니다. 근거 라벨은 `효능군 중복 주의(성분 기준)`(`efficacy_overlap`)이고 병용금기 판정에는 영향을 주지 않습니다. 이 단계는 실패해도 병용금기 결과를 막지 않도록 오류를 삼키고 로그(`효능군 중복 조회 실패`)만 남깁니다. 용량·제형 조건은 반영하지 않고 복합제 규칙(`mix_type='복합'`)은 쓰지 않습니다. 쿼리는 데이터 담당 문서를 따랐고 `gold.drug`의 `item_seq`/`route` 컬럼 이름은 문서 설명 기준이라 RDS에서 한 번 확인이 필요합니다.
+- **성분 비교 진단**: 제품 쌍에 병용금기가 없을 때 결과 문구에 "품목 단위와 성분(DUR 성분 코드) 기준 모두 비교했습니다" 또는 "성분 코드를 찾지 못한 제품이 있어 성분 기준 비교는 하지 못했고…"가 붙고, 서버 로그에 `ingredient_compare codes=<앞 제품 코드 수>/<뒤 제품 코드 수> existing=<이미 풀려 있던 성분 규칙 수>`가 남습니다.
 - **운영(EC2/RDS)**: 파일을 배포하지 않고 RDS 테이블을 읽습니다(월 1회 데이터 파이프라인 적재로 갱신). SQLite 인덱스는 로컬 개발·평가(`contra_eval`)용으로 남아 있으며, RDS 쪽은 `성분 규칙`이 더해져 범위가 더 넓습니다.
 - **확인**: `uv run python -m app.llm.v2.evaluation.contra_eval --limit 100` — DB에 적재된 의약품 중 실제 병용금기 쌍(양성)과 규칙 없는 쌍(대조군)을 도구로 확인해, 양성은 key로 100% 규칙 있음·대조군은 100% 규칙 없음인지 봅니다(Bedrock 불필요).
 
@@ -113,12 +115,15 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
 ```json
 {
   "question": "라식스주사랑 알보젠겐타마이신황산염주 같이 써도 돼요?",
-  "product_key": "drug:195700010",
+  "products": ["라식스주사", "알보젠겐타마이신황산염주"],
   "profile_context": "30대 임산부"
 }
 ```
 
-- `product_key`는 `status`가 `needs_clarification`일 때 사용자가 고른 후보의 값입니다. 서버는 대화 상태를 저장하지 않으므로 같은 질문에 이 값을 붙여 다시 보냅니다.
+- 되묻기(`needs_clarification`): 이 서비스는 후보를 고르는 화면이 없으므로, 응답 문구가 겹치는 제품 목록을 보여 주고 "해당하는 제품의 이름을 제조사까지 목록에 적힌 그대로 넣어서 다시 질문해 주세요"라고 안내합니다. 목록의 한 줄(`제품명 (제조사)`)을 그대로 입력하면 그 제조사 제품으로 확정됩니다(`names.narrow_by_manufacturer`: 이름이 같은 제품이 여럿일 때만, 입력에 제조사가 하나만 들어 있을 때 적용). 서버는 대화 상태를 저장하지 않으므로 사용자가 제품명을 제조사까지 적어 새 질문으로 다시 보냅니다. `product_key` 요청 필드는 없어졌고(보내면 422), 응답의 `candidates[].product_key`는 참고용으로만 남아 있습니다.
+- `products`는 처방전·약 사진(OCR) 등으로 이미 알고 있는 제품명 목록입니다(최대 8개, 이름당 120자 이하, 중복·빈 값 제거). 질문에 약 이름이 없어도("이 약들 같이 먹어도 돼요?") 이 목록으로 조회하고 이름을 다시 묻지 않습니다. 병용 확인은 5개까지라 6개 이상이면 줄여 달라고 안내합니다(나눠 확인하면 묶음 사이 조합이 빠지기 때문). 정확한 이름이 아니면 일반 질문과 같은 방식으로 후보 되묻기·근거 없음이 나옵니다.
+  - **질문과 `products`의 관계**: 질문이 의도이고 `products`는 참고 자료입니다. 정보 질문(효능·용법·주의사항)은 질문의 제품만 답하고 `products`는 쓰지 않습니다(그래서 되묻기 답변에도 나오지 않습니다). 함께 먹어도 되는지 묻는 병용 질문은 질문의 제품에 `products` 전체를 합쳐 확인합니다(같은 약은 한 번, 목록의 표기 사용, 최대 5개). 이 합치기는 모델이 프롬프트 규칙으로 판단합니다.
+  - **이름 보강(코드)**: 모델이 도구에 넣은 이름이 `products` 항목의 앞부분이고 그런 항목이 정확히 하나면, 도구 호출 직전에 그 항목의 전체 표기로 바꿉니다. 예: `products`에 `고려인삼분말캡슐 (고려인삼과학주식회사)`가 있으면 질문의 '고려인삼분말캡슐'이 제조사까지 적힌 표기로 조회돼 되묻기 없이 해당 제품이 정해집니다. 제조사가 없는 표기(`코데농정` 등)나 앞부분이 맞는 항목이 여럿이면 바꾸지 않고.
 - `profile_context`는 모델에 **데이터로만** 전달됩니다(1000자 이하). 질문이 500자(설정값 `max_question_chars`)를 넘으면 422입니다.
 
 응답:
@@ -143,11 +148,12 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
 |---|---|---|
 | `done` | 200 | 근거가 있는 답변 |
 | `no_evidence` | 200 | 근거 없음(고정 안내, 모델 문장 폐기) |
-| `needs_clarification` | 200 | 제품 후보가 여럿. `candidates`(`product_key`, `product_name`, `manufacturer`)를 보여 주고 다시 질문 |
+| `needs_clarification` | 200 | 제품 후보가 여럿. 응답 문구(`answer`)가 겹치는 제품 목록과 "제조사까지 그대로 넣어 다시 질문" 안내를 담고, `candidates`에도 같은 목록이 있다 |
+| `consult` | 200 | 약을 끊거나 줄여도 되는지 묻는 질문. 근거 검색 없이 "의사·약사와 상담" 고정 안내 |
 | `crisis` / `refusal` / `budget` / `empty` | 200 | 위기 안내 / 모델 거절 / 한도 초과 / 빈 질문(고정 안내) |
 | (오류) | 503 | 모델·DB 오류, 또는 동시 요청이 많아 대기 시간 초과(`Retry-After` 헤더) |
 | (시간 초과) | 504 | 전체 시간(`LLM_V2_MAX_SECONDS`) 초과 |
-| (검증 실패) | 422 | 빈 질문, 너무 긴 질문, 잘못된 `product_key`, 알 수 없는 필드 |
+| (검증 실패) | 422 | 빈 질문, 너무 긴 질문, 알 수 없는 필드(`product_key` 포함) |
 | (인증 실패) | 401 | `LLM_V2_API_KEY`가 설정됐는데 `X-API-Key`가 없거나 다름 |
 
 보안·운영:
@@ -171,10 +177,10 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
 화면(프론트) 처리 예시 — 200이면 `status`로, 아니면 HTTP 코드로 나눕니다.
 
 ```js
-const res = await fetch("/api/llm/v2/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": KEY }, body: JSON.stringify({ question, product_key }) });
+const res = await fetch("/api/llm/v2/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": KEY }, body: JSON.stringify({ question }) });
 if (res.ok) {
   const { status, answer, sources, emergency, candidates } = await res.json();
-  // status === "needs_clarification" 이면 candidates 로 제품 선택 버튼을 보여 주고, 고른 product_key 로 같은 질문을 다시 보낸다.
+  // status === "needs_clarification" 이면 answer(겹치는 제품 목록과 다시 입력 안내)를 그대로 보여 준다. 사용자가 제품명을 제조사까지 적어 다시 질문하면 새 질문으로 보낸다.
   return render(answer, { status, sources, emergency, candidates });
 }
 const { detail } = await res.json().catch(() => ({ detail: "지금은 답변을 만들기 어려워요. 잠시 후 다시 시도해 주세요." }));
@@ -219,12 +225,12 @@ LLM_V2_AUTH_MODE=ec2_role
 - 검사는 `build_agent`(= HTTP API 시작, `answer()` 첫 호출)에서만 합니다. 평가 스크립트(`retrieval_eval` 등)는 영향받지 않습니다.
 - 오류 메시지에는 자격증명 값이 아니라 방식 이름(`env`, `iam-role` 등)만 나옵니다.
 
-**DB 연결** — `PGHOST`(또는 `DB_HOST`)가 **없으면** v1(`database.py`)과 같은 고정 RDS 설정을 씁니다: 호스트 `pill-check-dev-postgres…rds.amazonaws.com`, DB `pill`, 포트 5432, Secrets Manager 시크릿 `rds!db-71cf9992-…`(연결마다 새로 읽음), TLS `verify-full` + v2 폴더의 RDS CA 번들(`v2/certs/us-east-1-bundle.pem`, v1의 같은 파일을 복사해 둔 것이라 v1과 독립적). 그래서 EC2에서는 DB 환경변수가 필요 없습니다.
+**DB 연결** — `PGHOST`(또는 `DB_HOST`)가 **없으면** DB 위치(호스트·포트·DB 이름)를 코드에 적지 않고 앱 시크릿 `pill-check/dev/app`의 `DB_HOST`, `DB_PORT`, `DB_NAME`에서 읽습니다(`db.resolve_endpoint`, 프로세스 안에서 한 번만 읽고 보관). 시크릿 이름은 `DB_SECRET_ID`로 바꿀 수 있습니다(백엔드와 같은 이름). 접속 계정은 RDS가 관리하는 시크릿 `rds!db-71cf9992-…`에서 연결마다 새로 읽고, 앱 시크릿의 `DB_USERNAME`·`DB_PASSWORD`는 쓰지 않습니다. TLS는 `verify-full` + v2 폴더의 RDS CA 번들(`v2/certs/us-east-1-bundle.pem`)입니다. 시크릿을 읽지 못하면 DB 연결 오류(503)가 됩니다. EC2 인스턴스 역할에 `pill-check/dev/app`과 RDS 시크릿 읽기 권한이 필요합니다.
 
-- `PGHOST`가 **있으면** 고정 설정을 쓰지 않고 환경변수만 씁니다(아래 "로컬 개발 DB"의 평가용 로컬 DB). 일부만 주면 나머지는 비어 오류로 드러납니다.
-- 고정 설정 위에서도 `PGDATABASE`, `RDS_SECRET_ARN`, `PGSSLROOTCERT`, `PGSSLMODE`로 항목별로 바꿀 수 있습니다.
+- `PGHOST`가 **있으면** 앱 시크릿을 쓰지 않고 환경변수만 씁니다(아래 "로컬 개발 DB"의 평가용 로컬 DB). 일부만 주면 나머지는 비어 오류로 드러납니다.
+- 시크릿 설정 위에서도 `PGPORT`, `PGDATABASE`, `RDS_SECRET_ARN`, `PGSSLROOTCERT`, `PGSSLMODE`로 항목별로 바꿀 수 있습니다(환경변수가 우선).
 - `PGHOST`를 RDS 호스트(`*.rds.amazonaws.com`)로 직접 주고 `PGSSLROOTCERT`를 생략하면 같은 CA 번들을 씁니다. 그 밖의 호스트에는 적용하지 않습니다.
-- 주의: 로컬에서 `PGHOST`를 설정하지 않고 실행하면 위 고정 RDS에 연결을 시도합니다(VPC 밖이면 실패, 읽기 전용 연결).
+- 주의: 로컬에서 `PGHOST`를 설정하지 않고 실행하면 AWS 자격증명으로 앱 시크릿을 읽어 RDS에 연결을 시도합니다(VPC 밖이면 실패, 읽기 전용 연결).
 - `v2/certs/us-east-1-bundle.pem`은 AWS 공식 RDS CA 번들(공개 신뢰 앵커 3개, 개인 키 아님)이며 `certs/.gitignore`로 git에 포함됩니다. CA가 바뀌면 [공식 번들](https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem)로 갱신하세요.
 
 ## 환경변수
@@ -232,8 +238,9 @@ LLM_V2_AUTH_MODE=ec2_role
 | 이름 | 설명 | 기본값 |
 |---|---|---|
 | (리전) | **us-east-1 고정**. 임베딩·Claude·Secrets Manager 모두 이 리전을 쓰고, 환경변수로 바꿀 수 없다(`config.REGION`) | us-east-1 |
-| `PGHOST`, `PGPORT`, `PGDATABASE` (`DB_HOST` 등도 인식) | DB 위치. **`PGHOST`를 주면 v1 고정 RDS 설정 대신 환경변수만 사용** | v1 고정 RDS / 5432 / `pill` |
-| `RDS_SECRET_ARN` | 연결마다 여기서 사용자/비밀번호를 읽는다(시크릿 이름도 가능) | v1 고정 시크릿(`PGHOST`가 없을 때) |
+| `PGHOST`, `PGPORT`, `PGDATABASE` (`DB_HOST` 등도 인식) | DB 위치. **`PGHOST`를 주면 앱 시크릿 대신 환경변수만 사용** | 앱 시크릿의 `DB_HOST`, `DB_PORT`, `DB_NAME` |
+| `RDS_SECRET_ARN` | 연결마다 여기서 사용자/비밀번호를 읽는다(시크릿 이름도 가능) | RDS 관리 시크릿(`PGHOST`가 없을 때) |
+| `DB_SECRET_ID` | DB 위치(`DB_HOST`, `DB_PORT`, `DB_NAME`)를 읽을 앱 시크릿 이름. `PGHOST`가 없을 때만 사용 | `pill-check/dev/app` |
 | `PGUSER`, `PGPASSWORD` | 시크릿을 쓰지 않을 때(로컬 개발) | — |
 | `PGSSLMODE`, `PGSSLROOTCERT` | `verify-full`(기본) / `require` / `disable`, RDS CA 번들 경로 | verify-full / `v2/certs` CA 번들(RDS 호스트일 때) |
 | `LLM_V2_AUTH_MODE` | AWS 자격증명 정책 `auto` / `ec2_role` / `default_chain` (위 "AWS 자격증명과 DB 연결") | auto |
@@ -340,7 +347,7 @@ uv run python -m app.llm.v2.evaluation.model_compare --limit 30
 - 자동 지표: 근거 기반 답변 비율, 근거 없음/실패 비율, 평균·p90 소요 시간, 도구 호출·라운드 수, 입력/출력 토큰, 기대 제품·섹션의 근거를 찾아왔는지.
   토큰은 가격 계산용이 아니라 상대 비교용입니다(요금은 직접 곱하세요).
 - 답변 문장의 품질(정확성, 말투, 쉬운 설명)은 자동 판정하지 않습니다. 실행 후 저장되는 `evaluation/generated/model_compare-*.jsonl`에 질문별 두 모델의 답변 전문이 들어 있으니 사람이 읽고 비교하세요(건강 관련 답변이 담겨 git에서 제외됩니다).
-- 저장 파일의 `tool_trace`에 모델이 도구에 넘긴 인자(제품명·섹션·`product_key`·질문)와 결과 첫머리가 들어 있어, 모델이 갈린 질문의 원인(제품명을 잘못 넘겼는지 등)을 볼 수 있습니다. 로그에는 남기지 않고 이 로컬 파일에만 저장됩니다.
+- 저장 파일의 `tool_trace`에 모델이 도구에 넘긴 인자(제품명·섹션·질문)와 결과 첫머리가 들어 있어, 모델이 갈린 질문의 원인(제품명을 잘못 넘겼는지 등)을 볼 수 있습니다. 로그에는 남기지 않고 이 로컬 파일에만 저장됩니다.
 - 모델을 한 개만 바꿔 쓰려면 `LLM_V2_MODEL_ID`만 바꾸면 됩니다.
 
 ## 시나리오 점검 (프롬프트를 고치며 반복 확인)
@@ -364,13 +371,19 @@ uv run python -m app.llm.v2.evaluation.scenario_check --model sonnet   # 모델�
 
 팀 규칙상 EC2에서 코드를 직접 고치지 않으므로, 프롬프트를 다듬는 반복은 내 PC에서 실제 RDS(`product_search`)에 붙어서 하고, 마지막에 PR → master → EC2 pull·재빌드 후 같은 점검을 한 번 더 합니다.
 
-1. 터미널 하나에서 터널을 열어 둡니다(팀 문서 5-1. 내 PC의 5432가 쓰이고 있으면 `localPortNumber=15432`).
+1. RDS 호스트를 확인합니다(저장소에는 주소를 적지 않습니다). 시크릿 전체를 화면에 찍지 않도록 호스트만 꺼냅니다.
 
 ```powershell
-aws ssm start-session --target i-00d9e7255e6bcc7c6 --region us-east-1 --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com,portNumber=5432,localPortNumber=5432
+aws secretsmanager get-secret-value --secret-id pill-check/dev/app --region us-east-1 --query SecretString --output text | python -c "import sys,json; print(json.load(sys.stdin)['DB_HOST'])"
 ```
 
-2. 다른 터미널에서 연결 정보를 설정합니다. 비밀번호는 AWS 콘솔 Secrets Manager에서 찾고, 화면에 보이지 않게 입력해 명령 기록에 남기지 않습니다.
+2. 터미널 하나에서 터널을 열어 둡니다(팀 문서 5-1. 내 PC의 5432가 쓰이고 있으면 `localPortNumber=15432`).
+
+```powershell
+aws ssm start-session --target i-00d9e7255e6bcc7c6 --region us-east-1 --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=<RDS 호스트>,portNumber=5432,localPortNumber=5432
+```
+
+3. 다른 터미널에서 연결 정보를 설정합니다. 비밀번호는 AWS 콘솔 Secrets Manager에서 찾고, 화면에 보이지 않게 입력해 명령 기록에 남기지 않습니다.
 
 ```powershell
 cd backend
@@ -379,7 +392,7 @@ $p = Read-Host "RDS 비밀번호" -AsSecureString
 $env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p))
 ```
 
-3. 위의 점검 명령을 실행합니다. 이 계정은 팀이 공유하는 마스터 계정이므로, v2가 하는 읽기 전용 조회 외에는 아무것도 하지 않도록 주의하세요. 끝나면 `Remove-Item Env:PGPASSWORD`로 지웁니다.
+4. 위의 점검 명령을 실행합니다. 이 계정은 팀이 공유하는 마스터 계정이므로, v2가 하는 읽기 전용 조회 외에는 아무것도 하지 않도록 주의하세요. 끝나면 `Remove-Item Env:PGPASSWORD`로 지웁니다.
 
 - 연결은 `localhost`라서 인증서 호스트명 검사(`verify-full`)가 맞지 않아 `PGSSLMODE=require`를 씁니다. 이 설정은 이 방식(터널)에서만 쓰세요.
 - 병용금기는 `dev_data/contraindication.sqlite`가 있으면 그 파일로, 없으면 RDS `gold.drug_contraindication`으로 켜집니다(로컬 DB에 `gold`가 없으면 `LLM_V2_CONTRA_SOURCE=off`).

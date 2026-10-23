@@ -26,11 +26,13 @@ class FakeAgent:
     def __init__(self, result=GOOD, delay=0.0, error=None):
         self.result, self.delay, self.error = result, delay, error
         self.calls, self.closed, self.active, self.peak = [], False, 0, 0
+        self.products_seen = []
 
     tool_names = ["search_drug_info", "check_contraindication"]
 
-    async def run(self, question, profile_context=None, product_key=None):
-        self.calls.append((question, profile_context, product_key))
+    async def run(self, question, profile_context=None, products=None):
+        self.calls.append((question, profile_context))
+        self.products_seen.append(products)
         self.active += 1
         self.peak = max(self.peak, self.active)
         try:
@@ -64,17 +66,35 @@ def test_ask_returns_structured_answer():
     assert body["usage"] == {"input_tokens": 1200, "output_tokens": 80}
     assert body["latency_ms"] == 1234 and body["model_id"] == "test-model"
     assert "tool_trace" not in body and "evidence" not in body  # 내부 계측은 노출하지 않는다
-    assert agent.calls == [("타이레놀 효능이 뭐예요?", None, None)]  # 앞뒤 공백 제거
+    assert agent.calls == [("타이레놀 효능이 뭐예요?", None)]  # 앞뒤 공백 제거
 
 
-def test_ask_passes_product_key_and_profile():
+def test_ask_passes_profile_and_rejects_product_key():
     client, agent = client_for()
     with client:
-        response = client.post(
-            "/llm/v2/ask", json={"question": "보관은?", "product_key": "drug:195700010", "profile_context": "30대 임산부"}
-        )
+        response = client.post("/llm/v2/ask", json={"question": "보관은?", "profile_context": "30대 임산부"})
+        assert response.status_code == 200
+        assert agent.calls == [("보관은?", "30대 임산부")]
+        assert client.post("/llm/v2/ask", json={"question": "보관은?", "product_key": "drug:1"}).status_code == 422  # 더 이상 받지 않는 필드
+
+
+def test_ask_passes_products_list():
+    client, agent = client_for()
+    with client:
+        response = client.post("/llm/v2/ask", json={"question": "이 약들 같이 먹어도 돼요?", "products": ["아로나민골드정", "코푸시럽에스"]})
     assert response.status_code == 200
-    assert agent.calls == [("보관은?", "30대 임산부", "drug:195700010")]
+    assert agent.products_seen == [["아로나민골드정", "코푸시럽에스"]]
+
+
+def test_ask_products_validation():
+    client, agent = client_for()
+    with client:
+        post = lambda products: client.post("/llm/v2/ask", json={"question": "a", "products": products}).status_code  # noqa: E731
+        assert post([f"약{i}" for i in range(9)]) == 422  # 최대 8개
+        assert post([""]) == 422
+        assert post(["x" * 121]) == 422
+        assert post("아로나민골드정") == 422  # 배열이 아니다
+    assert agent.calls == []
 
 
 def test_ask_validation_errors():
@@ -84,8 +104,6 @@ def test_ask_validation_errors():
         assert post({}) == 422
         assert post({"question": "   "}) == 422  # 공백만
         assert post({"question": "x" * 1001}) == 422  # 스키마 상한
-        assert post({"question": "a", "product_key": "drug:1; DROP TABLE x"}) == 422  # 형식 위반
-        assert post({"question": "a", "product_key": "unknown:123"}) == 422
         assert post({"question": "a", "extra": 1}) == 422  # 알 수 없는 필드
         assert post({"question": "a", "profile_context": "p" * 1001}) == 422
     assert agent.calls == []  # 검증 실패는 에이전트에 도달하지 않는다
@@ -106,6 +124,7 @@ def test_policy_outcomes_are_200_with_status():
                     {"product_key": "drug:2", "product_name": "라식스정", "manufacturer": None}],
     )
     for result, status in ((clarify, "needs_clarification"), (AgentAnswer("근거 없음", stop_reason="no_evidence"), "no_evidence"),
+                           (AgentAnswer("상담 안내", stop_reason="consult"), "consult"),
                            (AgentAnswer("위기 안내", stop_reason="crisis", emergency=True), "crisis")):
         client, _ = client_for(FakeAgent(result))
         with client:
