@@ -5,7 +5,10 @@ import DrugArt from "@/components/ui/DrugArt"
 import Modal from "@/components/ui/Modal"
 import Notice from "@/components/ui/Notice"
 import { button } from "@/components/ui/styles"
+import { useSession } from "@/providers/SessionProvider"
 import { getMedicine, type MedicineDetail } from "../api"
+import { matchesProfile } from "../profileMatch"
+import MineBadge from "./MineBadge"
 
 export default function DrugDetailModal({
   id,
@@ -18,6 +21,8 @@ export default function DrugDetailModal({
   onCheckInteraction: () => void
   onClose: () => void
 }) {
+  const { logged, memberProfile, guestProfile } = useSession()
+  const profile = logged ? memberProfile : guestProfile
   const [drug, setDrug] = useState<MedicineDetail | null>(null)
   const [error, setError] = useState(false)
 
@@ -60,6 +65,30 @@ export default function DrugDetailModal({
                 </p>
               </div>
             ))}
+          <div className="mb-5">
+            <h4 className="mb-2 font-semibold">DUR 주의</h4>
+            {drug.durCautions.length === 0 ? (
+              <p className="leading-7 text-slate-500">
+                식약처 DUR에 등록된 임부·연령·노인 등의 주의가 없어요. 안전하다는 뜻은 아니에요.
+              </p>
+            ) : (
+              <ul className="max-h-60 space-y-3 overflow-y-auto">
+                {drug.durCautions.map((caution, i) => (
+                  <li key={i} className="leading-7 text-slate-500">
+                    <span className="font-semibold text-slate-700">
+                      {[caution.type, caution.grade, caution.ageBase, caution.maxDosageTerm]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                    {caution.ingredient && ` (${caution.ingredient})`}
+                    {matchesProfile(caution, profile) === true && <MineBadge />}
+                    {caution.content && <span className="block whitespace-pre-line">{caution.content}</span>}
+                    {caution.remark && <span className="block text-sm">비고: {caution.remark}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <p className="mb-4 text-xs text-slate-400">출처: {drug.source}</p>
           <button onClick={onCheckInteraction} className={`${button} mb-4 w-full`}>
             이 약으로 병용 확인하기

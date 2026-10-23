@@ -10,12 +10,25 @@ class MedicineSummary(CamelModel):
     sale_status: str = "판매"  # 판매 | 판매중지 (판매중지 약은 공식 DUR 판정 없음)
 
 
+class DurCaution(CamelModel):
+    """약 하나의 식약처 DUR 주의 한 건 (gold.drug_dur_caution)"""
+
+    type: str  # 임부금기 | 특정연령대금기 | 노인주의 | 투여기간주의 | 서방정분할주의
+    ingredient: str | None
+    grade: str | None  # 임부금기 등급 (1등급 / 2등급)
+    age_base: str | None  # 특정연령대금기 기준 (예: 12세 미만)
+    max_dosage_term: str | None  # 투여기간주의 최대 투여기간
+    content: str | None  # 금기·주의 내용 (노인주의는 대부분 없음)
+    remark: str | None
+
+
 class MedicineDetail(MedicineSummary):
     efficacy: str
     usage: str
     precautions: str
     interaction_summary: str
     source: str
+    dur_cautions: list[DurCaution] = []  # 비어 있으면 "등록된 DUR 주의 없음" (안전하다는 뜻이 아님)
 
 
 class ContraindicationRow(CamelModel):

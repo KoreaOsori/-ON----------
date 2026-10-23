@@ -152,6 +152,9 @@ async def run_scenarios(agent: Any, scenarios: list[dict[str, Any]], show: bool 
                 "seconds": round(answer.elapsed_seconds, 2),
                 "input_tokens": answer.input_tokens,
                 "output_tokens": answer.output_tokens,
+                "cache_read_tokens": answer.cache_read_tokens,
+                "cache_write_tokens": answer.cache_write_tokens,
+                "truncated": answer.truncated,
                 "answer": answer.answer,
                 "tool_trace": answer.tool_trace,
             }

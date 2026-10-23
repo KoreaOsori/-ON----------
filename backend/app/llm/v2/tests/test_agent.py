@@ -14,6 +14,7 @@ from app.llm.v2.prompts import (
     OUT_OF_SCOPE_ANSWER,
     SAFETY_FOOTER,
     TIMEOUT_ANSWER,
+    TRUNCATED_NOTICE,
 )
 from app.llm.v2.safety import is_crisis, is_emergency
 from app.llm.v2.tests.helpers import ScriptedModel, make_settings, raises, response, text_block, tool_use_block
@@ -575,3 +576,101 @@ def test_clarification_text_asks_to_retype_not_to_select():
 def test_fixed_messages_ask_to_ask_again_with_name():
     for text in (NO_EVIDENCE_ANSWER, OUT_OF_SCOPE_ANSWER):
         assert "알려주시면" not in text and "질문해 주" in text
+
+
+# ---- 프롬프트 캐시
+
+def _with_cache_usage(resp, tokens_in, tokens_out, read=0, write=0):
+    from types import SimpleNamespace
+
+    resp.usage = SimpleNamespace(input_tokens=tokens_in, output_tokens=tokens_out, cache_read_input_tokens=read, cache_creation_input_tokens=write)
+    return resp
+
+
+async def test_prompt_cache_marks_system_block_and_counts_cache_tokens():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(
+        _with_cache_usage(response(search_call()), 120, 30, write=7000),
+        _with_cache_usage(response(text_block("정리")), 400, 50, read=7000),
+    )
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), prompt_cache=True)
+    result = await agent.run("타이레놀 효능")
+    for call in model.calls:
+        assert call["system"] == [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+    assert (result.input_tokens, result.output_tokens, result.cache_read_tokens, result.cache_write_tokens) == (520, 80, 7000, 7000)
+
+
+async def test_prompt_cache_is_off_by_default_in_the_class_and_sends_plain_system():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(response(text_block("x")))
+    await make_agent(model, FakeTool(FOUND)).run("질문")
+    assert model.calls[0]["system"] == SYSTEM_PROMPT
+
+
+async def test_prompt_cache_falls_back_when_endpoint_rejects_cache_control():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(RuntimeError("Unknown field: cache_control"), response(search_call()), response(text_block("정리")))
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), prompt_cache=True)
+    result = await agent.run("타이레놀 효능")
+    assert result.grounded and isinstance(model.calls[0]["system"], list)
+    assert model.calls[1]["system"] == SYSTEM_PROMPT and model.calls[2]["system"] == SYSTEM_PROMPT  # 한 번 실패한 뒤로는 계속 끈다
+
+
+async def test_other_model_errors_are_not_swallowed_by_cache_fallback():
+    model = ScriptedModel(RuntimeError("throttled"))
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), prompt_cache=True)
+    result = await agent.run("질문")
+    assert result.stop_reason == "error" and len(model.calls) == 1
+
+
+def test_prompt_cache_setting_defaults_on_and_can_be_disabled():
+    from app.llm.v2.config import V2Settings
+
+    assert V2Settings.from_env({}).prompt_cache is True
+    assert V2Settings.from_env({"LLM_V2_PROMPT_CACHE": "0"}).prompt_cache is False
+    assert V2Settings.from_env({"LLM_V2_PROMPT_CACHE": "off"}).prompt_cache is False
+
+
+async def test_max_tokens_final_answer_is_trimmed_and_flagged():
+    import logging
+
+    model = ScriptedModel(
+        response(search_call(), stop_reason="tool_use"),
+        response(text_block("첫 문장이에요. 둘째 문장은 이렇게 끊"), stop_reason="max_tokens"),
+    )
+    records: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler, agent_logger = _Collect(level=logging.INFO), logging.getLogger("app.llm.v2.agent")
+    previous = agent_logger.level
+    agent_logger.addHandler(handler)
+    agent_logger.setLevel(logging.INFO)
+    try:
+        result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 부작용")
+    finally:
+        agent_logger.removeHandler(handler)
+        agent_logger.setLevel(previous)
+    assert result.stop_reason == "done" and result.truncated and result.grounded
+    assert result.answer.startswith("첫 문장이에요.\n\n" + TRUNCATED_NOTICE) and "이렇게 끊" not in result.answer
+    assert result.answer.endswith(SAFETY_FOOTER)
+    logs = "\n".join(records)
+    assert "model_stop=max_tokens" in logs and "blocks=text=1" in logs and "model_stop=tool_use" in logs
+    assert "타이레놀 부작용" not in logs and "첫 문장" not in logs  # 질문·답변 내용은 로그에 남기지 않는다
+
+
+async def test_normal_answer_is_not_flagged_truncated():
+    model = ScriptedModel(response(search_call(), stop_reason="tool_use"), response(text_block("끝난 답이에요."), stop_reason="end_turn"))
+    result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 용법")
+    assert not result.truncated and TRUNCATED_NOTICE not in result.answer
+
+
+async def test_max_tokens_during_tool_request_is_error():
+    model = ScriptedModel(response(search_call(), stop_reason="max_tokens"))
+    result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 용법")
+    assert result.stop_reason == "error" and result.answer == ERROR_ANSWER and not result.truncated

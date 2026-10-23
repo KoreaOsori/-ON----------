@@ -138,11 +138,16 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
   "candidates": [],
   "tools_used": ["check_contraindication"],
   "rounds": 2,
-  "usage": {"input_tokens": 5200, "output_tokens": 420},
+  "usage": {"input_tokens": 480, "output_tokens": 420, "cache_read_tokens": 7500, "cache_write_tokens": 0},
   "latency_ms": 5300,
   "model_id": "us.anthropic.claude-haiku-5-5"
 }
 ```
+
+- `usage`: `input_tokens`는 **캐시 없이 처리된 입력**만(사용자 메시지·도구 결과 등)이고, 시스템 프롬프트·도구 정의는 프롬프트 캐시를 쓰므로 `cache_read_tokens`(캐시 읽기, 저렴한 단가)로 따로 나옵니다. 캐시를 새로 쓴 첫 호출은 `cache_write_tokens`(1.25배 단가)에 잡히고, 캐시는 마지막 사용 후 약 5분 유지됩니다. 실제 처리량 = 세 값의 합이므로 비용은 `input` + 0.1×`cache_read` + 1.25×`cache_write` 기준으로 봅니다.
+- 모델 호출마다 `model_call round=… model_stop=… blocks=… input=… output=… cache_read=… cache_write=…` 한 줄이 서버 로그(INFO)에 남습니다. `model_stop=max_tokens`면 출력 한도(`LLM_V2_MAX_TOKENS`)에 걸린 것이고, `blocks`에 `thinking` 같은 보이지 않는 블록이 있으면 출력 토큰이 그만큼 더 쓰인 것입니다. 질문·답변 내용은 남기지 않습니다.
+- 답변이 `max_tokens`에 걸려 끊기면 마지막 미완성 문장을 지우고 "답변이 길어 여기서 줄였어요…" 안내를 붙이며(`stop_reason`은 `done` 그대로, 내부 `AgentAnswer.truncated=True`), 도구 요청이 도중에 끊기면 `error`로 처리합니다.
+- 검색 결과(`search_drug_info`)는 문단당 800자(문장 경계에서 자름), 전체 3800자까지만 모델에 전달합니다. 상한을 넘으면 주의사항 중 금기·중대한 이상반응 문단(`투여하지`, `금기`, `중증`, `쇽` 등 표지)을 먼저 싣고 나머지는 유사도 순으로 채우며, 빠진 문단이 있으면 "분량 때문에 문단 N개를 싣지 못했습니다" 안내를 붙여 모델이 "일부만 안내했어요"라고 밝히게 합니다(첫 문단은 항상 포함, 출력 순서는 유사도 순).
 
 | `status` | HTTP | 의미 |
 |---|---|---|
@@ -250,6 +255,8 @@ LLM_V2_AUTH_MODE=ec2_role
 | `LLM_V2_PROVIDER` | `bedrock`(InvokeModel, EC2 역할로 가능) / `mantle`(IAM에 `bedrock-mantle:CreateInference` 필요) | bedrock |
 | `LLM_V2_MAX_TOOL_ROUNDS`, `LLM_V2_MAX_TOOL_CALLS`, `LLM_V2_MAX_SECONDS` | 하니스 한도 | 4 / 6 / 60 |
 | `LLM_V2_SEARCH_TOP_K` | 도구 한 번에 가져올 근거 수 | 5 |
+| `LLM_V2_PROMPT_CACHE` | 시스템 프롬프트·도구 정의를 프롬프트 캐시에 올림(`0`/`false`/`off`로 끔). 이 엔드포인트가 `cache_control`을 거부하면 첫 오류 후 자동으로 꺼짐 | 켬 |
+| `LLM_V2_THINKING` | `off`면 모델 호출에 `thinking: disabled`를 보내 확장 생각 블록(보이지 않는 출력 토큰)을 끔. `on`이면 모델 기본값. 엔드포인트가 이 옵션을 거부하면 첫 오류 후 자동으로 꺼짐 | off |
 | `LLM_V2_CONTRA_DB` | 병용금기 인덱스(SQLite) 경로. 비우면 `dev_data/contraindication.sqlite`가 있을 때 그 파일을 쓰고, 없으면 RDS를 읽음 | (없음) |
 | `LLM_V2_CONTRA_SOURCE` | 병용금기 자료 출처: `auto` / `rds` / `sqlite` / `off` | `auto` |
 | `LLM_V2_API_KEY` | HTTP API의 `X-API-Key` 값. 비우면 인증 없이 열림(localhost 전용) | (없음) |
