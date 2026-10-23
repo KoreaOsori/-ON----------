@@ -1,0 +1,15 @@
+# 모델·데이터는 compose 에서 연결 (이미지에 넣지 않음)
+deploy/
+crops/
+# 사진·fixture (검증 때만 연결)
+tests/
+# 인프라·문서·비밀값
+infra/
+docs/
+*.md
+.env
+.env.*
+!.env.example
+**/__pycache__/
+**/*.pyc
+**/Thumbs.db

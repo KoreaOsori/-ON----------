@@ -234,11 +234,11 @@ pill_model/
 
 ## 6. 완료 기준
 - [x] 1차 plan/apply: 생성 13, 팀 자원 변경·삭제 0 (2026-10-22)
-- [ ] IAM 2차 apply (prescription·Bedrock), Bedrock 첫 호출 AccessDenied 없음
-- [ ] 빌드 검사: cv2 4.10.0 · opencv 패키지 1개 · numpy 2.1.3 · pillow 11.3.0 · rembg 1회 실행
-- [ ] OCR 모델 "Using cached files", 인터넷 다운로드 없음
+- [x] IAM 2차 apply (prescription·Bedrock) (2026-10-23) / [ ] Bedrock 첫 호출 AccessDenied 없음 (EC2)
+- [x] (PC) 빌드 검사: cv2 4.10.0 · opencv 패키지 1개 · numpy 2.1.3 · pillow 11.3.0 · rembg 1회 실행
+- [x] (PC) OCR 모델 "Using cached files", --network none 에서 엔진 생성
 - [ ] `/health` 정상, image_index_size > 0
-- [ ] fixtures 대조 3-5: 알약 3쌍 + 처방전 3장 모두 글자 동일·최종 결과 동일 (다르면 원인 보고)
+- [x] (PC) fixtures 대조 3-5 — 지문까지 전부 동일 / [ ] EC2 재확인: 알약 3쌍 + 처방전 3장 모두 글자 동일·최종 결과 동일 (다르면 원인 보고)
 - [ ] 알약 1건 평균 ≤ 30초 (배경 제거 포함 따로), 처방전 1건 EC2 5회 평균 기록
 - [ ] 백엔드 → 워커 호출 성공, 인터넷에서 8000 접근 불가 확인
 - [ ] `git diff`에 계정 번호·버킷 이름·토큰·모델 파일·사진·노트북 없음

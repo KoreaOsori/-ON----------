@@ -137,3 +137,31 @@
 - 처방전: `tests/fixtures/rx/` rx_0001.jpg(4000x3000, 4.7MB), bag_0001.jpg(4000x3000, 4.4MB), 약봉투7.jpg(720x534) — 3장 모두 있음.
   ⚠ 저장소 `data/ocr_evaluation/…/rx_0001.jpg`(137KB)와 **다른 파일** → 대조에는 tests/fixtures 쪽만 사용.
 - git: 사진·Thumbs.db 모두 제외 확인, 커밋 대상은 *.expected.json 6개뿐.
+
+## 2026-10-23 — IAM 2차 apply 확인, Docker 이미지 빌드, fixture 대조 통과 (PC)
+
+### IAM (사용자 apply 후 조회)
+- 정책 6문장: ModelList·ModelRead·CropWrite·SilverList/Read(`silver/drug_product/*`, `_latest.json`)·UploadRead(`pill/*`, `prescription/*`)·RxLlmInvoke(프로필 + 기반 모델 3리전) — plan 과 일치.
+
+### 정리한 파일
+- `CLAUDE(model).md`, `PLAN(model).md` (claude.md·plan.md 로 합침), OCR zip(풀린 파일과 pdiparams·json sha256 대조 후), 적용 끝난 `tfplan` 삭제.
+
+### Docker (PC Docker Desktop 29.8, linux/x86_64)
+- 새 파일: Dockerfile, constraints.txt, requirements.txt, .dockerignore, compose.yaml, .env.example, scripts/check_env.py, app/ocr_engine.py, scripts/verify_fixtures.py
+- 확인한 사실: paddlepaddle 3.2.2 cp313 manylinux 휠 PyPI 존재, torch 2.11.0+cpu cp313 존재. 백엔드 uv.lock: fastapi 0.143.0·uvicorn 0.54.0·pydantic 2.14.1·httpx 0.28.1(이미 있음 → uv.lock 변경 불필요).
+- rembg 2.0.69 의 `__init__` 은 bg·session_factory 만 import → gradio·aiohttp(cli 전용) 불필요.
+- 빌드 성공, 이미지 1.36GB. pip 경고 `rembg 2.0.69 requires opencv-python-headless, which is not installed` 는 의도한 것(A안).
+- check_env.py 결과: numpy 2.1.3 · pillow 11.3.0 · pandas 2.2.3 · scipy 1.16.3 · paddlepaddle 3.2.2 · paddleocr 3.7.0 · paddlex 3.7.2 ·
+  opencv-contrib-python 4.10.0.84(opencv 패키지 1개) · cv2 4.10.0 · rapidfuzz 3.14.6 · timm 1.0.30 · rembg 2.0.69 · torch 2.11.0+cpu · rembg 1회 실행 OK.
+  constraints 덕분에 numba 0.68.0·scikit-image 0.26.0·onnxruntime 1.31.0 이 numpy 를 올리지 않고 설치됨.
+- `requirements.lock.txt` (pip freeze 108줄) 저장.
+- rembg 가중치(빌드 때 포함): u2netp 4.6MB · silueta 44MB · isnet-general-use 179MB.
+  라이선스: 배포처 danielgatis/rembg = MIT, 원 모델 U-2-Net(u2netp·silueta 기반) = Apache-2.0, DIS(isnet) = Apache-2.0 (gh api 조회).
+  가중치 파일 자체에 별도 라이선스 표기는 없음 → 저장소 라이선스가 적용된다고 보는 것은 추론.
+
+### fixture 대조 (컨테이너, `--network none`, deploy·ocr_models 읽기 전용 연결, LLM 호출 없음)
+- 로그: `Model files already exist. Using cached files.` (det·rec 둘 다) → 인터넷 없이 엔진 생성. load 18.2초, 공유 엔진 `pill.ocr is rx.ocr` = true.
+- 알약 3쌍(29002·34342·39916): 사진 6장 **지문 6/6 동일**, 글자 동일, quality 동일, band A·imprint_match 1.0·Top-3·next_step(top1) 동일, 점수 최대 차이 0.0.
+- 처방전 3장(bag_0001·rx_0001·약봉투7): **지문 3/3 동일**, 줄 수 27·20·116 동일, `decide(lines, llm_result)` = fixture drugs (다른 약 0).
+- 결과 `{"pill_pass": true, "rx_pass": true, "fingerprints_all_same": true}`
+- 참고 시간(PC 8 CPU, 측정 1회라 평균 아님): 알약 사진 1장 prepare 6.9~9.9초, 처방전 OCR 8.5~10.4초. EC2(t3.medium 2 vCPU)는 더 느릴 것(추론) → EC2 5회 평균 필요.
