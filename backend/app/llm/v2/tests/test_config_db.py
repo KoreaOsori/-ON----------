@@ -3,6 +3,9 @@ import json
 
 from app.llm.v2.config import ConfigError, V2Settings
 from app.llm.v2.db import (
+    _ENDPOINT_CACHE,
+    database_label,
+    resolve_endpoint,
     DatabaseUnavailableError,
     build_ssl,
     connect_kwargs,
@@ -77,6 +80,95 @@ def test_connect_kwargs_force_read_only_and_timeout():
 def test_connect_kwargs_requires_host():
     with raises(ConfigError):
         connect_kwargs(make_settings(db_host=None), "u", "p")
+
+
+class FakeAppSecret:
+    """pill-check/dev/app 가짜. DB_HOST, DB_PORT, DB_NAME 과 쓰지 않는 값들을 담는다."""
+
+    def __init__(self, payload=None):
+        self.payload = payload or {"DB_HOST": "db.example.internal", "DB_PORT": "5433", "DB_NAME": "pilldb", "DB_PASSWORD": "never-used"}
+        self.calls = 0
+
+    def get_secret_value(self, SecretId):
+        assert SecretId == "pill-check/dev/app"
+        self.calls += 1
+        return {"SecretString": json.dumps(self.payload)}
+
+
+def test_resolve_endpoint_reads_app_secret_once_and_caches():
+    _ENDPOINT_CACHE.clear()
+    secrets = FakeAppSecret()
+    settings = make_settings(db_host=None, db_name=None, app_secret_id="pill-check/dev/app")
+    assert resolve_endpoint(settings, secrets) == ("db.example.internal", 5433, "pilldb")
+    assert resolve_endpoint(settings, secrets) == ("db.example.internal", 5433, "pilldb")
+    assert secrets.calls == 1  # 위치는 바뀌지 않아 한 번만 읽는다
+    assert database_label(settings, secrets) == "pilldb:5433" and "example" not in database_label(settings, secrets)
+    _ENDPOINT_CACHE.clear()
+
+
+def test_resolve_endpoint_defaults_port_and_lets_env_win():
+    _ENDPOINT_CACHE.clear()
+    secrets = FakeAppSecret({"DB_HOST": "h1", "DB_NAME": "n1"})
+    settings = make_settings(db_host=None, db_name=None, app_secret_id="pill-check/dev/app")
+    assert resolve_endpoint(settings, secrets) == ("h1", 5432, "n1")
+    override = make_settings(db_host=None, db_name="other", db_port=6000, app_secret_id="pill-check/dev/app")
+    assert resolve_endpoint(override, secrets) == ("h1", 6000, "other")
+    full = make_settings(db_host="localhost", db_name="pill", app_secret_id=None)
+    assert resolve_endpoint(full, secrets) == ("localhost", 5432, "pill") and secrets.calls == 1
+    _ENDPOINT_CACHE.clear()
+
+
+def test_resolve_endpoint_without_any_source_is_config_error():
+    with raises(ConfigError):
+        resolve_endpoint(make_settings(db_host=None, db_name=None, app_secret_id=None))
+    with raises(ConfigError):
+        resolve_endpoint(make_settings(db_host="h", db_name=None, app_secret_id=None))
+
+
+def test_resolve_endpoint_errors_do_not_leak():
+    _ENDPOINT_CACHE.clear()
+
+    class Broken:
+        def get_secret_value(self, SecretId):
+            raise RuntimeError("host=secret-host.internal secret=" + SecretId)
+
+    settings = make_settings(db_host=None, db_name=None, app_secret_id="pill-check/dev/app")
+    with raises(DatabaseUnavailableError) as caught:
+        resolve_endpoint(settings, Broken())
+    message = str(caught.value)
+    assert "secret-host" not in message and "pill-check/dev/app" not in message and caught.value.__cause__ is None
+    for payload in ({"DB_HOST": "h"}, {"DB_HOST": "", "DB_NAME": "n"}, {"DB_NAME": "n"}):
+        with raises(DatabaseUnavailableError):
+            resolve_endpoint(settings, FakeAppSecret(payload))
+    assert _ENDPOINT_CACHE == {}  # 실패는 캐시하지 않는다
+    assert database_label(settings, Broken()) == "(DB 접속 정보를 읽지 못함)"
+
+
+async def test_open_connection_connects_to_endpoint_from_app_secret():
+    _ENDPOINT_CACHE.clear()
+
+    class Both:
+        def __init__(self):
+            self.app = FakeAppSecret()
+
+        def get_secret_value(self, SecretId):
+            if SecretId == "pill-check/dev/app":
+                return self.app.get_secret_value(SecretId)
+            return {"SecretString": json.dumps({"username": "master", "password": "pw"})}
+
+    seen = {}
+
+    async def connect(**kwargs):
+        seen.update(kwargs)
+        return "connection"
+
+    settings = make_settings(
+        db_host=None, db_name=None, app_secret_id="pill-check/dev/app", rds_secret_arn="rds-secret", db_ssl_mode="disable"
+    )
+    assert await open_connection(settings, Both(), connect) == "connection"
+    assert (seen["host"], seen["port"], seen["database"], seen["user"]) == ("db.example.internal", 5433, "pilldb", "master")
+    assert "never-used" not in repr(seen)  # 앱 시크릿의 다른 값(DB_PASSWORD 등)은 쓰지 않는다
+    _ENDPOINT_CACHE.clear()
 
 
 def test_ssl_modes():
@@ -195,16 +287,29 @@ def test_api_settings_from_env():
     assert "s3cret-v2-key" not in repr(custom)  # API 키는 repr 에 나오지 않는다
 
 
-def test_db_defaults_match_v1_fixed_rds_when_pghost_is_unset():
-    from app.llm.v2.config import DEFAULT_DB_CA_FILE, DEFAULT_DB_HOST, DEFAULT_DB_NAME, DEFAULT_DB_SECRET_ID
+def test_db_location_comes_from_app_secret_when_pghost_is_unset():
+    from app.llm.v2.config import DEFAULT_APP_SECRET_ID, DEFAULT_DB_CA_FILE, DEFAULT_DB_SECRET_ID
 
     settings = V2Settings.from_env({})
-    assert (settings.db_host, settings.db_name, settings.rds_secret_arn) == (DEFAULT_DB_HOST, DEFAULT_DB_NAME, DEFAULT_DB_SECRET_ID)
-    assert settings.db_host.endswith(".rds.amazonaws.com") and settings.db_port == 5432
+    assert (settings.db_host, settings.db_port, settings.db_name) == (None, None, None)  # 코드에 주소를 적지 않는다
+    assert settings.app_secret_id == DEFAULT_APP_SECRET_ID == "pill-check/dev/app"
+    assert settings.rds_secret_arn == DEFAULT_DB_SECRET_ID
     assert settings.db_ssl_mode == "verify-full" and settings.db_ssl_root_cert == DEFAULT_DB_CA_FILE
     assert DEFAULT_DB_CA_FILE.replace("\\", "/").endswith("/llm/v2/certs/us-east-1-bundle.pem")  # v1 파일을 참조하지 않는다
-    # 시크릿 이름은 비밀값이 아니지만 repr 에 비밀번호가 나오지 않는 것은 그대로다
     assert settings.db_password is None
+    assert V2Settings.from_env({"DB_SECRET_ID": "other/secret"}).app_secret_id == "other/secret"
+
+
+def test_no_rds_hostname_is_hardcoded_in_v2_sources():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    offenders = [
+        str(path.relative_to(root))
+        for path in list(root.glob("*.py")) + list(root.glob("evaluation/*.py")) + [root / "README.md"]
+        if "c43ekyi6yiie" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 def test_pghost_switches_to_env_only_for_local_dev_db():
@@ -218,10 +323,10 @@ def test_pghost_switches_to_env_only_for_local_dev_db():
     assert no_db.db_name is None and no_db.rds_secret_arn is None  # 일부만 주면 나머지는 비워 둔다(오류로 드러남)
 
 
-def test_env_overrides_fixed_defaults_individually():
-    settings = V2Settings.from_env({"PGDATABASE": "other", "RDS_SECRET_ARN": SECRET_ARN, "PGSSLROOTCERT": "/x/ca.pem"})
+def test_env_overrides_secret_values_individually():
+    settings = V2Settings.from_env({"PGDATABASE": "other", "RDS_SECRET_ARN": SECRET_ARN, "PGSSLROOTCERT": "/x/ca.pem", "PGPORT": "6543"})
     assert settings.db_name == "other" and settings.rds_secret_arn == SECRET_ARN and settings.db_ssl_root_cert == "/x/ca.pem"
-    assert settings.db_host.endswith(".rds.amazonaws.com")
+    assert settings.db_host is None and settings.db_port == 6543 and settings.app_secret_id == "pill-check/dev/app"
 
 
 def test_default_ca_applies_only_to_rds_hosts():

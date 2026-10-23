@@ -71,3 +71,20 @@ def short_name(name: str) -> str:
     if len(shortened) > MAX_DISPLAY_CHARS:
         shortened = shortened[: MAX_DISPLAY_CHARS - 1] + "…"
     return shortened
+
+
+MAX_GIVEN_PRODUCTS = 8
+MAX_GIVEN_NAME_CHARS = 120
+
+
+def clean_product_names(names: list[str] | None) -> list[str]:
+    """호출자가 넘긴 제품명 목록(OCR 등) 정리: 공백 정리, 빈 값·중복(공백·대소문자 무시) 제거, 최대 개수 제한. 원문 표기는 유지한다."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in names or []:
+        name = collapse_spaces(str(raw))[:MAX_GIVEN_NAME_CHARS]
+        key = name.replace(" ", "").casefold()
+        if name and key not in seen:
+            seen.add(key)
+            cleaned.append(name)
+    return cleaned[:MAX_GIVEN_PRODUCTS]
