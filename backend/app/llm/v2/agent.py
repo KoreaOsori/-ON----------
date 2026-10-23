@@ -146,7 +146,7 @@ class DrugInfoAgent:
         budget: Budget,
         evidence: list[Evidence],
         tools_used: list[str],
-        candidates: list[dict[str, Any]],
+        pending: dict[str, list[dict[str, Any]]],
         product_key: str | None,
         trace: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -182,8 +182,16 @@ class DrugInfoAgent:
                 "result_head": outcome.text[:80],
             })
         evidence.extend(outcome.evidence)
+        # 되묻기(제품 후보)는 풀릴 때까지 '해결 안 됨'으로 들고 간다. 같은 이름(또는 product_key 지정)으로 다시 찾아 근거가 나오면 풀린 것이다.
+        shown_args = arguments if isinstance(arguments, dict) else {}
+        pending_key = name if name != TOOL_NAME else " ".join(str(shown_args.get("product_name") or "").split()).casefold()
         if outcome.candidates:
-            candidates[:] = outcome.candidates
+            pending[pending_key] = list(outcome.candidates)
+        elif outcome.evidence:
+            if shown_args.get("product_key"):
+                pending.clear()
+            else:
+                pending.pop(pending_key, None)
         return result(outcome.text, outcome.is_error)
 
     async def run(
@@ -206,7 +214,7 @@ class DrugInfoAgent:
         budget = Budget(self._limits)
         messages: list[dict[str, Any]] = [{"role": "user", "content": build_user_content(question, profile_context, product_key, clean_product_names(products))}]
         evidence: list[Evidence] = []
-        candidates: list[dict[str, Any]] = []
+        pending: dict[str, list[dict[str, Any]]] = {}
         tools_used: list[str] = []
         trace: list[dict[str, Any]] = []
         final_text = ""
@@ -235,7 +243,7 @@ class DrugInfoAgent:
 
                 budget.consume_round()
                 messages.append({"role": "assistant", "content": blocks})
-                results = [await self._run_tool(b, budget, evidence, tools_used, candidates, product_key, trace) for b in tool_uses]
+                results = [await self._run_tool(b, budget, evidence, tools_used, pending, product_key, trace) for b in tool_uses]
                 if budget.rounds_left <= 0:
                     results.append({"type": "text", "text": FORCED_FINAL_HINT})
                 messages.append({"role": "user", "content": results})
@@ -245,6 +253,7 @@ class DrugInfoAgent:
             logger.error("agent 실패: %s", safe_error_name(exc))
             stop = "error"
 
+        candidates = next(iter(pending.values()), [])  # 먼저 생긴 해결 안 된 되묻기
         answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates)
         answer.evidence = list(evidence)
         answer.tool_trace = trace
@@ -275,8 +284,9 @@ class DrugInfoAgent:
             text = BUDGET_ANSWER
         elif stop in ("error", "refusal"):
             text = ERROR_ANSWER
-        elif not evidence and candidates:
-            # 제품 후보가 여럿 → 되묻기. 모델 문장 대신 코드가 후보 목록으로 만든다(모델 지식이 섞이지 않게).
+        elif candidates:
+            # 제품 후보가 여럿이라 풀리지 않았다 → 다른 제품의 근거가 있어도 되묻기를 우선한다.
+            # 모델 문장 대신 코드가 후보 목록으로 만든다(모델 지식이 섞이지 않게).
             food_combination = CONTRA_TOOL_NAME in tools_used and any(
                 str(c.get("product_key", "")).startswith("health_food:") for c in candidates
             )

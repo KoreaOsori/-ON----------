@@ -45,3 +45,18 @@ def test_short_name_drops_export_tags_only():
     assert short_name("다이크로짇정(히드로클로로티아지드)") == "다이크로짇정(히드로클로로티아지드)"
     assert short_name("(수출용)") == "(수출용)"  # 비면 원래 이름
     assert len(short_name("가" * 100)) == 60 and short_name("가" * 100).endswith("…")
+
+
+def test_narrow_by_manufacturer_only_when_input_names_one_maker():
+    from app.llm.v2.names import narrow_by_manufacturer
+
+    a = {"product_key": "1", "manufacturer": "고려인삼과학주식회사"}
+    b = {"product_key": "2", "manufacturer": "(주)케이지앤에프"}
+    c = {"product_key": "3", "manufacturer": None}
+    assert narrow_by_manufacturer("약 (고려인삼과학주식회사)", [a, b]) == [a]
+    assert narrow_by_manufacturer("약 ((주)케이지앤에프)", [a, b]) == [b]
+    assert narrow_by_manufacturer("약 케이지앤에프", [a, b]) == [b]
+    assert narrow_by_manufacturer("약", [a, b]) == [a, b]  # 제조사 없음 → 임의로 고르지 않는다
+    assert narrow_by_manufacturer("약 고려인삼과학주식회사 케이지앤에프", [a, b]) == [a, b]  # 둘 다 적었으면 좁히지 않는다
+    assert narrow_by_manufacturer("약 (모르는회사)", [a, b, c]) == [a, b, c]
+    assert narrow_by_manufacturer("약 (고려인삼과학주식회사)", [a]) == [a]

@@ -14,7 +14,7 @@ from typing import Any
 
 from app.llm.v2.config import SCHEMA_VERSION, V2Settings
 from app.llm.v2.db import Reader
-from app.llm.v2.names import name_variants
+from app.llm.v2.names import name_variants, narrow_by_manufacturer
 
 SCHEMA = "product_search"
 PRODUCT_TYPES = ("drug", "health_food")
@@ -91,12 +91,18 @@ async def find_products(
                 {**base, "value": value},
             )
             if rows:
+                found = _product_rows(rows[:limit])
+                truncated = len(rows) > limit
+                if not truncated:  # 제조사까지 적었으면 같은 이름의 제품 중 그 제조사 것만 남긴다(일치하면 정확한 지정으로 본다)
+                    narrowed = narrow_by_manufacturer(name, found)
+                    if len(narrowed) < len(found):
+                        found, approximate = narrowed, False
                 return {
                     "mode": mode,
                     "approximate": approximate,
                     "matched_as": text,
-                    "truncated": len(rows) > limit,
-                    "products": _product_rows(rows[:limit]),
+                    "truncated": truncated,
+                    "products": found,
                 }
     return {"mode": "not_found", "approximate": False, "matched_as": None, "truncated": False, "products": []}
 

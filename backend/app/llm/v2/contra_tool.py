@@ -38,7 +38,7 @@ MIN_FOOD_CHARS = 1500  # 제품당 최소 예산. 첫 문단은 예산과 상관
 FOOD_LABEL = "건강기능식품"
 INGREDIENT_TYPE = "ingredient"
 INGREDIENT_CAVEAT = (
-    "[성분 기준 조회] 성분 이름이 낀 조합은 DUR 성분 코드로 조회했습니다. 제형 등 제품별 조건은 반영되지 않았고 복합제 규칙은 정확히 "
+    "[성분 기준 조회] 성분 이름이 낀 조합이나 성분 기준 주의는 DUR 성분 코드로 조회했습니다. 제형 등 제품별 조건은 반영되지 않았고 복합제 규칙은 정확히 "
     "맞지 않을 수 있습니다. 답변에서 이 점을 밝히고, 특정 제품 기준의 정확한 확인은 제품명으로 다시 물어보거나 약사·의사에게 확인하도록 안내하세요."
 )
 
@@ -135,8 +135,8 @@ class ContraindicationTool:
             if len(products) > 1:
                 shown = products[:10]
                 lines = [
-                    f"[확인 필요] '{text}'과(와) 일치하는 의약품이 {len(products)}개 있습니다. 임의로 고르지 말고 사용자에게 어느 제품인지 "
-                    "물어보세요. 사용자가 고르면 이름 대신 그 product_key를 products 에 넣어 다시 확인하세요."
+                    f"[확인 필요] '{text}'과(와) 일치하는 의약품이 {len(products)}개 있습니다. 임의로 고르지 말고 사용자에게 해당하는 제품을 "
+                    "제품명(제조사 포함)으로 다시 입력해 질문해 달라고 안내하세요."
                 ]
                 lines += [
                     f"- {'[건강기능식품] ' if p['product_type'] == 'health_food' else ''}{p['product_name']} ({p['manufacturer']}) "

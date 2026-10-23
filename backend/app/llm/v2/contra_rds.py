@@ -113,22 +113,70 @@ class RdsContraStore:
             if not rows:  # 보통 양방향으로 저장돼 있지만, 한쪽만 있는 쌍도 놓치지 않는다
                 rows = await reader.fetch(_PAIR_SQL, {"first": second, "second": first, "limit": self._limit})
                 swapped = bool(rows)
-            rules = [
-                ContraRule(
-                    first_names=_names(row["mixture_ingr_names"] if swapped else row["ingr_names"]),
-                    second_names=_names(row["ingr_names"] if swapped else row["mixture_ingr_names"]),
-                    content=_text(row["prohbt_content"]) or "(원문에 금기 내용이 비어 있습니다)",
-                    remark=_text(row["remark"]),
-                    form_name=None,
-                    notified=_text(row["notification_date"]),
-                    basis=_text(row["basis"]),
-                )
-                for row in rows
-            ]
+            rules = [self._rule(row, swapped) for row in rows]
+            product_rules = [rule for rule in rules if rule.basis != "성분 규칙"]  # 규칙 종류가 비어 있으면 품목 단위로 본다
+            if product_rules:
+                # 품목 단위 병용금기가 있으면 그것만 보여 준다(성분 규칙 행은 같은 조합의 부수 정보라 섞지 않는다)
+                rules, level = product_rules, "product"
+            else:
+                # 품목 병용금기가 없을 때만 두 제품의 성분끼리 비교해 '성분 기준 주의'를 찾는다
+                rules = await self._with_ingredient_rules(reader, first, second, rules, drug_codes)
+                level = "ingredient" if rules else "product"
             if rules:
                 has_rules[first] = has_rules[second] = True
-            pairs.append(PairCheck(first, second, rules))
+            pairs.append(PairCheck(first, second, rules, level=level))
         return LookupResult(pairs, has_rules), None
+
+    @staticmethod
+    def _rule(row: Any, swapped: bool, basis: str | None = None) -> ContraRule:
+        return ContraRule(
+            first_names=_names(row["mixture_ingr_names"] if swapped else row["ingr_names"]),
+            second_names=_names(row["ingr_names"] if swapped else row["mixture_ingr_names"]),
+            content=_text(row["prohbt_content"]) or "(원문에 금기 내용이 비어 있습니다)",
+            remark=_text(row["remark"]),
+            form_name=None,
+            notified=_text(row["notification_date"]),
+            basis=basis or _text(row["basis"]),
+        )
+
+    async def _with_ingredient_rules(
+        self, reader: Any, first: str, second: str, existing: list[ContraRule], cache: dict[str, list[str]]
+    ) -> list[ContraRule]:
+        """제품 쌍에 품목 병용금기가 없을 때: 이미 풀려 들어온 성분 규칙(existing)에 두 제품의 성분 코드끼리 비교한 규칙을 더한다.
+
+        성분 코드를 모르는 쪽이 있으면 비교하지 않는다(제품 단위 조회는 이미 했으므로 '확인 불가'로 바꾸지 않는다). 모든 규칙은 '성분 규칙'으로 표시한다."""
+        first_codes, second_codes = await self._codes_of(reader, first, cache), await self._codes_of(reader, second, cache)
+        merged = [ContraRule(**{**vars(rule), "basis": "성분 규칙"}) for rule in existing]
+        if not first_codes or not second_codes:
+            return merged
+        for live in await self._ingredient_rules(reader, first_codes, second_codes, basis="성분 규칙"):
+            duplicate = any(
+                rule.content == live.content and rule.remark == live.remark
+                and live.first_names in rule.first_names and live.second_names in rule.second_names
+                for rule in merged
+            )
+            if not duplicate:
+                merged.append(live)
+        return merged[: self._limit]
+
+    async def _ingredient_rules(self, reader: Any, first_codes: list[str], second_codes: list[str], basis: str | None = None) -> list[ContraRule]:
+        rows = await reader.fetch(_INGREDIENT_PAIR_SQL, {"first_codes": first_codes, "second_codes": second_codes, "limit": self._limit})
+        swapped = False
+        if not rows:
+            rows = await reader.fetch(_INGREDIENT_PAIR_SQL, {"first_codes": second_codes, "second_codes": first_codes, "limit": self._limit})
+            swapped = bool(rows)
+        return [
+            ContraRule(
+                first_names=_names(row["second_name"] if swapped else row["first_name"]),
+                second_names=_names(row["first_name"] if swapped else row["second_name"]),
+                content=_text(row["prohbt_content"]) or "(원문에 금기 내용이 비어 있습니다)",
+                remark=_text(row["remark"]),
+                form_name=None,
+                notified=_text(row["notification_date"]),
+                basis=basis or _text(row["basis"]),
+            )
+            for row in rows
+        ]
 
     async def _codes_of(self, reader: Any, key: str, cache: dict[str, list[str]]) -> list[str]:
         if _is_ingredient(key):
@@ -143,21 +191,5 @@ class RdsContraStore:
         unresolved = tuple(key for key, codes in ((first, first_codes), (second, second_codes)) if not codes)
         if unresolved:  # 성분 코드를 모르면 조회할 수 없다 — '규칙 없음'으로 오해하지 않게 따로 표시한다
             return PairCheck(first, second, [], level="ingredient", unresolved=unresolved)
-        rows = await reader.fetch(_INGREDIENT_PAIR_SQL, {"first_codes": first_codes, "second_codes": second_codes, "limit": self._limit})
-        swapped = False
-        if not rows:
-            rows = await reader.fetch(_INGREDIENT_PAIR_SQL, {"first_codes": second_codes, "second_codes": first_codes, "limit": self._limit})
-            swapped = bool(rows)
-        rules = [
-            ContraRule(
-                first_names=_names(row["second_name"] if swapped else row["first_name"]),
-                second_names=_names(row["first_name"] if swapped else row["second_name"]),
-                content=_text(row["prohbt_content"]) or "(원문에 금기 내용이 비어 있습니다)",
-                remark=_text(row["remark"]),
-                form_name=None,
-                notified=_text(row["notification_date"]),
-                basis=_text(row["basis"]),
-            )
-            for row in rows
-        ]
+        rules = await self._ingredient_rules(reader, first_codes, second_codes)
         return PairCheck(first, second, rules, level="ingredient")
