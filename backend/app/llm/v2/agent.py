@@ -41,6 +41,7 @@ from app.llm.v2.prompts import (
     ERROR_ANSWER,
     FORCED_FINAL_HINT,
     NO_EVIDENCE_ANSWER,
+    OVERDOSE_NOTICE,
     NON_DRUG_ANSWER,
     OFF_TOPIC_MARKER,
     OUT_OF_SCOPE_ANSWER,
@@ -49,11 +50,13 @@ from app.llm.v2.prompts import (
     SYSTEM_PROMPT,
     TIMEOUT_ANSWER,
     TRUNCATED_NOTICE,
+    build_not_found_answer,
+    not_found_line,
     build_clarification_answer,
     build_user_content,
 )
 from app.llm.v2.names import clean_product_names, expand_with_given
-from app.llm.v2.safety import is_crisis, is_emergency, is_stop_question
+from app.llm.v2.safety import is_crisis, is_emergency, is_overdose, is_stop_question
 from app.llm.v2.textcut import drop_unfinished_tail
 from app.llm.v2.tools import TOOL_NAME, DrugSearchTool, Evidence
 
@@ -196,6 +199,8 @@ class DrugInfoAgent:
         pending: dict[str, list[dict[str, Any]]],
         trace: list[dict[str, Any]] | None = None,
         given: list[str] | None = None,
+        missing: list[str] | None = None,
+        terminal: list[bool] | None = None,
     ) -> dict[str, Any]:
         def result(text: str, is_error: bool = False) -> dict[str, Any]:
             item = {"type": "tool_result", "tool_use_id": block["id"], "content": text}
@@ -228,6 +233,10 @@ class DrugInfoAgent:
                 "result_head": outcome.text[:80],
             })
         evidence.extend(outcome.evidence)
+        if missing is not None:
+            missing.extend(outcome.missing)
+        if terminal is not None:
+            terminal.append(outcome.terminal)
         # 되묻기(제품 후보)는 풀릴 때까지 '해결 안 됨'으로 들고 간다. 같은 이름으로 다시 찾아 근거가 나오면 풀린 것이다.
         shown_args = arguments if isinstance(arguments, dict) else {}
         pending_key = name if name != TOOL_NAME else " ".join(str(shown_args.get("product_name") or "").split()).casefold()
@@ -251,6 +260,7 @@ class DrugInfoAgent:
             return AgentAnswer(CRISIS_ANSWER, stop_reason="crisis", emergency=True)
 
         emergency = is_emergency(question)
+        notice = OVERDOSE_NOTICE if is_overdose(question) else EMERGENCY_NOTICE
         if not emergency and is_stop_question(question):  # 끊어도 되는지는 근거 검색 없이 상담 안내로 답한다(응급이면 아래 일반 경로의 119 안내가 우선)
             return AgentAnswer(STOP_CONSULT_ANSWER, stop_reason="consult")
         budget = Budget(self._limits)
@@ -262,6 +272,7 @@ class DrugInfoAgent:
         trace: list[dict[str, Any]] = []
         final_text = ""
         truncated = False
+        missing: list[str] = []  # 이름으로 찾지 못한 제품
         stop = "done"
         tokens_in = tokens_out = cache_read = cache_write = 0
 
@@ -300,7 +311,16 @@ class DrugInfoAgent:
 
                 budget.consume_round()
                 messages.append({"role": "assistant", "content": blocks})
-                results = [await self._run_tool(b, budget, evidence, tools_used, pending, trace, given) for b in tool_uses]
+                terminal: list[bool] = []
+                results = [
+                    await self._run_tool(b, budget, evidence, tools_used, pending, trace, given, missing, terminal)
+                    for b in tool_uses
+                ]
+                if not evidence and terminal and all(terminal):
+                    # 이번 도구 결과가 모두 '되묻기' 또는 '찾지 못함'이고 근거가 하나도 없다 → 답은 코드가 만드는 안내로 정해져 있다.
+                    # 모델을 한 번 더 불러 봐야 그 문장은 버려지므로 여기서 끝낸다(호출 1회·출력 토큰 절약).
+                    logger.info("terminal tool results without evidence; skip final model call")
+                    break
                 if budget.rounds_left <= 0:
                     results.append({"type": "text", "text": FORCED_FINAL_HINT})
                 messages.append({"role": "user", "content": results})
@@ -311,7 +331,7 @@ class DrugInfoAgent:
             stop = "error"
 
         candidates = next(iter(pending.values()), [])  # 먼저 생긴 해결 안 된 되묻기
-        answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates)
+        answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates, notice, missing)
         answer.evidence = list(evidence)
         answer.tool_trace = trace
         answer.input_tokens, answer.output_tokens = tokens_in, tokens_out
@@ -333,8 +353,11 @@ class DrugInfoAgent:
         rounds: int,
         emergency: bool,
         candidates: list[dict[str, Any]] | None = None,
+        notice: str = EMERGENCY_NOTICE,
+        missing: list[str] | None = None,
     ) -> AgentAnswer:
         candidates = candidates or []
+        missing = missing or []
         sources = list(dict.fromkeys(e.label for e in evidence))
         grounded = False
         if stop == "timeout":
@@ -350,10 +373,12 @@ class DrugInfoAgent:
                 str(c.get("product_key", "")).startswith("health_food:") for c in candidates
             )
             text, stop = build_clarification_answer(candidates, food_combination=food_combination), "needs_clarification"
+            if missing:
+                text = f"{text}\n\n{not_found_line(missing)}"
         elif not evidence:
             # 근거가 하나도 없으면 모델의 문장은 쓰지 않는다. 도구를 한 번도 못 쓴 경우(약 이름 없음·범위 밖 질문)는 할 수 있는 일을 안내한다.
             if tools_used:
-                text = NO_EVIDENCE_ANSWER
+                text = build_not_found_answer(missing) if missing else NO_EVIDENCE_ANSWER
             elif final_text.strip().startswith(OFF_TOPIC_MARKER):  # 모델이 약과 무관한 질문이라고 표시했다
                 text = NON_DRUG_ANSWER
             else:
@@ -365,9 +390,9 @@ class DrugInfoAgent:
             text, grounded = f"{final_text.strip()}\n\n{SAFETY_FOOTER}", True
         if emergency and stop in ("no_evidence", "needs_clarification"):
             # 근거 없는 답이나 제품 되묻기를 응급 안내 뒤에 이어 붙이지 않는다 — 119 안내만. 되묻기는 후보도 내보내지 않는다.
-            text, stop = EMERGENCY_NOTICE, "no_evidence"
+            text, stop = notice, "no_evidence"
         elif emergency:
-            text = f"{EMERGENCY_NOTICE}\n\n{text}"
+            text = f"{notice}\n\n{text}"
         return AgentAnswer(
             answer=text,
             sources=sources if grounded else [],

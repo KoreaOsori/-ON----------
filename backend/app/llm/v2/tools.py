@@ -15,7 +15,7 @@ from app.llm.v2.config import V2Settings
 from app.llm.v2.db import ReaderFactory, safe_error_name
 from app.llm.v2.embedder import QueryEmbedder, to_vector_text
 from app.llm.v2.names import short_name
-from app.llm.v2.search import SECTION_TYPES, SearchOutcome, retrieve
+from app.llm.v2.search import SECTION_TYPES, SearchOutcome, add_contraindication_hits, retrieve
 from app.llm.v2.textcut import cut_at_sentence
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,12 @@ SECTION_LABELS = {
     "contraindication_none": "병용금기 자료 조회(해당 규칙 없음)",
     "efficacy_overlap": "효능군 중복 주의(성분 기준)",
 }
+
+# 금기(복용하면 안 되는 경우)를 묻는 질문. 이때는 주의사항의 금기 문단을 따로 더 찾아 싣는다.
+CONTRA_INTENT = re.compile(
+    r"(먹|복용하|드시|드셔|투여하|써|쓰)(으)?면\s*안\s*(되|돼)|먹으면\s*안|먹지\s*말아야|복용하지\s*말아야|금기|"
+    r"(먹|복용하|드시)(으)?(면|기)?\s*(위험|곤란)|못\s*(먹|복용)|피해야"
+)
 
 MAX_NAME_CHARS = 100
 MAX_QUESTION_CHARS = 300
@@ -103,6 +109,15 @@ class ToolResult:
     is_error: bool = False
     # 제품 후보가 여럿이라 사용자에게 되물어야 할 때의 후보 (product_key, product_name, manufacturer)
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    # 이름으로 제품을 찾지 못한 경우 그 이름(코드가 '○○을(를) 찾지 못했어요' 안내를 만들 때 쓴다)
+    missing: list[str] = field(default_factory=list)
+    # 되묻기·찾지 못함 말고도 모델이 전해야 할 안내(예: [확인 불가])가 섞여 있다
+    other_problem: bool = False
+
+    @property
+    def terminal(self) -> bool:
+        """근거 없이 되묻기나 '찾지 못함'으로만 끝나는 결과. 모델이 이 결과로 더 할 일이 없다."""
+        return not self.evidence and not self.other_problem and bool(self.candidates or self.missing)
 
 
 def _product_label(sources: list[dict[str, Any]], source_count: int) -> tuple[str, str]:
@@ -131,7 +146,10 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
     if outcome.status == "needs_product_name":
         return ToolResult("[검색 불가] 제품명을 알아야 검색할 수 있습니다. 사용자에게 약 이름을 물어보세요.", is_error=True)
     if outcome.status == "product_not_found":
-        return ToolResult(f"[검색 결과 없음] '{shown}'과(와) 일치하는 제품을 찾지 못했습니다. 제품명을 다시 확인해 달라고 안내하세요.")
+        return ToolResult(
+            f"[검색 결과 없음] '{shown}'과(와) 일치하는 제품을 찾지 못했습니다. 제품명을 다시 확인해 달라고 안내하세요.",
+            missing=[requested_name] if requested_name else [],
+        )
     if outcome.status == "ambiguous_product":
         return ToolResult(f"[검색 결과 없음] '{shown}'과(와) 일치하는 제품이 너무 많습니다. 제품명을 더 구체적으로 알려 달라고 안내하세요.")
     if outcome.status == "needs_clarification":
@@ -252,6 +270,9 @@ class DrugSearchTool:
                     product_name=product_name, top_k=top_k, max_distance=self._settings.max_distance
                 )
                 outcome = await retrieve(reader, self._settings, vector_text, section_type=section, **search_args)
+                if section == "precautions" or (section is None and CONTRA_INTENT.search(question)):
+                    # 주의사항·금기 질문: 금기 문단이 질문 표현과 멀어 거리 순위에서 빠지는 일을 막는다.
+                    outcome = await add_contraindication_hits(reader, outcome, vector_text)
                 if section and outcome.status == "ok" and not outcome.hits:
                     # 모델이 고른 정보 유형(section)에 관련 문단이 없다 → 한 번만 모든 유형으로 넓혀 찾는다.
                     # (같은 임계값을 쓰므로 무관한 문단이 들어오지는 않는다. 임베딩은 다시 부르지 않는다.)
@@ -267,7 +288,7 @@ class DrugSearchTool:
                 f"[참고] 요청한 정보 유형('{SECTION_LABELS.get(section, section)}')에서는 관련 문단이 없어 "
                 "모든 정보 유형에서 찾았습니다. 아래 출처의 항목을 밝혀 답하세요."
             )
-            result = ToolResult(f"{note}\n\n{result.text}", result.evidence, result.is_error, result.candidates)
+            result = ToolResult(f"{note}\n\n{result.text}", result.evidence, result.is_error, result.candidates, result.missing)
         logger.info(
             "search_drug_info status=%s hits=%d filtered=%d mode=%s",
             outcome.status, len(outcome.hits), outcome.filtered, outcome.match_mode,

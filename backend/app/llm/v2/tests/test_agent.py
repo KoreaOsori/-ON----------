@@ -248,8 +248,13 @@ async def test_clarification_answer_is_built_by_code_not_by_model():
 
 
 async def test_clarification_is_dropped_when_evidence_was_found_later():
-    model = ScriptedModel(response(search_call("a")), response(search_call("b")), response(text_block("정리")))
-    result = await make_agent(model, FakeTool(CLARIFY, FOUND)).run("대한포도당주사액 용법")
+    # 첫 라운드에 다른 제품의 근거도 있어 바로 끝나지 않고, 같은 이름을 다시 찾아 근거가 나오면 되묻기가 풀린다.
+    model = ScriptedModel(
+        response(search_call("a"), search_call("c", product_name="다른약")),
+        response(search_call("b")),
+        response(text_block("정리")),
+    )
+    result = await make_agent(model, FakeTool(CLARIFY, FOUND, FOUND)).run("대한포도당주사액 용법")
     assert result.grounded and result.candidates == [] and result.stop_reason == "done"
 
 
@@ -550,11 +555,11 @@ async def test_unresolved_clarification_wins_over_evidence_for_another_product()
 
 async def test_clarification_resolved_by_retry_with_same_name_is_cleared():
     model = ScriptedModel(
-        response(search_call("a", product_name="대한포도당주사액")),
+        response(search_call("a", product_name="대한포도당주사액"), search_call("c", product_name="다른약")),
         response(search_call("b", product_name=" 대한포도당주사액 ")),  # 공백·대소문자는 같은 이름으로 본다
         response(text_block("정리")),
     )
-    result = await make_agent(model, FakeTool(CLARIFY, FOUND)).run("대한포도당주사액 용법")
+    result = await make_agent(model, FakeTool(CLARIFY, FOUND, FOUND)).run("대한포도당주사액 용법")
     assert result.grounded and result.stop_reason == "done" and result.candidates == []
 
 
@@ -674,3 +679,56 @@ async def test_max_tokens_during_tool_request_is_error():
     model = ScriptedModel(response(search_call(), stop_reason="max_tokens"))
     result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 용법")
     assert result.stop_reason == "error" and result.answer == ERROR_ANSWER and not result.truncated
+
+
+
+NOT_FOUND = ToolResult("[검색 결과 없음] '없는약정'과(와) 일치하는 제품을 찾지 못했습니다.", missing=["없는약정"])
+
+
+async def test_not_found_stops_without_final_model_call_and_names_product():
+    model = ScriptedModel(response(search_call(product_name="없는약정")))  # 두 번째 응답이 없다 → 부르면 실패한다
+    result = await make_agent(model, FakeTool(NOT_FOUND)).run("없는약정 부작용")
+    assert len(model.calls) == 1 and result.stop_reason == "no_evidence" and not result.grounded
+    assert "'없는약정'은(는) 등록된 정보에서 찾지 못했어요" in result.answer
+
+
+async def test_clarification_stops_without_final_model_call():
+    model = ScriptedModel(response(search_call("a", product_name="대한포도당주사액")))
+    result = await make_agent(model, FakeTool(CLARIFY)).run("대한포도당주사액 용법")
+    assert len(model.calls) == 1 and result.stop_reason == "needs_clarification" and len(result.candidates) == 2
+
+
+async def test_clarification_with_missing_product_mentions_both():
+    combined = ToolResult("[확인 필요] ...\n\n[검색 결과 없음] ...", candidates=CLARIFY.candidates, missing=["타이레놀정500밀리그램"])
+    model = ScriptedModel(response(contra_call(products=["대한포도당주사액", "타이레놀정500밀리그램"])))
+    result = await DrugInfoAgent(model, FakeTool(FOUND), Limits(), contra_tool=FakeContraTool(combined)).run("같이 먹어도 돼요?")
+    assert result.stop_reason == "needs_clarification" and "대한포도당주사액(5%)" in result.answer
+    assert "'타이레놀정500밀리그램'은(는) 등록된 정보에서 찾지 못했어요" in result.answer
+
+
+async def test_terminal_result_with_other_evidence_still_calls_model():
+    model = ScriptedModel(
+        response(search_call("a", product_name="없는약정"), search_call("b", product_name="타이레놀")),
+        response(text_block("타이레놀 답이에요.")),
+    )
+    result = await make_agent(model, FakeTool(NOT_FOUND, FOUND)).run("없는약정이랑 타이레놀 용법")
+    assert len(model.calls) == 2 and result.grounded and result.answer.startswith("타이레놀 답이에요.")
+
+
+async def test_overdose_question_gets_overdose_notice_even_without_drug_found():
+    from app.llm.v2.prompts import OVERDOSE_NOTICE
+
+    model = ScriptedModel(response(text_block("어떤 약인지 모르겠어요")))
+    result = await make_agent(model, FakeTool(FOUND)).run("타이레놀을 한 통 다 먹었어요")
+    assert result.emergency and result.answer == OVERDOSE_NOTICE and "119" in result.answer
+
+
+def test_overdose_patterns():
+    from app.llm.v2.safety import is_overdose
+
+    for q in ("타이레놀을 한 통 다 먹었어요", "아이가 실수로 혈압약을 먹었어요", "10알 먹었어요", "약을 너무 많이 먹었어요",
+              "감기약 두 병 마셨어요", "과다 복용한 것 같아요", "5알을 한꺼번에 먹었어요"):
+        assert is_overdose(q) and is_emergency(q), q
+    for q in ("타이레놀 한 통에 몇 알 들어 있어요?", "하루에 2알 먹었는데 괜찮아요?", "1회 2정 먹었어요", "500mg 먹었어요",
+              "한 번에 몇 알 먹어요?", "12시간마다 먹었어요", "셉트린정 먹다가 그만 먹어도 돼요?"):
+        assert not is_overdose(q), q

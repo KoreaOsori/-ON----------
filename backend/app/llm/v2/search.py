@@ -9,7 +9,7 @@ vector_pipeline/search.py 의 find_products / rank_exact 를 asyncpg(SQLAlchemy 
 """
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.llm.v2.config import SCHEMA_VERSION, V2Settings
@@ -20,6 +20,10 @@ SCHEMA = "product_search"
 PRODUCT_TYPES = ("drug", "health_food")
 SECTION_TYPES = ("overview", "ingredients", "benefits", "usage", "precautions", "interactions", "storage", "additional")
 MAX_CANDIDATE_PRODUCTS = 20
+# 주의사항 중 '복용하면 안 되는 경우(금기)' 문단의 표지. 벡터 거리로는 '먹으면 안 되는 사람' 같은 질문과 멀 수 있어 따로 찾는다.
+CONTRAINDICATION_PATTERNS = (
+    "%투여하지 말%", "%복용하지 말%", "%사용하지 말%", "%투여하지 마%", "%복용하지 마%", "%투여하지 않%",
+)
 PRODUCT_KEY_PATTERN = re.compile(r"^(drug|health_food):[\w.\-]{1,100}$")
 
 
@@ -202,17 +206,23 @@ async def rank_exact(
     product_keys: list[str] | None = None,
     product_type: str | None = None,
     section_type: str | None = None,
+    content_patterns: tuple[str, ...] | None = None,
 ) -> list[SearchHit]:
     """필터로 후보를 먼저 확정(MATERIALIZED)한 뒤 exact 코사인 거리로 순위를 매긴다.
 
     ANN(HNSW) 후보를 필터링하는 방식이 아니므로 후보 누락이 없다. 대신 제품 범위 없이 쓰면 느릴 수 있다.
+    content_patterns(이 모듈의 고정 LIKE 패턴만)를 주면 본문이 그중 하나를 포함하는 문단만 후보로 둔다.
     """
     if not 1 <= top_k <= 100:
         raise ValueError("top-k는 1~100이어야 합니다.")
     where, params = filter_clause(run_id, product_keys, product_type, section_type)
+    content_clause = ""
+    if content_patterns:
+        content_clause = " AND (" + " OR ".join(f"v.content LIKE :cp{i}" for i in range(len(content_patterns))) + ")"
+        params = {**params, **{f"cp{i}": pattern for i, pattern in enumerate(content_patterns)}}
     rows = await reader.fetch(
         f"WITH candidates AS MATERIALIZED (SELECT v.content_hash, v.embedding FROM {SCHEMA}.product_vectors v "
-        f"WHERE EXISTS (SELECT 1 FROM {SCHEMA}.product_links l WHERE l.content_hash = v.content_hash AND {where})), "
+        f"WHERE EXISTS (SELECT 1 FROM {SCHEMA}.product_links l WHERE l.content_hash = v.content_hash AND {where}){content_clause}), "
         "ranked AS (SELECT content_hash, embedding <=> CAST(:q AS vector) AS distance FROM candidates "
         "ORDER BY distance, content_hash LIMIT :top_k) "
         "SELECT v.content_hash, v.content, v.product_type, v.section_type, r.distance "
@@ -247,6 +257,25 @@ async def rank_exact(
             )
         )
     return hits
+
+
+async def add_contraindication_hits(
+    reader: Reader, outcome: "SearchOutcome", vector_text: str, top_k: int = 2
+) -> "SearchOutcome":
+    """제품 하나로 확정된 검색 결과에 그 제품 주의사항의 금기 문단(CONTRAINDICATION_PATTERNS)을 질문과 가까운 순으로 top_k 개 더한다.
+
+    거리 임계값은 적용하지 않는다(금기 문단은 질문 표현과 멀어도 빠지면 안 된다). 이미 있는 문단은 다시 넣지 않는다."""
+    if outcome.status != "ok" or len(outcome.products) != 1 or outcome.run_id is None:
+        return outcome
+    extra = await rank_exact(
+        reader, outcome.run_id, vector_text, top_k, [outcome.products[0]["product_key"]], None, "precautions",
+        content_patterns=CONTRAINDICATION_PATTERNS,
+    )
+    seen = {h.content_hash for h in outcome.hits}
+    added = [h for h in extra if h.content_hash not in seen]
+    if not added:
+        return outcome
+    return replace(outcome, hits=[*outcome.hits, *added])
 
 
 @dataclass(frozen=True)
