@@ -16,6 +16,7 @@ from app.llm.v2.db import ReaderFactory, safe_error_name
 from app.llm.v2.embedder import QueryEmbedder, to_vector_text
 from app.llm.v2.names import short_name
 from app.llm.v2.search import SECTION_TYPES, SearchOutcome, retrieve
+from app.llm.v2.textcut import cut_at_sentence
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +39,9 @@ SECTION_LABELS = {
 
 MAX_NAME_CHARS = 100
 MAX_QUESTION_CHARS = 300
-MAX_CONTENT_CHARS = 2000
-MAX_RESULT_CHARS = 9000
+MAX_CONTENT_CHARS = 1200  # 문단 하나를 모델에 줄 최대 글자 수(문장 경계에서 자른다)
+MAX_SEARCH_RESULT_CHARS = 4500  # search_drug_info 결과 전체 상한. 넘으면 유사도가 낮은 문단부터 뺀다
+MAX_RESULT_CHARS = 9000  # check_contraindication 등 다른 도구 결과의 상한
 
 
 def build_tool_spec(allow_global_search: bool = False) -> dict[str, Any]:
@@ -148,13 +150,20 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
         names = ", ".join(short_name(p["product_name"]) for p in outcome.products[:5])
         more = f" 외 {len(outcome.products) - 5}개" if len(outcome.products) > 5 else ""
         blocks.append(f"[검색 대상 제품 {len(outcome.products)}개: {names}{more}]")
-    for hit in outcome.hits:
+    used = sum(len(b) for b in blocks)
+    omitted = 0
+    for index, hit in enumerate(outcome.hits):
         name, maker = _product_label(hit.sources, hit.source_count)
         section = SECTION_LABELS.get(hit.section_type, hit.section_type)
         similarity = max(0.0, 1.0 - hit.distance)
         header = f"[출처 | {name} | {section} | 유사도 {similarity:.3f}]"
-        body = hit.content if len(hit.content) <= MAX_CONTENT_CHARS else hit.content[:MAX_CONTENT_CHARS] + "…(이하 생략)"
-        blocks.append(f"{header}\n{body}")
+        body, cut = cut_at_sentence(hit.content, MAX_CONTENT_CHARS)
+        block = f"{header}\n{body}" + ("…(이하 생략)" if cut else "")
+        if index > 0 and used + len(block) + 2 > MAX_SEARCH_RESULT_CHARS:
+            omitted += 1  # 첫 문단은 항상 싣고, 상한을 넘기는 뒤쪽(유사도가 더 낮은) 문단은 뺀다
+            continue
+        used += len(block) + 2
+        blocks.append(block)
         evidence.append(
             Evidence(
                 product_name=hit.sources[0]["product_name"] if hit.sources else name,
@@ -163,9 +172,9 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
                 shared_count=max(hit.source_count, 1),
             )
         )
+    if omitted:
+        blocks.append(f"[참고] 길이 제한으로 관련도가 낮은 문단 {omitted}개는 생략했습니다.")
     text = "\n\n".join(blocks)
-    if len(text) > MAX_RESULT_CHARS:
-        text = text[:MAX_RESULT_CHARS] + "\n…(길이 제한으로 이하 생략)"
     return ToolResult(text, evidence)
 
 

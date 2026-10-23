@@ -84,7 +84,25 @@ def test_format_outcome_no_evidence_cases():
 def test_format_outcome_truncates_long_content():
     long_hit = SearchHit("h", "가" * 5000, "drug", "usage", 0.1, 1, [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
     text = format_outcome(SearchOutcome("ok", "r", hits=[long_hit]), "A").text
-    assert len(text) < 2200 and text.endswith("(이하 생략)")
+    assert len(text) < 1400 and text.endswith("(이하 생략)")
+
+
+def test_format_outcome_cuts_at_sentence_boundary():
+    content = "첫 문장이에요. " * 200
+    hit = SearchHit("h", content, "drug", "usage", 0.1, 1, [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
+    text = format_outcome(SearchOutcome("ok", "r", hits=[hit]), "A").text
+    assert text.endswith("첫 문장이에요.…(이하 생략)")
+
+
+def test_format_outcome_drops_low_ranked_hits_over_budget():
+    def hit(section, distance):
+        return SearchHit("h", "가나다라. " * 200, "drug", section, distance, 1,
+                         [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
+
+    hits = [hit("usage", 0.1), hit("precautions", 0.2), hit("effect", 0.3), hit("storage", 0.4), hit("interactions", 0.5)]
+    result = format_outcome(SearchOutcome("ok", "r", hits=hits), "A")
+    assert len(result.text) < 5200 and "관련도가 낮은 문단" in result.text
+    assert 1 <= len(result.evidence) < 5 and result.evidence[0].section_type == "usage"
 
 
 class FakeEmbedder:

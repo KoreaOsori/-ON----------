@@ -48,11 +48,13 @@ from app.llm.v2.prompts import (
     STOP_CONSULT_ANSWER,
     SYSTEM_PROMPT,
     TIMEOUT_ANSWER,
+    TRUNCATED_NOTICE,
     build_clarification_answer,
     build_user_content,
 )
 from app.llm.v2.names import clean_product_names, expand_with_given
 from app.llm.v2.safety import is_crisis, is_emergency, is_stop_question
+from app.llm.v2.textcut import drop_unfinished_tail
 from app.llm.v2.tools import TOOL_NAME, DrugSearchTool, Evidence
 
 DEFAULT_CONTRA_DB = Path(__file__).resolve().parent / "dev_data" / "contraindication.sqlite"
@@ -78,6 +80,7 @@ class AgentAnswer:
     cache_read_tokens: int = 0  # 프롬프트 캐시에서 읽은 입력 토큰(저렴한 단가)
     cache_write_tokens: int = 0  # 프롬프트 캐시에 새로 쓴 입력 토큰(첫 호출, 단가 1.25배)
     elapsed_seconds: float = 0.0
+    truncated: bool = False  # 답변이 max_tokens 에 걸려 중간에 끊겨 정리했는가
     # 도구 호출별 {arguments(제품명·섹션·질문), result_head(결과 첫머리)}. 원인 분석용이며 로그에는 남기지 않는다.
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
 
@@ -97,6 +100,15 @@ def _usage(response: Any) -> tuple[int, int, int, int]:
         int(_get(usage, "cache_read_input_tokens") or 0),
         int(_get(usage, "cache_creation_input_tokens") or 0),
     )
+
+
+def _block_kinds(response: Any) -> str:
+    """응답 content 블록 종류별 개수(예: 'text=1,tool_use=2'). 보이지 않는 블록(thinking 등)도 센다. 내용은 남기지 않는다."""
+    counts: dict[str, int] = {}
+    for block in _get(response, "content") or []:
+        kind = str(_get(block, "type") or "?")
+        counts[kind] = counts.get(kind, 0) + 1
+    return ",".join(f"{k}={v}" for k, v in counts.items()) or "-"
 
 
 def _normalize_blocks(response: Any) -> list[dict[str, Any]]:
@@ -249,6 +261,7 @@ class DrugInfoAgent:
         tools_used: list[str] = []
         trace: list[dict[str, Any]] = []
         final_text = ""
+        truncated = False
         stop = "done"
         tokens_in = tokens_out = cache_read = cache_write = 0
 
@@ -261,13 +274,25 @@ class DrugInfoAgent:
                 tokens_in, tokens_out = tokens_in + used_in, tokens_out + used_out
                 cache_read, cache_write = cache_read + used_read, cache_write + used_write
 
-                if _get(response, "stop_reason") == "refusal":
+                model_stop = _get(response, "stop_reason")
+                logger.info(
+                    "model_call round=%d model_stop=%s blocks=%s input=%d output=%d cache_read=%d cache_write=%d",
+                    budget.rounds, model_stop, _block_kinds(response), used_in, used_out, used_read, used_write,
+                )
+                if model_stop == "refusal":
                     stop = "refusal"
                     break
                 blocks = _normalize_blocks(response)
                 tool_uses = [b for b in blocks if b["type"] == "tool_use"]
+                if model_stop == "max_tokens" and tool_uses:
+                    logger.error("도구 요청이 max_tokens 에서 끊겼습니다(입력이 불완전할 수 있음)")
+                    stop = "error"
+                    break
                 if not tool_uses:
                     final_text = "".join(b["text"] for b in blocks if b["type"] == "text")
+                    if model_stop == "max_tokens":  # 답이 길어 중간에 끊겼다 → 미완성 문장을 지우고 알린다
+                        truncated = True
+                        final_text = f"{drop_unfinished_tail(final_text)}\n\n{TRUNCATED_NOTICE}"
                     break
                 if forced_final:
                     stop = "budget"  # 한도를 다 썼는데도 도구를 또 부르려 한다
@@ -291,10 +316,11 @@ class DrugInfoAgent:
         answer.tool_trace = trace
         answer.input_tokens, answer.output_tokens = tokens_in, tokens_out
         answer.cache_read_tokens, answer.cache_write_tokens = cache_read, cache_write
+        answer.truncated = truncated and answer.stop_reason == "done"
         answer.elapsed_seconds = time.monotonic() - started
         logger.info(
-            "agent stop=%s rounds=%d calls=%d evidence=%d elapsed=%.1fs",
-            answer.stop_reason, budget.rounds, budget.calls, len(evidence), time.monotonic() - started,
+            "agent stop=%s truncated=%s rounds=%d calls=%d evidence=%d elapsed=%.1fs",
+            answer.stop_reason, answer.truncated, budget.rounds, budget.calls, len(evidence), time.monotonic() - started,
         )
         return answer
 
