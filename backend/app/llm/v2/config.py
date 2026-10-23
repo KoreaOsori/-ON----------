@@ -97,6 +97,7 @@ class V2Settings:
     llm_max_tokens: int = 2000
     # 시스템 프롬프트·도구 정의를 Bedrock 프롬프트 캐시에 올린다(같은 prefix 를 5분 안에 다시 보내면 캐시 읽기 단가로 처리).
     prompt_cache: bool = True
+    thinking_disabled: bool = True  # 확장 생각(thinking) 블록을 끈다. 보이지 않는 출력 토큰을 줄인다
 
     # --- 하니스 한도 ---
     max_tool_rounds: int = 4
@@ -202,6 +203,7 @@ class V2Settings:
             llm_model_id=env.get("LLM_V2_MODEL_ID") or None,
             llm_max_tokens=_int(env, "LLM_V2_MAX_TOKENS", 2000),
             prompt_cache=(env.get("LLM_V2_PROMPT_CACHE", "1").lower() not in ("0", "false", "no", "off")),
+            thinking_disabled=(env.get("LLM_V2_THINKING", "off").lower() in ("0", "false", "no", "off", "disabled")),
             max_tool_rounds=_int(env, "LLM_V2_MAX_TOOL_ROUNDS", 4),
             max_tool_calls=_int(env, "LLM_V2_MAX_TOOL_CALLS", 6),
             max_seconds=_float(env, "LLM_V2_MAX_SECONDS", 60.0),

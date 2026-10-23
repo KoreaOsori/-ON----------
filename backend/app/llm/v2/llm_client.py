@@ -10,11 +10,33 @@ provider
 미검증: 두 엔드포인트 모두 '도구 호출(tools / tool_use)' 지원 여부와 모델 ID 는 실제 호출로 확인해야 한다.
 모델 ID 기본값은 config.py(v1 설정과 같은 us. 추론 프로파일 ID)이며 LLM_V2_* 환경변수로 바꿀 수 있다.
 """
+import logging
 from typing import Any, Awaitable, Callable
 
 from app.llm.v2.config import V2Settings
 
 CreateMessage = Callable[..., Awaitable[Any]]
+
+logger = logging.getLogger(__name__)
+
+
+def wrap_create(create: CreateMessage, model_id: str, max_tokens: int, thinking_disabled: bool) -> CreateMessage:
+    """모델 ID·max_tokens 를 붙이고, 요청하면 thinking 을 끈다. 엔드포인트가 thinking 옵션을 거부하면 끄고 한 번 다시 시도한다."""
+    disable = thinking_disabled
+
+    async def create_message(**kwargs: Any) -> Any:
+        nonlocal disable
+        extra = {"thinking": {"type": "disabled"}} if disable else {}
+        try:
+            return await create(model=model_id, max_tokens=max_tokens, **extra, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if not (disable and "thinking" in str(exc).lower()):
+                raise
+            logger.warning("thinking 옵션을 지원하지 않아 끕니다: %s", type(exc).__name__)
+            disable = False
+            return await create(model=model_id, max_tokens=max_tokens, **kwargs)
+
+    return create_message
 
 
 def build_create_message(settings: V2Settings) -> CreateMessage:
@@ -31,7 +53,4 @@ def build_create_message(settings: V2Settings) -> CreateMessage:
         client = AsyncAnthropicBedrock(aws_region=settings.region)
         create = client.messages.create
 
-    async def create_message(**kwargs: Any) -> Any:
-        return await create(model=model_id, max_tokens=settings.llm_max_tokens, **kwargs)
-
-    return create_message
+    return wrap_create(create, model_id, settings.llm_max_tokens, settings.thinking_disabled)
