@@ -174,22 +174,43 @@ def build_user_content(question: str, profile_context: str | None, products: lis
     return "\n\n".join(parts)
 
 
+MAX_RESOLUTION_CANDIDATES = 8
+
+
 def build_resolution_answer(resolved: list[dict], problems: list) -> str:
-    """제품 확인과 약학 근거를 구분하고, 확인되지 않은 모든 이름을 안내한다."""
+    """제품 확인과 약학 근거를 구분하고, 확인되지 않은 모든 이름을 안내한다.
+
+    후보가 여럿인 이름은 사용자가 입력한 이름 한 줄("타이레놀은(는) 여러 제품이 조회돼요.") 뒤에 후보를 번호 목록으로 보여 준다."""
     parts = []
     names = list(dict.fromkeys(p['product_name'] for p in resolved))
     if names:
         parts.append(f"{', '.join(names)}은(는) 제품을 확인했어요.")
+    has_candidates = False
     for problem in problems:
+        requested = getattr(problem, "requested", "") or ""
         if problem.candidates:
-            grouped = {}
-            for c in problem.candidates:
-                grouped.setdefault(c['product_name'], []).append(c.get('manufacturer') or '제조사 정보 없음')
-            for name, makers in grouped.items():
-                parts.append(f"{name}은(는) 여러 제품이 조회돼요({', '.join(dict.fromkeys(makers))}). 포장에 적힌 제조사와 전체 제품명을 알려 주세요.")
-        if problem.missing:
+            has_candidates = True
+            label = requested or problem.candidates[0]['product_name']
+            lines = [f"{label}은(는) 여러 제품이 조회돼요."]
+            shown = problem.candidates[:MAX_RESOLUTION_CANDIDATES]
+            for index, c in enumerate(shown, start=1):
+                maker = f" ({c['manufacturer']})" if c.get('manufacturer') else ""
+                lines.append(f"{index}. {c['product_name']}{maker}")
+            if len(problem.candidates) > len(shown):
+                lines.append(f"…외 {len(problem.candidates) - len(shown)}개")
+            parts.append("\n".join(lines))
+        elif problem.missing:
             parts.append(f"{', '.join(dict.fromkeys(problem.missing))}은(는) 등록된 제품명으로 찾지 못했어요. 포장의 제품명과 함량을 확인해 주세요.")
-        if not problem.candidates and not problem.missing:
+        elif requested and "너무 많습니다" in problem.text:
+            parts.append(f"{requested}은(는) 일치하는 제품이 너무 많아요. 포장에 적힌 전체 제품명(함량·제조사 포함)으로 알려 주세요.")
+        elif requested and problem.text.startswith("[확인 불가]"):
+            parts.append(f"{requested}은(는) 등록된 자료로는 병용 여부를 확인할 수 없어요.")
+        elif requested:
+            parts.append(f"{requested}은(는) 비교에 필요한 정보를 확인하지 못했어요. 제품명과 제조사를 확인해 주세요.")
+        else:
             parts.append('일부 제품은 비교에 필요한 정보를 확인하지 못했어요. 제품명과 제조사를 확인해 주세요.')
-    parts.append('제품이 모두 확인되기 전에는 전체 조합의 병용 여부를 판단하기 어려워요.')
+    closing = '제품이 모두 확인되기 전에는 전체 조합의 병용 여부를 판단하기 어려워요.'
+    if has_candidates:
+        closing = '해당하는 제품의 이름을 제조사까지 위 목록에 적힌 그대로 넣어서 다시 질문해 주세요. ' + closing
+    parts.append(closing)
     return '\n\n'.join(dict.fromkeys(parts))
