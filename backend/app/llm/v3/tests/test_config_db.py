@@ -278,13 +278,10 @@ def test_contra_source_from_env():
 
 def test_api_settings_from_env():
     defaults = V3Settings.from_env({})
-    assert (defaults.api_key, defaults.api_max_concurrency, defaults.api_queue_seconds) == ("", 4, 5.0)
-    custom = V3Settings.from_env(
-        {"LLM_V3_API_KEY": "s3cret-v2-key", "LLM_V3_API_MAX_CONCURRENCY": "0", "LLM_V3_API_QUEUE_SECONDS": "-3"}
-    )
-    assert custom.api_key == "s3cret-v2-key"
+    assert (defaults.api_max_concurrency, defaults.api_queue_seconds) == (4, 5.0)
+    assert not hasattr(defaults, "api_key")  # v3 는 X-API-Key 인증을 쓰지 않는다
+    custom = V3Settings.from_env({"LLM_V3_API_MAX_CONCURRENCY": "0", "LLM_V3_API_QUEUE_SECONDS": "-3"})
     assert custom.api_max_concurrency == 1 and custom.api_queue_seconds == 0.0  # 하한으로 보정
-    assert "s3cret-v2-key" not in repr(custom)  # API 키는 repr 에 나오지 않는다
 
 
 def test_db_location_comes_from_app_secret_when_pghost_is_unset():

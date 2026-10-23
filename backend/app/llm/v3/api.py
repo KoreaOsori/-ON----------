@@ -2,30 +2,28 @@
 
     python -m uvicorn app.llm.v3.api:app --app-dir backend --host 127.0.0.1 --port 8012
 
-- 엔드포인트: POST /llm/v3/ask (질문), GET /llm/v3/models (설정 확인, 인증), GET /llm/v3/health (생존 확인, 인증 없음).
+- 엔드포인트: POST /llm/v3/ask (질문), GET /llm/v3/models (설정 확인), GET /llm/v3/health (생존 확인). 모두 인증 없이 호출한다.
 - 서버는 대화 상태를 저장하지 않는다. 제품 후보가 여럿이라 status 가 needs_clarification 이면 candidates 를 사용자에게 보여 주고,
   사용자가 제품명을 제조사까지 적어 같은 질문을 다시 보낸다.
 - 응답 코드: 정책에 따른 안내(근거 없음·되묻기·위기 등)는 항상 200 + status 로, 서비스 문제는 HTTP 오류로 나간다. 오류 본문은 모두
-  {"detail": "<사용자에게 보여 줘도 되는 한국어 문장>"} 이다(422 는 fields 가 더 붙는다). 401 만 사용자에게 보이면 안 되는 설정 문제다.
-  401=키 없음/틀림, 422=요청 형식·길이 위반, 503=동시 요청 초과·내부 오류·v3 초기화 실패(Retry-After 가 올 수 있음), 504=답변 시간 초과.
-- 보안: LLM_V3_API_KEY 가 있으면 X-API-Key 헤더가 일치해야 한다(상수 시간 비교). 없으면 키 없이 열리므로 localhost 로만 띄운다.
+  {"detail": "<사용자에게 보여 줘도 되는 한국어 문장>"} 이다(422 는 fields 가 더 붙는다).
+  422=요청 형식·길이 위반, 503=동시 요청 초과·내부 오류·v3 초기화 실패(Retry-After 가 올 수 있음), 504=답변 시간 초과.
+- 보안: X-API-Key 인증 없이 열려 있다(v2 와 다름). 남용은 동시 처리 제한(LLM_V3_API_MAX_CONCURRENCY)으로만 막으므로,
+  공개 서비스 앞단(Nginx 등)에서 요청 수 제한을 거는 것을 권한다.
   질문·프로필 내용과 비밀값은 로그에 남기지 않는다. 오류 응답에는 내부 메시지를 담지 않는다.
-- 독립 앱으로 실행하거나(위 명령), 백엔드 앱에 v1 처럼 mount 한다: `create_app(route_prefix="", require_api_key=True)` 를
+- 독립 앱으로 실행하거나(위 명령), 백엔드 앱에 v1 처럼 mount 한다: `create_app(route_prefix="")` 를
   `/api/llm/v3` 에 mount 하고, 부모 lifespan 에서 `mounted_lifespan(child)` 를 연다(backend/app/main.py).
   라우터만 다른 앱에 붙이면 lifespan 이 설정하는 app.state 가 없어 동작하지 않는다.
-- mount 모드의 안전장치: ① LLM_V3_API_KEY 가 없으면 공개 경로로 서비스하지 않고 503 을 돌려준다(Bedrock 비용 보호).
-  ② v3 초기화가 실패해도 백엔드 전체는 계속 뜨고 v3 경로만 503 이다(웹 서비스를 v3 때문에 내리지 않는다).
+- mount 모드의 안전장치: v3 초기화가 실패해도 백엔드 전체는 계속 뜨고 v3 경로만 503 이다(웹 서비스를 v3 때문에 내리지 않는다).
 """
 import asyncio
 import logging
-import secrets
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.llm.v3.agent import DrugInfoAgent, build_agent
@@ -39,9 +37,6 @@ logger = logging.getLogger(__name__)
 MAX_QUESTION_FIELD = 1000  # 스키마 상한. 실제 허용 길이는 설정(max_question_chars)이 정한다.
 BUSY_MESSAGE = "지금 요청이 많아 바로 답변드리기 어려워요. 잠시 후 다시 시도해 주세요."
 INVALID_REQUEST_MESSAGE = "요청 형식이 올바르지 않아요. 질문을 확인해 주세요."
-
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -74,7 +69,7 @@ class Usage(BaseModel):
 
 
 class ErrorBody(BaseModel):
-    detail: str = Field(description="사용자에게 보여 줘도 되는 한국어 안내 문장(401 은 개발자용이라 보여 주지 않는다)")
+    detail: str = Field(description="사용자에게 보여 줘도 되는 한국어 안내 문장")
 
 
 class ValidationErrorBody(ErrorBody):
@@ -83,7 +78,6 @@ class ValidationErrorBody(ErrorBody):
 
 # /ask 의 오류 응답 규격(Swagger 에 표시). 정책 안내(근거 없음·되묻기 등)는 오류가 아니라 200 + status 다.
 ASK_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    401: {"model": ErrorBody, "description": "X-API-Key 가 없거나 틀림. 서버 설정 문제이므로 사용자 화면에는 보여 주지 않는다."},
     422: {"model": ValidationErrorBody, "description": "질문이 비었거나 너무 길거나 형식을 어김. detail 문장을 그대로 보여 줘도 된다."},
     503: {
         "model": ErrorBody,
@@ -118,18 +112,11 @@ async def ensure_ready(request: Request) -> None:
         raise HTTPException(503, ERROR_ANSWER)
 
 
-async def authorize(request: Request, key: str | None = Depends(api_key_header)) -> None:
-    expected = request.app.state.llm_settings.api_key
-    if expected and (not key or not secrets.compare_digest(key.encode(), expected.encode())):
-        raise HTTPException(401, "올바른 X-API-Key가 필요합니다.")
-
-
 # 경로 접두사는 create_app(route_prefix=...) 가 붙인다(독립 실행은 /llm/v3, 백엔드 mount 는 빈 접두사).
-router = APIRouter(tags=["LLM v3"], dependencies=[Depends(ensure_ready), Depends(authorize)])
-public_router = APIRouter(tags=["LLM v3"], dependencies=[Depends(ensure_ready)])
+router = APIRouter(tags=["LLM v3"], dependencies=[Depends(ensure_ready)])
 
 
-@public_router.get("/health")
+@router.get("/health")
 async def health() -> dict[str, str]:
     """프로세스 생존 확인. DB·Bedrock 은 확인하지 않는다."""
     return {"status": "ok"}
@@ -211,24 +198,18 @@ def create_app(
     agent: DrugInfoAgent | None = None,
     *,
     route_prefix: str = "/llm/v3",
-    require_api_key: bool = False,
 ) -> FastAPI:
     """앱 팩토리. settings/agent 를 주면(테스트) 그대로 쓰고, 없으면 시작할 때 환경변수로 만든다.
 
-    route_prefix    : 독립 실행은 "/llm/v3"(기존 경로 유지), 백엔드에 mount 할 때는 ""(mount 경로가 접두사).
-    require_api_key : True 면 LLM_V3_API_KEY 가 없을 때 시작을 거부한다(공개 경로용).
+    route_prefix : 독립 실행은 "/llm/v3"(기존 경로 유지), 백엔드에 mount 할 때는 ""(mount 경로가 접두사).
     """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         resolved = settings or V3Settings.from_env()  # 설정 오류는 여기서 시작을 막는다(메시지에 비밀값 없음)
-        if require_api_key and not resolved.api_key:
-            raise ConfigError("공개 경로로 서비스하려면 LLM_V3_API_KEY 환경변수가 필요합니다.")
         app.state.llm_settings = resolved
         app.state.llm_agent = agent or build_agent(resolved)
         app.state.llm_gate = asyncio.Semaphore(resolved.api_max_concurrency)
-        if not resolved.api_key:
-            logger.warning("LLM_V3_API_KEY 가 없어 인증 없이 열려 있습니다. localhost 로만 사용하세요.")
         try:
             yield
         finally:
@@ -237,11 +218,8 @@ def create_app(
     app = FastAPI(
         title="약온 LLM v3", version="3.0.0", lifespan=lifespan,
         docs_url="/docs", openapi_url="/openapi.json", redoc_url=None,
-        # Authorize 에 넣은 API 키를 브라우저(localStorage)에 저장해 새로고침해도 유지한다. 공용 PC 에서는 쓰지 말 것.
-        swagger_ui_parameters={"persistAuthorization": True},
     )
     app.add_exception_handler(RequestValidationError, validation_error_handler)
-    app.include_router(public_router, prefix=route_prefix)
     app.include_router(router, prefix=route_prefix)
     return app
 
