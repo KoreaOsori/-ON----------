@@ -101,7 +101,7 @@ def test_format_outcome_drops_low_ranked_hits_over_budget():
 
     hits = [hit("usage", 0.1), hit("precautions", 0.2), hit("effect", 0.3), hit("storage", 0.4), hit("interactions", 0.5)]
     result = format_outcome(SearchOutcome("ok", "r", hits=hits), "A")
-    assert len(result.text) < 5200 and "관련도가 낮은 문단" in result.text
+    assert len(result.text) < 3300 and "관련도가 낮은 문단" in result.text
     assert 1 <= len(result.evidence) < 5 and result.evidence[0].section_type == "usage"
 
 
