@@ -2,6 +2,7 @@ import { ArrowUp, ChevronRight, Info, Pill, Plus, UserRound, X } from "lucide-re
 import { disclaimer } from "@/lib/constants"
 import type { HealthProfile } from "@/types/health"
 import { summarizeForChat } from "../profileContext"
+import PhotoThumbs from "./PhotoThumbs"
 
 export default function ChatComposer({
   docked,
@@ -14,6 +15,8 @@ export default function ChatComposer({
   sendDisabled,
   products,
   onRemoveProduct,
+  attachment,
+  onRemoveAttachment,
   onSubmit,
   onOpenProfile,
   onOpenPhoto,
@@ -30,6 +33,9 @@ export default function ChatComposer({
   /** 사진에서 확인해 질문과 함께 보낼 제품명 */
   products: string[]
   onRemoveProduct: (name: string) => void
+  /** 보내기 전 첨부한 사진 미리보기 (없으면 null) */
+  attachment: { urls: string[]; label: string } | null
+  onRemoveAttachment: () => void
   onSubmit: () => void
   onOpenProfile: () => void
   onOpenPhoto: () => void
@@ -95,8 +101,14 @@ export default function ChatComposer({
             event.preventDefault()
             onSubmit()
           }}
-          className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_4px_24px_rgba(30,64,120,0.06)]"
+          className="rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_4px_24px_rgba(30,64,120,0.06)]"
         >
+          {attachment && (
+            <div className="px-2 pt-2">
+              <PhotoThumbs urls={attachment.urls} label={attachment.label} onRemove={onRemoveAttachment} />
+            </div>
+          )}
+          <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={onOpenPhoto}
@@ -110,7 +122,13 @@ export default function ChatComposer({
             onChange={(event) => setText(event.target.value)}
             disabled={disabled}
             className="min-w-0 flex-1 py-3 text-base outline-none placeholder:text-slate-400"
-            placeholder={disabled ? "먼저 약을 확인해 주세요" : "약에 대해 무엇이든 물어보세요"}
+            placeholder={
+              disabled
+                ? "먼저 약을 확인해 주세요"
+                : attachment
+                  ? "사진과 함께 물어볼 내용을 적어 주세요 (선택)"
+                  : "약에 대해 무엇이든 물어보세요"
+            }
             aria-label="약에 대한 질문"
           />
           <button
@@ -120,6 +138,7 @@ export default function ChatComposer({
           >
             <ArrowUp size={22} />
           </button>
+          </div>
         </form>
         <p className="mt-3 flex items-start justify-center gap-1.5 text-center text-xs leading-5 text-slate-500">
           <Info size={13} className="mt-1 shrink-0" />

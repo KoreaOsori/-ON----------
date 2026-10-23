@@ -2,6 +2,7 @@ import { ArrowUp, Pill } from "lucide-react"
 import Notice from "@/components/ui/Notice"
 import type { LlmCandidate, LlmStatus } from "../api"
 import type { ChatMessage } from "../types"
+import PhotoThumbs from "./PhotoThumbs"
 
 const followUpQuestions = [
   "이 약은 언제 먹나요?",
@@ -43,6 +44,7 @@ export default function ChatMessageItem({
     <div className="space-y-5">
       <div className="flex justify-end">
         <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-blue-600 px-5 py-3.5 text-white">
+          {!!message.images?.length && <PhotoThumbs urls={message.images} />}
           {message.question}
           {message.products.length > 0 && (
             <p className="mt-1.5 text-xs text-blue-100">함께 확인한 약: {message.products.join(", ")}</p>

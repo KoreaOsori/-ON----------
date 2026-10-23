@@ -18,6 +18,8 @@ type SendOptions = {
   confirmed?: boolean
   /** 이 질문과 함께 보낼 제품명 (사진 확인·후보 선택) */
   products?: string[]
+  /** 질문과 함께 말풍선에 보여줄 사진 미리보기 */
+  images?: string[]
 }
 
 /** 후속 질문 칩에 쓸 대표 제품명: 함께 보낸 제품이 하나면 그것, 아니면 근거 출처의 첫 제품 */
@@ -50,7 +52,9 @@ export default function useChat({
   const [status, setStatus] = useState<ChatStatus>("idle")
   const [errorMessage, setErrorMessage] = useState("")
   const [remaining, setRemaining] = useState(GUEST_DAILY_QUESTION_LIMIT)
-  const [lastRequest, setLastRequest] = useState<{ question: string; products: string[] } | null>(null)
+  const [lastRequest, setLastRequest] = useState<{ question: string; products: string[]; images: string[] } | null>(
+    null,
+  )
   // 새 대화를 시작한 뒤 이전 질문의 응답이 늦게 오면 버린다
   const generation = useRef(0)
 
@@ -63,11 +67,12 @@ export default function useChat({
       return false
     }
     const products = (options.products ?? []).slice(0, MAX_CHAT_PRODUCTS)
+    const images = options.images ?? []
     const context = summarizeForChat(profile)
     const current = generation.current
     setStatus("loading")
     setErrorMessage("")
-    setLastRequest({ question: text, products })
+    setLastRequest({ question: text, products, images })
 
     askLlm({
       question: text,
@@ -88,6 +93,7 @@ export default function useChat({
             sources: result.sources,
             candidates: result.candidates,
             products,
+            images,
           },
         ])
         setRemaining((previous) => Math.max(0, previous - 1))
@@ -103,7 +109,9 @@ export default function useChat({
 
   /** 마지막 질문을 같은 제품 목록으로 다시 보낸다 */
   const retry = () =>
-    lastRequest ? send(lastRequest.question, { confirmed: true, products: lastRequest.products }) : false
+    lastRequest
+      ? send(lastRequest.question, { confirmed: true, products: lastRequest.products, images: lastRequest.images })
+      : false
 
   const reset = () => {
     generation.current += 1
