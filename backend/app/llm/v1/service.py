@@ -21,6 +21,12 @@ JSON, 내부 상태값, 코드, product_key, E1 같은 근거 식별자는 답�
 제품이 없거나 사용자가 오타를 냈다고 단정하지 마라. 비슷한 제품명·선택 후보를 제시하거나 다른 상품으로 대신 설명하지 마라.
 미확정 제품이 포함되면 효능이나 병용 여부를 추측하지 마라.
 병용은 Python checks 결과만 설명하고 성분 비교·판정 변경을 하지 마라.
+duplicate_ingredient_codes는 서로 다른 제품의 동일 성분 중복이며 금기와 구분한다.
+therapeutic_duplications는 경구 제품 간 서로 다른 성분의 효능군 중복으로 '중복 주의'이며 금기가 아니다.
+therapeutic_duplication_result=not_checkable이면 투여경로 또는 성분 정보가 부족해 효능군 중복을 판단하지 못한 것이다.
+daily_dose_limits는 성분별 참고 상한이다. max_qty 원문과 form_name·route 조건을 함께 보존하고
+개인 권장량·제품 복용량으로 바꾸거나 합산하지 마라. 경로가 null이면 경구 적용 여부 미확인으로 안내한다.
+여러 제품쌍에 같은 제품의 용량 자료가 반복돼도 답변에는 한 번만 설명한다.
 contraindicated=품목 DUR 금기 확인. ingredient_caution=성분 기준 주의, 공식 품목 금기로 단정 금지.
 unknown=확인 자료 부족. not_found=조회한 자료에서 금기 미발견, 안전 보장 아님. 동일 성분 중복은 금기와 구분.
 checks가 있으면 먼저 product_pair_result로 해당 제품쌍의 금기 조회 결과를 명확히 말한다.
@@ -115,7 +121,8 @@ class Service:
             if len(keys) >= 2:
                 ingredients, rules = await self.repo.safety(keys)
                 ingredient_rules = await self.repo.ingredient_rules(ingredients)
-                checks = compare_gold(selected, ingredients, rules, ingredient_rules)
+                dur_rules = await self.repo.dur_ingredient_rules(ingredients)
+                checks = compare_gold(selected, ingredients, rules, ingredient_rules, dur_rules)
         query_vector = None
         if vector_ready and (route.intent in ('information', 'both') or len(keys) >= 2):
             query_vector = await self.bedrock.embed(question)

@@ -48,11 +48,11 @@ class IngredientQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await repo.ingredient_rules({'drug:1': [{'dur_ingr_code': None}]}), [])
         repo.rows.assert_not_called()
 
-    async def test_code_query_aggregates_conditions_and_includes_same_code(self):
+    async def test_code_query_aggregates_conditions_and_distinct_code_pairs(self):
         repo = Repository(None, None)
         repo.rows = AsyncMock(return_value=[])
         await repo.ingredient_rules({'drug:1': [{'dur_ingr_code': 'D1'}], 'drug:2': [{'dur_ingr_code': 'D1'}]})
         sql = repo.rows.call_args.args[0]
-        self.assertIn('ingr_code <= mixture_ingr_code', sql)
+        self.assertIn('ingr_code < mixture_ingr_code', sql)
         self.assertIn('DISTINCT remark', sql)
         self.assertEqual(repo.rows.call_args.kwargs['codes'], ['D1'])
