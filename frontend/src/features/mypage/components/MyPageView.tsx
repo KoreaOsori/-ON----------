@@ -43,7 +43,9 @@ export default function MyPageView() {
       previous.includes(key) ? previous.filter((item) => item !== key) : [...previous, key],
     )
 
+  // 복용약(건강정보에서 고른 약·약 등록으로 넣은 약)과 복약 체크 기록만 지운다. 기본정보·지병은 남긴다
   const deleteData = () => {
+    setProfile({ ...profile, medicines: [], medicineItems: [], medicineStatus: undefined })
     setChecked([])
     setSaved(false)
     setDraft(initialDraft)
@@ -124,7 +126,9 @@ export default function MyPageView() {
           setConsents={setConsents}
           onEditProfile={() => setView("profile")}
           onLogout={() => {
+            // 서버 계정이 없어 브라우저에 저장한 건강정보·복용약이 곧 계정 데이터다. 같은 브라우저의 다음 사람에게 보이지 않게 지운다
             setLogged(false)
+            setProfile(emptyProfile)
             setView("home")
           }}
           onDeleteData={deleteData}

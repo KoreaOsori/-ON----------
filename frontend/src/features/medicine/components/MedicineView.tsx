@@ -6,17 +6,20 @@ import Notice from "@/components/ui/Notice"
 import { button, inputClass } from "@/components/ui/styles"
 import { MAX_INTERACTION_DRUGS } from "@/lib/constants"
 import { useSession } from "@/providers/SessionProvider"
-import { searchMedicines, type MedicineSummary, type MedicineType } from "../api"
+import { getMedicineCategories, searchMedicines, type MedicineSummary, type MedicineType } from "../api"
 import CategoryFilter from "./CategoryFilter"
 import DrugCard from "./DrugCard"
 import DrugDetailModal from "./DrugDetailModal"
+import HealthFoodSearch from "./HealthFoodSearch"
 import InteractionResult from "./InteractionResult"
 import InteractionSelection from "./InteractionSelection"
+import SubFilter from "./SubFilter"
 
-type Tab = "search" | "interaction"
+type Tab = "search" | "healthFood" | "interaction"
 
 const tabs: [Tab, string][] = [
   ["search", "약 검색"],
+  ["healthFood", "건강기능식품"],
   ["interaction", "병용 확인"],
 ]
 
@@ -25,18 +28,26 @@ export default function MedicineView() {
   const [tab, setTab] = useState<Tab>("search")
   const [query, setQuery] = useState("")
   const [type, setType] = useState<MedicineType | undefined>()
+  const [category, setCategory] = useState<string | undefined>()
+  const [categories, setCategories] = useState<Record<MedicineType, string[]> | null>(null)
   const [results, setResults] = useState<MedicineSummary[]>([])
   const [searchError, setSearchError] = useState(false)
   const [detail, setDetail] = useState<{ drug: MedicineSummary; index: number } | null>(null)
   const [selected, setSelected] = useState<MedicineSummary[]>([])
   const [result, setResult] = useState(false)
 
-  // 입력이 멈추면 검색 (글자마다 요청하지 않음)
+  useEffect(() => {
+    getMedicineCategories()
+      .then(setCategories)
+      .catch(() => setCategories(null)) // 분류를 못 받으면 하위 분류 없이 이름 검색만
+  }, [])
+
+  // 입력이 멈추면 검색 (글자마다 요청하지 않음). 하위 분류를 고르면 검색어 없이도 그 분류의 약을 보여준다
   useEffect(() => {
     const keyword = query.trim()
-    if (!keyword) return
+    if (!keyword && !category) return
     const timer = setTimeout(() => {
-      searchMedicines(keyword, type)
+      searchMedicines(keyword, type, category)
         .then((items) => {
           setResults(items)
           setSearchError(false)
@@ -44,10 +55,10 @@ export default function MedicineView() {
         .catch(() => setSearchError(true))
     }, 300)
     return () => clearTimeout(timer)
-  }, [query, type])
+  }, [query, type, category])
 
-  // 검색어를 지우면 이전 결과는 보이지 않게 한다
-  const visible = query.trim() ? results : []
+  // 검색어와 분류를 모두 지우면 이전 결과는 보이지 않게 한다
+  const visible = query.trim() || category ? results : []
 
   const isSelected = (drug: MedicineSummary) => selected.some((item) => item.id === drug.id)
 
@@ -71,6 +82,7 @@ export default function MedicineView() {
     setResult(false)
     setQuery("")
     setType(undefined)
+    setCategory(undefined)
   }
 
   return (
@@ -90,61 +102,83 @@ export default function MedicineView() {
           </button>
         ))}
       </div>
-      {tab === "interaction" && (
-        <InteractionSelection
-          selected={selected}
-          onRemove={(id) => {
-            setSelected(selected.filter((item) => item.id !== id))
-            setResult(false)
-          }}
-          onLoadMine={mine.length ? loadMine : undefined}
-        />
+      {tab === "healthFood" ? (
+        <HealthFoodSearch />
+      ) : (
+        <>
+          {tab === "interaction" && (
+            <InteractionSelection
+              selected={selected}
+              onRemove={(id) => {
+                setSelected(selected.filter((item) => item.id !== id))
+                setResult(false)
+              }}
+              onLoadMine={mine.length ? loadMine : undefined}
+            />
+          )}
+          <div className="relative">
+            <Search size={20} className="absolute left-4 top-4 text-slate-400" />
+            <input
+              className={`${inputClass} pl-12`}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="약 이름으로 검색해 보세요"
+              aria-label="약 검색"
+            />
+          </div>
+          {tab === "search" && (
+            <CategoryFilter
+              value={type}
+              onChange={(value) => {
+                setType(value)
+                setCategory(undefined)
+              }}
+            />
+          )}
+          {tab === "search" && type && categories && (
+            <SubFilter
+              label={`${type}의약품 분류`}
+              options={categories[type]}
+              value={category}
+              onChange={setCategory}
+            />
+          )}
+          <div className="my-6 grid grid-cols-2 gap-4">
+            {visible.map((drug, index) => (
+              <DrugCard
+                key={drug.id}
+                drug={drug}
+                index={index}
+                mode={tab}
+                added={isSelected(drug)}
+                addDisabled={selected.length >= MAX_INTERACTION_DRUGS || isSelected(drug)}
+                onOpen={() => setDetail({ drug, index })}
+                onAdd={() => add(drug)}
+              />
+            ))}
+          </div>
+          {!visible.length && (
+            <div className="py-16 text-center text-slate-500">
+              <Search className="mx-auto mb-4" />
+              {searchError
+                ? "검색하지 못했어요. 잠시 후 다시 시도해 주세요."
+                : query.trim() || category
+                  ? "검색 결과가 없어요. 다른 이름으로 찾아보세요."
+                  : "약 이름을 입력하거나 분류를 골라 보세요."}
+            </div>
+          )}
+          {tab === "interaction" && (
+            <button
+              disabled={selected.length < 2}
+              onClick={() => setResult(true)}
+              className={`${button} mb-6 w-full`}
+            >
+              병용 확인하기 ({selected.length}/{MAX_INTERACTION_DRUGS})
+            </button>
+          )}
+          {result && <InteractionResult selected={selected} />}
+        </>
       )}
-      <div className="relative">
-        <Search size={20} className="absolute left-4 top-4 text-slate-400" />
-        <input
-          className={`${inputClass} pl-12`}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="약 이름으로 검색해 보세요"
-          aria-label="약 검색"
-        />
-      </div>
-      {tab === "search" && <CategoryFilter value={type} onChange={setType} />}
-      <div className="my-6 grid grid-cols-2 gap-4">
-        {visible.map((drug, index) => (
-          <DrugCard
-            key={drug.id}
-            drug={drug}
-            index={index}
-            mode={tab}
-            added={isSelected(drug)}
-            addDisabled={selected.length >= MAX_INTERACTION_DRUGS || isSelected(drug)}
-            onOpen={() => setDetail({ drug, index })}
-            onAdd={() => add(drug)}
-          />
-        ))}
-      </div>
-      {!visible.length && (
-        <div className="py-16 text-center text-slate-500">
-          <Search className="mx-auto mb-4" />
-          {searchError
-            ? "검색하지 못했어요. 잠시 후 다시 시도해 주세요."
-            : query.trim()
-              ? "검색 결과가 없어요. 다른 이름으로 찾아보세요."
-              : "약 이름을 입력해 보세요."}
-        </div>
-      )}
-      {tab === "interaction" && (
-        <button
-          disabled={selected.length < 2}
-          onClick={() => setResult(true)}
-          className={`${button} mb-6 w-full`}
-        >
-          병용 확인하기 ({selected.length}/{MAX_INTERACTION_DRUGS})
-        </button>
-      )}
-      {result && <InteractionResult selected={selected} />}
       <Notice />
       {detail && (
         <DrugDetailModal
@@ -157,6 +191,7 @@ export default function MedicineView() {
             setDetail(null)
             setQuery("")
             setType(undefined)
+            setCategory(undefined)
           }}
         />
       )}

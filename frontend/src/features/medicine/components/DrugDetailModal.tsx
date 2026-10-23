@@ -46,7 +46,7 @@ export default function DrugDetailModal({
       {drug && (
         <>
           <div className="mb-6 flex items-center gap-4">
-            <DrugArt index={index} />
+            <DrugArt index={index} imageUrl={drug.imageUrl} />
             <div>
               <h3 className="text-2xl font-bold">{drug.name}</h3>
               <p className="mt-1 text-sm text-slate-500">
