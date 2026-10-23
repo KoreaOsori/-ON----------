@@ -94,15 +94,31 @@ def test_format_outcome_cuts_at_sentence_boundary():
     assert text.endswith("첫 문장이에요.…(이하 생략)")
 
 
-def test_format_outcome_drops_low_ranked_hits_over_budget():
-    def hit(section, distance):
-        return SearchHit("h", "가나다라. " * 200, "drug", section, distance, 1,
-                         [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
+def _long_hit(section, distance, text="가나다라. ", count=200):
+    return SearchHit("h", text * count, "drug", section, distance, 1,
+                     [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
 
-    hits = [hit("usage", 0.1), hit("precautions", 0.2), hit("effect", 0.3), hit("storage", 0.4), hit("interactions", 0.5)]
+
+def test_format_outcome_drops_low_ranked_hits_over_budget():
+    hits = [_long_hit(s, d) for s, d in [("usage", 0.1), ("effect", 0.2), ("storage", 0.3), ("benefits", 0.4), ("ingredients", 0.5), ("interactions", 0.6)]]
     result = format_outcome(SearchOutcome("ok", "r", hits=hits), "A")
-    assert len(result.text) < 3300 and "관련도가 낮은 문단" in result.text
-    assert 1 <= len(result.evidence) < 5 and result.evidence[0].section_type == "usage"
+    assert len(result.text) < 4100 and "분량 때문에 문단" in result.text and "일부만 안내했어요" in result.text
+    assert 1 <= len(result.evidence) < 6 and result.evidence[0].section_type == "usage"
+
+
+def test_format_outcome_keeps_critical_precautions_over_higher_similarity_ones():
+    ordinary = [_long_hit("precautions", 0.1 + i * 0.01, "일반적인 안내예요. ") for i in range(4)]
+    critical = _long_hit("precautions", 0.9, "임부에게는 투여하지 않아요. ")
+    result = format_outcome(SearchOutcome("ok", "r", hits=ordinary + [critical]), "A")
+    assert "임부에게는 투여하지 않아요" in result.text and "분량 때문에 문단" in result.text
+    first_critical = result.text.index("임부에게는")
+    assert first_critical > result.text.index("일반적인 안내예요")  # 출력은 원래 유사도 순서를 지킨다
+
+
+def test_format_outcome_does_not_reorder_when_everything_fits():
+    hits = [_long_hit("precautions", 0.1, "일반이에요. ", 3), _long_hit("precautions", 0.5, "금기예요. ", 3)]
+    text = format_outcome(SearchOutcome("ok", "r", hits=hits), "A").text
+    assert "분량 때문에" not in text and text.index("일반이에요") < text.index("금기예요")
 
 
 class FakeEmbedder:

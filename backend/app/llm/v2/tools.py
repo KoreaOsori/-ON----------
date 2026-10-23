@@ -40,7 +40,7 @@ SECTION_LABELS = {
 MAX_NAME_CHARS = 100
 MAX_QUESTION_CHARS = 300
 MAX_CONTENT_CHARS = 800  # 문단 하나를 모델에 줄 최대 글자 수(문장 경계에서 자른다)
-MAX_SEARCH_RESULT_CHARS = 3000  # search_drug_info 결과 전체 상한. 넘으면 유사도가 낮은 문단부터 뺀다
+MAX_SEARCH_RESULT_CHARS = 3800  # search_drug_info 결과 전체 상한. 넘으면 유사도가 낮은 문단부터 뺀다
 MAX_RESULT_CHARS = 9000  # check_contraindication 등 다른 도구 결과의 상한
 
 
@@ -113,6 +113,16 @@ def _product_label(sources: list[dict[str, Any]], source_count: int) -> tuple[st
     return name, first.get("manufacturer") or ""
 
 
+_CRITICAL_MARKERS = (
+    "투여하지", "복용하지", "투여 금지", "투여해서는", "금기", "중대한", "중증", "스티븐스", "쇽", "아나필락", "사망",
+)
+
+
+def _is_critical(hit: Any) -> bool:
+    """주의사항 문단 중 금기·중대한 이상반응을 담은 것(상한 때문에 빠지면 안 되는 내용)."""
+    return hit.section_type == "precautions" and any(m in hit.content for m in _CRITICAL_MARKERS)
+
+
 def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolResult:
     """검색 결과 → LLM 에 줄 근거 문자열. 근거가 없으면 '없음'을 분명히 적어 추측을 막는다."""
     shown = requested_name or "(미지정)"
@@ -150,19 +160,28 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
         names = ", ".join(short_name(p["product_name"]) for p in outcome.products[:5])
         more = f" 외 {len(outcome.products) - 5}개" if len(outcome.products) > 5 else ""
         blocks.append(f"[검색 대상 제품 {len(outcome.products)}개: {names}{more}]")
-    used = sum(len(b) for b in blocks)
-    omitted = 0
-    for index, hit in enumerate(outcome.hits):
-        name, maker = _product_label(hit.sources, hit.source_count)
+    rendered: list[tuple[Any, str]] = []
+    for hit in outcome.hits:
+        name, _ = _product_label(hit.sources, hit.source_count)
         section = SECTION_LABELS.get(hit.section_type, hit.section_type)
-        similarity = max(0.0, 1.0 - hit.distance)
-        header = f"[출처 | {name} | {section} | 유사도 {similarity:.3f}]"
+        header = f"[출처 | {name} | {section} | 유사도 {max(0.0, 1.0 - hit.distance):.3f}]"
         body, cut = cut_at_sentence(hit.content, MAX_CONTENT_CHARS)
-        block = f"{header}\n{body}" + ("…(이하 생략)" if cut else "")
-        if index > 0 and used + len(block) + 2 > MAX_SEARCH_RESULT_CHARS:
-            omitted += 1  # 첫 문단은 항상 싣고, 상한을 넘기는 뒤쪽(유사도가 더 낮은) 문단은 뺀다
+        rendered.append((hit, f"{header}\n{body}" + ("…(이하 생략)" if cut else "")))
+
+    used = sum(len(b) + 2 for b in blocks)
+    chosen: set[int] = set()
+    # 첫 문단은 항상 싣는다. 나머지는 상한 안에서 고르되, 금기·중대한 이상반응 문단을 먼저 담고 그다음 유사도 순으로 담는다.
+    order = sorted(range(len(rendered)), key=lambda i: (i > 0, not _is_critical(rendered[i][0]), i))
+    for i in order:
+        cost = len(rendered[i][1]) + 2
+        if i == 0 or used + cost <= MAX_SEARCH_RESULT_CHARS:
+            chosen.add(i)
+            used += cost
+    omitted = len(rendered) - len(chosen)
+    for i, (hit, block) in enumerate(rendered):  # 출력은 원래(유사도) 순서로
+        if i not in chosen:
             continue
-        used += len(block) + 2
+        name, maker = _product_label(hit.sources, hit.source_count)
         blocks.append(block)
         evidence.append(
             Evidence(
@@ -173,7 +192,10 @@ def format_outcome(outcome: SearchOutcome, requested_name: str | None) -> ToolRe
             )
         )
     if omitted:
-        blocks.append(f"[참고] 길이 제한으로 관련도가 낮은 문단 {omitted}개는 생략했습니다.")
+        blocks.append(
+            f"[참고] 분량 때문에 문단 {omitted}개를 싣지 못했습니다. 답변 끝에 \"등록된 내용 중 일부만 안내했어요\"라고만 밝히고, "
+            "'검색 결과', '문단' 같은 말은 쓰지 마세요."
+        )
     text = "\n\n".join(blocks)
     return ToolResult(text, evidence)
 
