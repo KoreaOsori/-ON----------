@@ -8,9 +8,17 @@ crops/
 *.parquet
 *.onnx
 
-# 대조용 사진 (JSON 결과만 커밋)
-tests/fixtures/*.png
-tests/fixtures/*.jpg
+# 대조용 사진 (JSON 결과만 커밋). 처방전 사진에 개인정보가 있으므로 하위 폴더(pill/, rx/)까지 막는다
+# (예전 규칙 tests/fixtures/*.png 는 하위 폴더에 적용되지 않았음). 리눅스는 대소문자를 구분하므로 둘 다 적음
+tests/fixtures/**/*.png
+tests/fixtures/**/*.PNG
+tests/fixtures/**/*.jpg
+tests/fixtures/**/*.JPG
+tests/fixtures/**/*.jpeg
+tests/fixtures/**/*.JPEG
+tests/fixtures/**/*.webp
+tests/fixtures/**/*.heic
+tests/fixtures/**/*.HEIC
 
 # 비밀값
 .env

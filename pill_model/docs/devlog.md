@@ -85,3 +85,55 @@
 - `PillIdentifier(deploy_dir, load_ocr=False)` 후 바깥에서 `pid.ocr = 공유 인스턴스` 를 넣으면 yakon_pill 수정 없이 공유 가능 (`read_text` 가 `self.ocr.predict` 만 사용).
 - MODEL_CARD: paddleocr 3.7.0, paddlepaddle 3.3.0.
 - 백엔드 업로드 key = `{purpose}/YYYY/MM/DD/{owner}/{uuid}.{ext}`, purpose ∈ {prescription, pill}. 처방전 사진은 `prescription/` → 워커 IAM 에 읽기 권한 추가 필요.
+
+## 2026-10-23 — 처방전 준비물 수령·검토, opencv 단일 버전 검토
+
+### 받은 것
+- `app/rx/yakon_rx.py` (R-E2 검증본, 수정 금지), `deploy/rx/` (config_rx.json, permit_names.csv 42,897행, dose_envelope.json)
+- `tests/fixtures/pill/*.expected.json` 3개 (cv2 4.10.0 환경), `tests/fixtures/rx/*.expected.json` 3개 (OCR 원문 없음 — 지문·LLM 결과·판정만 → 커밋 가능)
+- `app/pill/yakon_pill.py` 는 커밋본과 동일(git diff 없음)
+
+### 확인한 사실
+- `RxReader(deploy_dir, ocr=…, llm_client=…)` → 공유 OCR 엔진·boto3 클라이언트를 밖에서 넣을 수 있음 (yakon_rx 수정 불필요).
+- ⚠ `config_rx.json` 의 `"per_call_limit": false`. `analyze()` 는 `read_lines(img)` 를 인자 없이 호출 → 설정값을 따름.
+  공유 엔진(640)에 false 면 처방전이 640 으로 검출됨 → R-E3 ② 결론(true)과 다름. 사용자 확인 필요.
+- 패키지 메타데이터 (pip download --no-deps, 설치 안 함):
+  - paddlex 3.7.2 → `opencv-contrib-python==4.10.0.84` 고정 (ocr-core extra)
+  - rembg 2.0.70~2.0.86 → `numpy>=2.3`, `pillow>=12.1` (검증 환경 numpy 2.1.3·pillow 11.3.0 과 충돌), opencv 의존 없음
+  - rembg ≤2.0.69 → `opencv-python-headless`(버전 무제한) 요구 → 두 번째 cv2 패키지가 설치됨
+  - rembg 2.0.69 코드: `bg.py` 가 `from cv2 import …`, `sessions/sam.py` 가 `import cv2` → contrib 의 cv2 로도 동작할 것으로 추정
+  → 후보: opencv-contrib-python 4.10.0.84 하나 + `rembg==2.0.69 --no-deps` + 나머지 의존성 개별 설치. 빌드에서 `cv2.__version__` 검사.
+
+## 2026-10-23 — 결정 반영: per_call_limit, 문서 합치기, IAM 2차 plan
+
+### config_rx.json 변경 (사용자 승인)
+- `"per_call_limit": false` → `true` (한 줄만, JSON 검증 통과). 코드 수정 없음.
+- sha256 원본 `3ea98dd70d47a60e83ecc307c3eca2cbf2f215ad197f34478c576dd77c78c21b` (Drive 원본 접두어 `3ea98dd70d47a60e…` 와 일치)
+  → 변경 후 `73251b1fa6b8ea5923fd8cfe1de55709dc6196ed6a5cf642181ec7adb625fb56`
+- 근거: Colab R-E3 ② 는 `read_lines(p, per_call_limit=True)` 인자로 640 엔진 = 1280 엔진(글자·확신도 동일) 확인. config 를 true 로 하면 `analyze()` 가 같은 경로.
+- permit_names.csv: 42,714행 = 고유 ITEM_SEQ 42,714 (wc -l 42,898 은 이름 안 줄바꿈 때문). dose_envelope.json 33,921품목. 전달 내용과 일치.
+
+### .gitignore 구멍 수정
+- `tests/fixtures/*.png|jpg` 는 하위 폴더(`pill/`, `rx/`)에 적용되지 않음 → 처방전 사진이 커밋될 수 있었음.
+  `tests/fixtures/**/*.{png,jpg,jpeg,webp,heic}` (대·소문자)로 변경.
+
+### 사진 위치
+- fixture 사진 9장이 `tests/fixtures/` 에 없음(최근 3시간 내 추가된 이미지 0). 저장소 `data/ocr_evaluation/`(루트 gitignore)에 `rx_0001.jpg`, `bag_0001.jpg` 만 있음. 알약 6장·`약봉투7.jpg` 없음 → 사용자 확인 대기.
+
+### 문서 합치기
+- `CLAUDE(model).md`·`PLAN(model).md`(10/23 처방전 반영본) + PC 정정(계정 자원 이름, silver drug_product, 업로드 버킷) → `claude.md`·`plan.md`.
+- 추가 반영: opencv-contrib 4.10.0.84 단일, rembg 2.0.69 --no-deps + constraints, OCR 지문 공식·단계 판정(plan 3-5), 백엔드 `modules/ocr` 더미 교체 허용(응답 (b)안), S3 `models/{cnn,ocr_models,rx}/`.
+
+### IAM 2차 plan
+- 이전 plan(drug_product·pill/*)은 apply 되지 않은 상태였음(현재 정책 조회로 확인) → 이번 plan 에 함께 포함.
+- Bedrock 기반 모델 ARN 은 `data "aws_bedrock_inference_profile"` 로 조회(리전 하드코딩 없음).
+- `Plan: 0 to add, 1 to change, 0 to destroy.` — aws_iam_role_policy.worker 만 변경:
+  silver 경로 → drug_product / UploadRead(pill/*, prescription/*) 추가 / RxLlmInvoke(프로필 ARN + 기반 모델 3개) 추가.
+
+### fixture 사진 확인 (같은 날, 사용자가 추가)
+- 알약: `tests/fixtures/pill/{29002,34342,39916}/` — 품목별 하위 폴더, 각 40장(RGBA PNG, 배경 제거됨) + Thumbs.db.
+  fixture 가 요구하는 6장 모두 있음 → 테스트 경로는 `tests/fixtures/pill/<code>/<photos[].file>`.
+  나머지 34장씩은 기대값 없음 → 속도 측정(bench) 표본으로만 사용 가능.
+- 처방전: `tests/fixtures/rx/` rx_0001.jpg(4000x3000, 4.7MB), bag_0001.jpg(4000x3000, 4.4MB), 약봉투7.jpg(720x534) — 3장 모두 있음.
+  ⚠ 저장소 `data/ocr_evaluation/…/rx_0001.jpg`(137KB)와 **다른 파일** → 대조에는 tests/fixtures 쪽만 사용.
+- git: 사진·Thumbs.db 모두 제외 확인, 커밋 대상은 *.expected.json 6개뿐.

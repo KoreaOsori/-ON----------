@@ -1,0 +1,362 @@
+{
+ "image": "약봉투7.jpg",
+ "paddle": "3.2.2",
+ "ocr_fingerprint": "8b03b14bd3f2ed110a33191f4b7ed89ff5287b51466495fd1e8cf5b3ab6b3b9b",
+ "n_lines": 116,
+ "privacy": {
+  "lines_dropped": 63,
+  "masked": 0
+ },
+ "llm_result": {
+  "doc_type": "medicine_bag",
+  "drugs": [
+   {
+    "name": "화록소정(소염진통제①+③)",
+    "name_line": 45,
+    "dose": "1",
+    "dose_line": 51,
+    "times": null,
+    "times_line": null,
+    "days": null,
+    "days_line": null
+   },
+   {
+    "name": "리니드정(위신과다증약)",
+    "name_line": 64,
+    "dose": null,
+    "dose_line": null,
+    "times": null,
+    "times_line": null,
+    "days": null,
+    "days_line": null
+   },
+   {
+    "name": "부스코판당의정(진경제)",
+    "name_line": 77,
+    "dose": null,
+    "dose_line": null,
+    "times": null,
+    "times_line": null,
+    "days": null,
+    "days_line": null
+   },
+   {
+    "name": "씨프로바이정250일리그램",
+    "name_line": 93,
+    "dose": null,
+    "dose_line": null,
+    "times": 2,
+    "times_line": 95,
+    "days": 2,
+    "days_line": 96
+   },
+   {
+    "name": "화록소정",
+    "name_line": 97,
+    "dose": "1",
+    "dose_line": 98,
+    "times": 2,
+    "times_line": 99,
+    "days": 2,
+    "days_line": 100
+   },
+   {
+    "name": "라니드정",
+    "name_line": 101,
+    "dose": "1",
+    "dose_line": 102,
+    "times": null,
+    "times_line": null,
+    "days": 2,
+    "days_line": 104
+   },
+   {
+    "name": "부스코판당의정",
+    "name_line": 105,
+    "dose": "1",
+    "dose_line": 106,
+    "times": 2,
+    "times_line": 107,
+    "days": 2,
+    "days_line": 108
+   }
+  ]
+ },
+ "drugs": [
+  {
+   "name_read": "화록소정(소염진통제①+③)",
+   "name_conf": 0.7816,
+   "decision": "확인 필요",
+   "how": "② 괄호제외",
+   "auto": false,
+   "item_seq": null,
+   "candidates": [
+    {
+     "item_seq": "201502959",
+     "item_name": "화록소정(록소프로펜나트륨수화물)",
+     "status": "정상"
+    },
+    {
+     "item_seq": "201902262",
+     "item_name": "록소정(록소프로펜나트륨수화물)",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "1",
+     "conf": 0.4011,
+     "ui": "빈칸"
+    },
+    "times": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    },
+    "days": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    }
+   }
+  },
+  {
+   "name_read": "리니드정(위신과다증약)",
+   "name_conf": 0.6997,
+   "decision": "확인 필요",
+   "how": "⑤ 오타",
+   "auto": false,
+   "item_seq": null,
+   "candidates": [
+    {
+     "item_seq": "200202988",
+     "item_name": "라니드정(라니티딘염산염)",
+     "status": "유효기간만료"
+    },
+    {
+     "item_seq": "201904315",
+     "item_name": "리마드정(리마프로스트알파덱스)",
+     "status": "정상"
+    },
+    {
+     "item_seq": "200101179",
+     "item_name": "보니드정(레보설피리드)",
+     "status": "유효기간만료"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    },
+    "times": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    },
+    "days": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    }
+   }
+  },
+  {
+   "name_read": "부스코판당의정(진경제)",
+   "name_conf": 0.7937,
+   "decision": "확인 필요",
+   "how": "② 괄호제외",
+   "auto": false,
+   "item_seq": null,
+   "candidates": [
+    {
+     "item_seq": "200901181",
+     "item_name": "부스코판당의정(부틸스코폴라민브롬화물)",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    },
+    "times": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    },
+    "days": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸"
+    }
+   }
+  },
+  {
+   "name_read": "씨프로바이정250일리그램",
+   "name_conf": 0.9803,
+   "decision": "자동 배치",
+   "how": "② 괄호제외",
+   "auto": true,
+   "item_seq": "201905731",
+   "candidates": [
+    {
+     "item_seq": "201905731",
+     "item_name": "씨프로바이정250밀리그램(시프로플록사신염산염수화물)",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸",
+     "over": false,
+     "reason": ""
+    },
+    "times": {
+     "value": 2,
+     "conf": 0.9926,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    },
+    "days": {
+     "value": 2,
+     "conf": 0.977,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    }
+   },
+   "confirmed": true,
+   "item_name": "씨프로바이정250밀리그램(시프로플록사신염산염수화물)"
+  },
+  {
+   "name_read": "화록소정",
+   "name_conf": 0.9708,
+   "decision": "자동 입력(유사이름 배지)",
+   "how": "② 괄호제외",
+   "auto": true,
+   "item_seq": "201502959",
+   "candidates": [
+    {
+     "item_seq": "201502959",
+     "item_name": "화록소정(록소프로펜나트륨수화물)",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "1",
+     "conf": 0.9994,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    },
+    "times": {
+     "value": 2,
+     "conf": 0.8313,
+     "ui": "확인 필요",
+     "over": false,
+     "reason": ""
+    },
+    "days": {
+     "value": 2,
+     "conf": 0.9458,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    }
+   },
+   "confirmed": true,
+   "item_name": "화록소정(록소프로펜나트륨수화물)"
+  },
+  {
+   "name_read": "라니드정",
+   "name_conf": 0.8452,
+   "decision": "자동 입력(유사이름 배지)",
+   "how": "② 괄호제외",
+   "auto": true,
+   "item_seq": "200202988",
+   "candidates": [
+    {
+     "item_seq": "200202988",
+     "item_name": "라니드정(라니티딘염산염)",
+     "status": "유효기간만료"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "1",
+     "conf": 0.995,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    },
+    "times": {
+     "value": null,
+     "conf": null,
+     "ui": "빈칸",
+     "over": false,
+     "reason": ""
+    },
+    "days": {
+     "value": 2,
+     "conf": 0.6225,
+     "ui": "빈칸",
+     "over": false,
+     "reason": ""
+    }
+   },
+   "confirmed": true,
+   "item_name": "라니드정(라니티딘염산염)"
+  },
+  {
+   "name_read": "부스코판당의정",
+   "name_conf": 0.9078,
+   "decision": "자동 배치",
+   "how": "② 괄호제외",
+   "auto": true,
+   "item_seq": "200901181",
+   "candidates": [
+    {
+     "item_seq": "200901181",
+     "item_name": "부스코판당의정(부틸스코폴라민브롬화물)",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "1",
+     "conf": 0.9869,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    },
+    "times": {
+     "value": 2,
+     "conf": 0.9592,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    },
+    "days": {
+     "value": 2,
+     "conf": 0.9427,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    }
+   },
+   "confirmed": true,
+   "item_name": "부스코판당의정(부틸스코폴라민브롬화물)"
+  }
+ ],
+ "colab_sec": {
+  "ocr": 15.55,
+  "llm": 3.37
+ }
+}

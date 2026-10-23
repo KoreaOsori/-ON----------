@@ -1,238 +1,251 @@
 # pill_model 실행 계획 (Claude Code용)
 
-> 규칙은 `CLAUDE.md`. 이 문서는 **순서·설계·체크포인트**. 🔒 표시는 사용자 승인 후에만 실행.
-> 기준 저장소: KoreaOsori/-ON---------- main (#36, 2026-10-22). 팀 코드 사실관계는 이 시점에 읽고 확인한 것.
+> 규칙은 `claude.md`. 이 문서는 **순서·설계·체크포인트**. 🔒 표시는 사용자 승인 후에만 실행.
+> 기준 저장소: KoreaOsori/-ON---------- main (#36, 2026-10-22). 팀 코드·AWS 사실관계는 이 시점에 읽고 조회한 것.
+> 2026-10-23: 처방전 OCR 추가 반영본(사용자)과 PC 정정(silver 경로·업로드 버킷·계정 자원 이름)을 합침.
 
 ---
 
-## 0. 사전 준비 (사용자)
+## 0. 사전 준비 (사용자) — ✅ 완료
 
-### 0-1. PC에 설치
-| 도구 | 용도 | 확인 명령 |
+### 0-1. PC 도구 (2026-10-22 확인)
+aws-cli 2.36.7 · session-manager-plugin 1.2.835.0 · Terraform 1.15.8 · Git 2.55 · Docker Desktop (Compose v5.5.1 — EC2는 v2.29.7, compose.yaml은 공통 문법만)
+
+### 0-2. AWS (교육 계정 `de-ai-21`)
+- 그룹 정책 `DE-AI-Resource-Isolation-Policy`: `ec2:* / s3:* / iam:* / ssm:* / bedrock:*` 등, 허용 리전에 us-east-1·us-east-2·us-west-2 포함.
+- `aws sts get-caller-identity` 출력·계정 번호는 공유·커밋하지 않는다.
+
+### 0-3. 버전 (Colab CPU 실측 환경) → 3-3 constraints 의 근거
+| 패키지 | 버전 | 출처 |
 |---|---|---|
-| AWS CLI v2 | 자격 증명, S3 업로드 | `aws --version` |
-| Session Manager 플러그인 | EC2 접속(SSM) | `session-manager-plugin --version` |
-| Terraform ≥ 1.10 | 별도 스택 (팀과 같은 버전 조건) | `terraform version` |
-| Git | push/pull | `git --version` |
-| (선택) Docker Desktop | PC에서 워커 이미지 테스트 | `docker version` |
+| Python | 3.13.16 | Colab |
+| paddlepaddle | **3.2.2** (CPU, 3.3.x는 oneDNN 버그로 금지) | OCR 노트북 |
+| paddleocr / paddlex | 3.7.0 / 3.7.2 | OCR 노트북 |
+| opencv-contrib-python | **4.10.0.84 하나만** (paddlex 3.7.2 가 이 버전으로 고정) | OCR·CNN 노트북 확인 셀 |
+| torch / torchvision | 2.11.0+cpu / 0.26.0+cpu | CNN 노트북 |
+| timm | 1.0.30 | CNN |
+| numpy / pandas / pillow / scipy / pyarrow | 2.1.3 / 2.2.3 / 11.3.0 / 1.16.3 / 23.0.1 | Colab |
+| rapidfuzz / boto3 | 3.14.6 / 1.43.118 | OCR 노트북 |
+| rembg | 2.0.69 (`--no-deps`) | 노트북에서 안 씀 → 3-3·3-4에서 결정·검증 |
 
-### 0-2. AWS 자격 증명 (교육 계정 `de-ai-21`)
-```bash
-aws configure                      # Access Key / Secret / region=us-east-1
-aws sts get-caller-identity        # 계정·사용자 확인 (출력은 공유하지 말 것)
-aws iam list-attached-user-policies --user-name de-ai-21   # 붙은 정책 확인
-aws s3 ls                          # 팀 state 버킷(…tfstate…)·데이터 버킷 이름 확인
-```
-콘솔에서 확인해 `terraform.tfvars`에 넣을 값 (2-1 참고): **백엔드 인스턴스의 VPC ID, 퍼블릭 서브넷 ID, 보안 그룹 ID**.
-⚠ 콘솔에서 만들던 EC2·SG가 있으면 생성 취소(이미 만들었다면 종료) — 이 스택이 만든다.
-필요 권한 (부족하면 계정 관리자에게 요청):
-- **EC2**: RunInstances, TerminateInstances, Start/StopInstances, Describe*, CreateTags, ModifyInstanceAttribute,
-  Create/DeleteSecurityGroup, Authorize/RevokeSecurityGroupIngress·Egress
-- **IAM** (⚠ PowerUserAccess에는 없음): Create/Delete/GetRole, Put/Delete/GetRolePolicy, Attach/DetachRolePolicy,
-  ListRolePolicies, ListAttachedRolePolicies, TagRole, Create/Delete/GetInstanceProfile,
-  Add/RemoveRoleToInstanceProfile, ListInstanceProfilesForRole, **PassRole**
-- **S3**: CreateBucket, DeleteBucket, ListBucket, Put/GetBucket{PublicAccessBlock, Encryption, Versioning, Policy, Tagging, OwnershipControls},
-  모델 버킷 객체 Put/Get, **팀 state 버킷의 `pill-check/dev/pill-model.tfstate*` 객체 Get/Put/Delete**
-- **SSM**: GetParameter(AMI 조회), StartSession, TerminateSession · **STS**: GetCallerIdentity
-- IAM 권한이 막혀 있으면 → 진행하지 말고 사용자에게 보고(대안: 관리자가 역할을 만들어 주고 이름만 받기).
+opencv 확인 결과(사용자, 2026-10-23): Colab에는 contrib 4.10.0.84·python 5.0.0.93·headless 5.0.0.93 세 개가 같이 깔려 있었으나 실제 `cv2.__version__ = 4.10.0`.
+CNN 노트북은 원래 4.14.0 → contrib 4.10.0.84만 남기고 재실행해 알약 6장 OCR 글자가 최종 평가(v1_det640)와 동일 확인. **알약 fixture는 4.10 환경에서 생성.**
 
-### 0-3. Colab에서 버전 확인 (재현성)
-```python
-!python --version
-!pip freeze | grep -iE "^(paddle|paddleocr|paddlex|torch|timm|rapidfuzz|opencv|numpy|pandas|scipy|pillow)"
-```
-→ 출력을 `pill_model/requirements.lock.txt` 근거로 사용(torch는 CPU 빌드로). Colab과 버전이 다르면 결과가 달라질 수 있음.
-
-### 0-4. 파일 준비
-- Drive `pill_project/cnn/deploy/` 전체(cnn_v5.pt, gallery_v5.npy, gallery_index.csv, pill_db.csv, config.json, yakon_pill.py)를 PC로 내려받기.
-- `yakon_pill.py` → `pill_model/app/yakon_pill.py` 로 **그대로** 복사 (수정 금지).
-- 대조용 평가 사진 3~5쌍(RGBA)과 Colab에서 같은 사진으로 돌린 `analyze` 결과 JSON을 `pill_model/tests/fixtures/`에 (사진은 gitignore, JSON만 커밋 가능).
+### 0-4. 파일 (✅ PC에 있음, `deploy/`는 gitignore)
+- `deploy/cnn/`: cnn_v5.pt · gallery_v5.npy · gallery_index.csv · pill_db.csv · config.json
+- `deploy/ocr_models/paddleocr_v5_korean_2026-10-14/`: PP-OCRv5_server_det · korean_PP-OCRv5_mobile_rec · MODEL_CARD.json
+  (Drive 10/14 보관본과 새로 받은 모델 본체 30개 파일 동일 — 사용자 확인. `.cache/huggingface/` 는 다운로드 기록이라 제외)
+  ⚠ MODEL_CARD.json 의 `"paddlepaddle": "3.3.0"` 은 GPU 환경 값 — 버전 기준은 0-3 표.
+- `deploy/rx/`: config_rx.json · permit_names.csv(42,714품목, bronze 10/04) · dose_envelope.json(33,921품목)
+  - `config_rx.json` 은 `per_call_limit` 만 false → **true** 로 변경 (사용자 승인 2026-10-23).
+    원본 sha256 `3ea98dd70d47a60e83ecc307c3eca2cbf2f215ad197f34478c576dd77c78c21b` → 변경 후 `73251b1fa6b8ea5923fd8cfe1de55709dc6196ed6a5cf642181ec7adb625fb56`
+- `app/pill/yakon_pill.py`, `app/rx/yakon_rx.py`: Colab 검증본 (수정 금지)
+- `tests/fixtures/pill/*.expected.json`(3쌍), `tests/fixtures/rx/*.expected.json`(3장): 커밋 가능 (OCR 원문 없음). 사진은 같은 폴더, gitignore.
 
 ---
 
-## 1. 폴더 구조 (만들 것)
+## 0-5. 처방전·약봉투 OCR (2026-10-23 결정: 같은 워커에 `/rx/*`)
+- 프런트가 사진 종류를 나눔: 처방전·약봉투 → `/rx/analyze` / 알약 → `/pill/analyze`.
+- 코드: `app/rx/yakon_rx.py` (노트북 R-2a·2b·2c v4·2f·2g A+C·2h v3·B-ALL, **수정 금지** — Colab R-E2에서 노트북과 다른 행 0).
+- `RxReader(deploy/rx, ocr=공유 엔진, llm_client=boto3 bedrock-runtime)` — 둘 다 밖에서 주입 가능(코드 확인).
+- OCR 엔진 1개 공유: 알약 설정(640)으로 생성 → 처방전은 `predict(..., text_det_limit_side_len=1280)`.
+  Colab R-E3 ②: 640 엔진 + 호출별 1280 = 1280 엔진과 글자·확신도까지 동일 → `per_call_limit: true`.
+- LLM: Bedrock Haiku 4.5 (`us.anthropic.claude-haiku-4-5-20251001-v1:0`, us-east-1, Converse). 🔒 워커 IAM에 `bedrock:InvokeModel` (2-2).
+- 개인정보: 처방전 사진·OCR 글자·LLM 입출력은 **저장·로그 금지**. 로그에는 장 수·시간·약 개수·판정 종류만.
+- Colab 측정: 처방전 1장 17~33초 (OCR 13~33초 + LLM 2~3.5초), 편차 큼 → EC2에서 5회 평균.
+
+---
+
+## 1. 폴더 구조
 ```
 pill_model/
-├── CLAUDE.md  PLAN.md  README.md
+├── claude.md  plan.md  README.md
 ├── .gitignore  .dockerignore  .env.example
-├── Dockerfile  compose.yaml  requirements.txt
+├── Dockerfile  compose.yaml  requirements.txt  constraints.txt
+├── deploy/            # (gitignore) S3 models/ 와 같은 구조
+│   ├── ocr_models/paddleocr_v5_korean_2026-10-14/   # 공용 OCR 모델
+│   ├── cnn/           # cnn_v5.pt · gallery_v5.npy · gallery_index.csv · pill_db.csv · config.json
+│   └── rx/            # config_rx.json · permit_names.csv · dose_envelope.json
 ├── app/
-│   ├── main.py        # FastAPI: 라우트, 시작 시 모델 적재, 동시성 1
-│   ├── yakon_pill.py  # Colab 검증 모듈 (복사본, 수정 금지)
+│   ├── main.py        # FastAPI: 라우트, 시작 시 모델 적재, 동시성 1 (/pill/* · /rx/* 공용)
+│   ├── ocr_engine.py  # PaddleOCR 1개 생성(yakon_pill._make_ocr 와 같은 인자) → 알약·처방전 공유
+│   ├── pill/yakon_pill.py  # 수정 금지 — PillIdentifier(deploy/cnn, load_ocr=False) 후 .ocr 주입
+│   ├── rx/yakon_rx.py      # 수정 금지 — RxReader(deploy/rx, ocr=공유 엔진, llm_client=…)
 │   ├── schemas.py     # 요청·응답 Pydantic 모델 (camelCase 응답은 백엔드와 맞춤)
 │   ├── sessions.py    # 세션 보관(메모리, TTL 10분)
-│   ├── storage.py     # S3: 업로드 사진 읽기, 동의한 crop 저장, 모델 내려받기
-│   ├── images.py      # silver pill_identification → item_seq: image_url
+│   ├── storage.py     # S3: 업로드 사진 읽기, 동의한 crop 저장
+│   ├── images.py      # silver drug_product(item_seq·pills 컬럼만) → item_seq: image_url
 │   └── bg.py          # rembg 배경 제거 (모델 이름은 환경변수)
 ├── scripts/
-│   ├── fetch_models.sh   # S3 models/v5/ → ./deploy (EC2에서)
+│   ├── fetch_models.sh   # S3 models/{cnn,ocr_models,rx}/ → ./deploy (EC2에서)
 │   └── bench.py          # 속도·대조 측정 (fixtures 사용)
-├── tests/                # pytest: 스키마, 세션 TTL, image_url 결합, 대조 테스트
-├── docs/devlog.md        # 개발 기록
-└── infra/terraform/
-    ├── versions.tf  main.tf  variables.tf  outputs.tf  user_data.sh
-    ├── backend.hcl.example  terraform.tfvars.example
+├── tests/
+│   ├── fixtures/pill/  fixtures/rx/   # *.expected.json (커밋) + 사진 (gitignore)
+│   └── test_*.py         # pytest: 스키마, 세션 TTL, image_url 결합, 지문·대조
+├── docs/devlog.md
+└── infra/terraform/   versions.tf  main.tf  variables.tf  outputs.tf  user_data.sh  *.example
 ```
-`pill_model/.gitignore` (루트 .gitignore는 수정하지 않음):
-```
-deploy/
-crops/
-*.pt
-*.npy
-*.parquet
-*.onnx
-tests/fixtures/*.png
-tests/fixtures/*.jpg
-.env
-infra/terraform/.terraform/
-infra/terraform/*.tfstate*
-infra/terraform/terraform.tfvars
-infra/terraform/backend.hcl
-```
+`.gitignore` 는 실제 파일(`pill_model/.gitignore`)이 기준. 주의: fixture 사진은 **하위 폴더까지** 막는 `tests/fixtures/**/*.jpg` 형식이어야 함
+(10-23 이전 규칙 `tests/fixtures/*.jpg` 는 `pill/`·`rx/` 하위에 적용되지 않았음). 루트 `.gitignore` 의 `docs` 규칙은 `!docs/` 로 해제.
 
 ---
 
-## 2. Terraform 별도 스택 (`pill_model/infra/terraform`)
+## 2. Terraform 별도 스택 (`pill_model/infra/terraform`) — ✅ 1차 apply 완료 (2026-10-22, 13개 생성)
 
 ### 2-1. 팀 자원 — 읽기만 (`data`, **ID는 변수로 받는다**)
-✅ (2026-10-22 조회로 정정) 약ON 백엔드는 교육 계정 `de-ai-21`의 **`pill-check-dev-ec2`** (VPC `pill-check-dev-vpc`) — 팀 Terraform 이름 규칙과 같다.
-   `agent-de-ai-01-vpc`는 인스턴스가 없는 다른 VPC라 쓰지 않는다.
-→ 그래도 이름 태그로 찾지 않고 **ID를 `terraform.tfvars`(gitignore)로 받아** `data` 블록에서 존재만 검증한다(이름이 바뀌어도 안전).
+✅ (2026-10-22 조회로 정정) 약ON 백엔드는 `de-ai-21` 계정의 **`pill-check-dev-ec2`** (VPC `pill-check-dev-vpc`) — 팀 Terraform 이름 규칙과 같다.
+`agent-de-ai-01-vpc` 는 인스턴스가 없는 다른 VPC라 쓰지 않는다. 그래도 이름이 아니라 **ID를 `terraform.tfvars`(gitignore)로 받는다.**
 
-| 변수 (`variables.tf`, 기본값 없음) | 실제로 넣은 자원 (ID는 tfvars에만) | 검증용 data |
+| 변수 | 실제로 넣은 자원 (ID·이름은 tfvars에만) | 검증용 data |
 |---|---|---|
-| `vpc_id` | `pill-check-dev-vpc` | `aws_vpc` id |
-| `subnet_id` | `pill-check-dev-public-us-east-1a` (백엔드와 같은 퍼블릭 서브넷) | `aws_subnet` id → vpc_id 일치·퍼블릭 검사(`precondition`) |
-| `backend_sg_id` | `pill-check-dev-ec2` (백엔드 EC2에 붙은 SG) | `aws_security_group` id → vpc_id 일치 검사 |
+| `vpc_id` | `pill-check-dev-vpc` | `aws_vpc` |
+| `subnet_id` | `pill-check-dev-public-us-east-1a` | `aws_subnet` → vpc 일치·퍼블릭 `precondition` |
+| `backend_sg_id` | `pill-check-dev-ec2` SG | `aws_security_group` → vpc 일치 |
 | `data_bucket_name` | `pill-check-data-<계정>` | `aws_s3_bucket` |
-| `upload_bucket_name` | `pill-check-uploads-<계정>` (팀 Terraform 소유, 2026-10-22 생성 확인) | data 조회 없이 이름으로 ARN 생성, 빈 값이면 생략 |
-| AMI | 변수 아님 — `aws_ssm_parameter` `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64` | |
+| `upload_bucket_name` | `pill-check-uploads-<계정>` (팀 Terraform 소유, 10-22 23:43 생성 확인) | `aws_s3_bucket` (빈 값이면 생략) |
+| AMI | 변수 아님 — SSM `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64` | |
 
-- `terraform.tfvars.example`에는 **자리표시자만**(`vpc-xxxxxxxx`) 넣는다. 실제 ID는 커밋 금지.
-- 이름 접두어는 변수 `name_prefix`(기본 `pill-worker`)로 새 자원에 붙인다.
-- state 버킷도 계정마다 다를 수 있음 → `aws s3 ls`에서 확인. **팀 state 버킷이 없으면** 진행 멈추고 사용자에게 질문
-  (대안: 이 스택 전용 state 버킷을 콘솔로 1개 만들기 — 사용자 승인 후).
-- plan 전에 위 값들이 실제로 조회되는지 `aws ec2 describe-vpcs/describe-subnets/describe-security-groups --*-ids <id>`로 먼저 확인(조회라 승인 불필요).
-
-### 2-2. 새로 만드는 자원 (전부 이 스택 소유, `terraform destroy`로 정리 가능)
-- **모델 버킷** `${name_prefix}-model-${account_id}`: 퍼블릭 차단, 암호화, BucketOwnerEnforced, HTTPS만 허용 정책.
-  경로: `models/v5/…`(모델 파일), `crops/YYYY/MM/DD/<uuid>_{front|back}.png`(동의한 알약 조각).
-  `force_destroy = false` (crop 실수 삭제 방지 — destroy 전에 비워야 함을 README에 명시).
-- **워커 SG** `${name_prefix}-sg` (새로 생성 — 기존 `agent-de-ai-01-ec2-sg`를 워커에 붙이지 않는다): 인바운드 TCP 8000 ← `referenced_security_group_id = var.backend_sg_id`. 아웃바운드 전체(패키지·S3).
-  ⚠ 팀 SG에는 규칙을 추가하지 않는다(백엔드 SG 아웃바운드가 이미 전체 허용임을 확인함).
-- **IAM 역할·인스턴스 프로필** `${name_prefix}-role` (생성 권한 없으면 plan/apply 오류 → 멈추고 사용자에게 보고):
+### 2-2. 이 스택이 만드는 자원
+- **모델 버킷** `${name_prefix}-model-${account_id}`: 퍼블릭 차단, AES256, BucketOwnerEnforced, HTTPS만.
+  경로: `models/{cnn,ocr_models,rx}/…`(= `deploy/` 구조), `crops/YYYY/MM/DD/<uuid>_{front|back}.png`. `force_destroy = false`.
+- **워커 SG** `${name_prefix}-sg`: 인바운드 TCP 8000 ← 백엔드 SG만. 아웃바운드 전체. 팀 SG에는 규칙 추가 안 함.
+- **IAM 역할·인스턴스 프로필** `${name_prefix}-role`:
   - `AmazonSSMManagedInstanceCore`
-  - 모델 버킷: `models/*` Get, `crops/*` Put, ListBucket(prefix models/)
-  - 데이터 버킷: `silver/_latest.json`, `silver/drug_product/*` Get, ListBucket(prefix silver/drug_product/)
-    (낱알식별은 별도 테이블이 아니라 drug_product의 `pills` 목록 안에 있음 — 인프라 담당 확인 2026-10-23)
-  - 업로드 버킷: `pill/*` Get — 변수 `upload_bucket_name`이 빈 값이면 이 문장 생략
-- **EC2** `${name_prefix}`: t3.medium, 키 페어 없음(SSM 접속), 퍼블릭 IP 자동 할당, `credit_specification { cpu_credits = "standard" }`,
-  gp3 30GB encrypted, `metadata_options { http_tokens = "required", http_put_response_hop_limit = 2 }`
-  (⚠ hop limit 2: 이게 1이면 Docker 컨테이너 안에서 IMDSv2로 IAM 역할 자격 증명을 못 받는다),
-  `user_data.sh` = docker·git·compose 플러그인 설치, ec2-user를 docker 그룹에, `/opt/pill_model` 준비.
-  탄력적 IP 없음 — 백엔드는 **프라이빗 IP**로 호출(정지·시작해도 프라이빗 IP는 유지).
+  - 모델 버킷: `models/*` Get, `crops/*` Put, ListBucket(prefix `models/`)
+  - 데이터 버킷: `silver/_latest.json`, `silver/drug_product/*` Get, ListBucket(prefix `silver/drug_product/`)
+    (낱알식별은 drug_product 의 `pills` 안에 있음 — 인프라 담당 확인. bronze 권한은 안 넣음)
+  - 업로드 버킷: `pill/*` Get · **`prescription/*` Get** (처방전 추가)
+  - **Bedrock**: `bedrock:InvokeModel` — 추론 프로필 ARN(us-east-1, 계정) + 기반 모델 ARN 3개(us-east-1·us-east-2·us-west-2).
+    조회(10-23): 프로필 `ACTIVE`, 계정 `AUTHORIZED`. 첫 호출에서 AccessDenied 여부 확인.
+- **EC2** `${name_prefix}`: t3.medium, credit standard, 키 페어 없음, 퍼블릭 IP, gp3 30GB 암호화, IMDSv2 hop limit 2,
+  `user_data.sh` = docker·git·compose v2.29.7·buildx v0.17.1, `/opt/pill_model`. 백엔드는 **프라이빗 IP**로 호출.
 - 태그: `Project=pill-check, Environment=dev, ManagedBy=terraform, Stack=pill-model`.
 
-### 2-3. state
-```hcl
-# versions.tf
-backend "s3" {
-  key          = "pill-check/dev/pill-model.tfstate"   # 팀 키(terraform.tfstate)와 다름
-  region       = "us-east-1"
-  encrypt      = true
-  use_lockfile = true
-}
-# backend.hcl (gitignore): bucket = "<팀 state 버킷 이름>"
-```
+### 2-3. state — `key = "pill-check/dev/pill-model.tfstate"`, `use_lockfile = true`, bucket 은 `backend.hcl`(gitignore)
 
-### 2-4. outputs
-`worker_instance_id`, `worker_private_ip`, `worker_connect`(SSM 명령), `model_bucket`, `worker_url = "http://<private_ip>:8000"`
+### 2-4. outputs — `worker_instance_id`, `worker_private_ip`, `worker_connect`, `model_bucket`, `worker_url`
 
 ### 2-5. 체크포인트
-1. `terraform init -backend-config=backend.hcl` → `terraform validate` → `terraform plan -out=tfplan` (승인 불필요)
-2. plan 결과를 사용자에게 요약: **생성 N개 / 변경 0 / 삭제 0** 확인. 팀 자원 ID가 `data`로만 나오는지 확인.
-3. 🔒 `terraform apply tfplan` — 사용자가 직접 실행.
+1. `init` → `validate` → `plan -out=tfplan` (승인 불필요) → 결과(생성/변경/삭제 수, 바뀌는 문장)를 사용자에게 보여줌
+2. 🔒 `terraform apply tfplan` — 사용자가 직접 실행
 
 ---
 
 ## 3. 워커 앱 (`pill_model/app`)
 
 ### 3-1. 시작 시
-1. `deploy/` 모델 확인(없으면 종료하며 `scripts/fetch_models.sh` 안내) → `PillIdentifier(deploy_dir, load_ocr=True)`.
-2. silver `_latest.json`의 `tables.drug_product` 날짜 → `drug_product/snapshot=…/data.parquet`에서 **`item_seq`, `pills` 두 컬럼만** 읽어
-   `{item_seq: pills[].item_image}` 사전. 실패해도 서비스는 시작(`image_url=null`), `/health`에 표시.
-   - 파일 전체는 370MB라 통째로 읽으면 t3.medium(4GB)에 부담 → 컬럼만 읽기 (2개 컬럼 = 메모리 약 7.7MB, S3 범위 읽기 약 15초, 2026-10-23 실측)
-   - 실측(snapshot 2026-10-23): 품목 39,814 중 pills 있음 21,690 / 낱알 행 21,707 / 사진 2장 이상 품목 10개 / item_image 빈 값 0 / URL 호스트 전부 `nedrug.mfds.go.kr`
-   - 사진이 여러 장이면 `image_id` 순 첫 장 사용(파이프라인 정렬 그대로). 허가 취소 등으로 silver에서 빠진 낱알 3,756행은 image_url 없음
-3. 워밍업: 더미 이미지 1장으로 OCR·CNN 1회(첫 요청 지연 제거).
+1. `deploy/` 확인(없으면 종료하며 `scripts/fetch_models.sh` 안내).
+2. OCR 엔진 1개 생성(`ocr_engine.py`, 알약 설정 640). 실행 로그에 **"Using cached files"** 가 나오는지 확인.
+3. `PillIdentifier("deploy/cnn", load_ocr=False)` → `.ocr = 엔진` / `RxReader("deploy/rx", ocr=엔진, llm_client=boto3 bedrock-runtime)`.
+4. silver `_latest.json` 의 `tables.drug_product` 날짜 → `drug_product/snapshot=…/data.parquet` 에서 **`item_seq`, `pills` 두 컬럼만** S3 범위 읽기
+   (파일 전체 370MB를 받지 않음 — t3.medium 4GB) → `{item_seq: pills[0].item_image}`. 실패해도 서비스는 시작(`image_url=null`), `/health`에 표시.
+   - 실측(snapshot 10-23): 두 컬럼 약 14.5초 · 메모리 7.7MB / pills 있는 품목 21,690 · 낱알 21,707행 · 2장 이상 10품목 · URL 빈 값 0 · 호스트 `nedrug.mfds.go.kr`
+   - 사진 여러 장이면 `image_id` 순 첫 장(파이프라인 정렬). silver에서 빠진 낱알(허가 취소 등 3,756행)은 image_url 없음.
+5. 워밍업: 더미 이미지로 OCR·CNN 1회.
 
 ### 3-2. API (워커 내부용, 백엔드만 호출)
 | 메서드·경로 | 요청 | 응답 |
 |---|---|---|
-| `GET /health` | – | status, model_loaded, image_index_size, version(config), load_sec |
-| `POST /pill/analyze` | frontKey, backKey, shape, saveCrops(동의 여부) | sessionId, step(next_step 결과), band, imprintMatch, candidates[+imageUrl], quality, timingSec, caution, storageNotice |
+| `GET /health` | – | status, model_loaded(pill·rx), image_index_size, versions(config), load_sec, cv2 버전 |
+| `POST /pill/analyze` | frontKey, backKey, shape, saveCrops | sessionId, step, band, imprintMatch, candidates[+imageUrl], quality, timingSec, caution, storageNotice |
 | `POST /pill/reject` | sessionId, fromStep, attempt | 다음 단계(on_reject) |
 | `POST /pill/imprint-choice` | sessionId, choice | ask_color 또는 null |
 | `POST /pill/refine` | sessionId, imprintFront?, imprintBack?, color? | Top-3 (refine) |
-| `POST /pill/confirm` | sessionId, itemSeq, userQuestion? | handoff(item_seq, name, company, confirmed_by_user) → 백엔드가 LLM/RAG로 넘김 |
+| `POST /pill/confirm` | sessionId, itemSeq, userQuestion? | handoff → 백엔드가 LLM/RAG로 넘김 |
+| `POST /rx/analyze` | key | sessionId, doc_type, drugs[이름 판정·후보·숫자 3개(value·conf·ui)], privacy, timing, notice, storage |
+| `POST /rx/confirm` | sessionId, drugIndex, itemSeq | 그 약의 숫자 ui에 용법 상한 검증 반영(over·reason) |
 
-- 문장·버튼은 `yakon_pill.MSG/BUTTONS` 그대로 (LLM 사용 안 함).
-- **세션**: `analyze(return_prepared=True)`의 `_prepared`를 메모리에 10분 보관(JSON 응답에는 넣지 않음). 만료 → 410.
-- **동시성**: uvicorn worker 1개 + `asyncio.Semaphore(1)`. 대기 60초 넘으면 503 `busy`. 무거운 계산은 `run_in_threadpool`.
-- **입력 검증**: key는 `pill/` 로 시작, 확장자 jpg/png/webp, 10MB 이하. 사진은 디스크에 쓰지 않고 메모리에서 처리.
-- **배경 제거**: 알파 채널이 없으면 `bg.py`(rembg, 세션 재사용)로 제거 → `quality()` 검사.
-- **crop 저장**: `saveCrops=true`일 때만, 배경 제거된 RGBA 조각을 `crops/…`에. 원본 사진·사용자 ID는 저장하지 않음.
-- **인증**: SG로 백엔드만 접근 + 헤더 `X-Worker-Token`(환경변수, 값은 `.env`·gitignore). 토큰 불일치 401.
-- 로그: 요청별 band·timing·결과 단계만. 사진·각인 원문 외 개인정보 없음.
+- 문장·버튼은 `yakon_pill.MSG/BUTTONS`, `yakon_rx.UI_TEXT` 그대로.
+- **세션**: 알약은 `_prepared`, 처방전은 `drugs` 를 메모리에 10분 보관(처방전 OCR 줄은 보관하지 않음). 만료 → 410.
+- **동시성**: uvicorn worker 1개 + `asyncio.Semaphore(1)`(알약·처방전 공용). 대기 60초 넘으면 503 `busy`. 계산은 `run_in_threadpool`.
+- **입력 검증**: `/pill/*` key는 `pill/`, `/rx/*` key는 `prescription/` 로 시작. 확장자 jpg/png/webp, 10MB 이하. 사진은 디스크에 쓰지 않음.
+- **배경 제거**(알약만): 알파 채널이 없으면 `bg.py` → `quality()`.
+- **crop 저장**: `saveCrops=true`일 때만 배경 제거된 알약 조각. 처방전은 어떤 것도 저장하지 않음.
+- **인증**: SG + 헤더 `X-Worker-Token`(`.env`). 불일치 401.
+- **LLM 오류**: Bedrock 예외(AccessDenied·Throttling)는 502로 돌려주고 OCR 결과는 버림(저장 금지).
 
 ### 3-3. Docker
-- 베이스 `python:3.x-slim` (0-3에서 확인한 Colab 버전), torch는 CPU 휠(`--index-url https://download.pytorch.org/whl/cpu`).
-- **PaddleOCR 모델과 rembg 모델은 빌드 단계에서 미리 내려받아 이미지에 포함**(실행 중 인터넷 다운로드·HF 토큰 문제 방지 — Colab에서 401 겪음, `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`).
-- `compose.yaml`: 포트 `0.0.0.0:8000:8000`(SG가 백엔드만 허용), `./deploy:/app/deploy:ro`, `env_file: .env`, healthcheck `/health`, `restart: unless-stopped`.
-- 비루트 사용자로 실행.
+- 베이스 `python:3.13-slim` + `libgl1 libglib2.0-0` (opencv-contrib 비 headless 빌드가 필요로 함).
+- **`constraints.txt`** 에 0-3 버전을 전부 고정하고 모든 `pip install` 에 `-c constraints.txt`:
+  ```
+  pip install -c constraints.txt paddlepaddle==3.2.2 paddleocr==3.7.0 paddlex[ocr-core]==3.7.2 opencv-contrib-python==4.10.0.84 …
+  pip install -c constraints.txt torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+  pip install -c constraints.txt --no-deps rembg==2.0.69
+  pip install -c constraints.txt onnxruntime pymatting scikit-image pooch jsonschema tqdm
+  ```
+  이유: rembg ≥2.0.70 은 numpy≥2.3·pillow≥12.1 요구(충돌), ≤2.0.69 는 `opencv-python-headless` 를 끌고 옴(두 번째 cv2).
+  `--no-deps` + constraints 로 numba(pymatting) 등이 numpy를 올리는 것도 막는다. 막히면 그 시점에 B안(onnxruntime 직접 호출) 검토.
+- **빌드 마지막 검사** (실패 시 빌드 중단): `cv2.__version__ == "4.10.0"`, `pip list` 에 opencv 패키지 1개, numpy 2.1.3·pillow 11.3.0, rembg 배경 제거 1회 실행.
+- OCR 모델: 이미지에 넣지 않고 `./deploy/ocr_models/...` 를 `~/.paddlex/official_models/` 에 연결(읽기 전용).
+  `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`, `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`. 인터넷 차단 상태로 엔진 생성되는지 확인.
+- rembg 모델 가중치: 빌드 단계에서 받아 이미지에 포함(`U2NET_HOME`) — 실행 중 다운로드 없음.
+- `compose.yaml`: 포트 `0.0.0.0:8000:8000`, `./deploy:/app/deploy:ro`, `env_file: .env`, healthcheck `/health`, `restart: unless-stopped`. 비루트 사용자.
 
-### 3-4. 배경 제거 모델 선택 실험 (EC2에서, 승인 불필요 — 로컬 측정)
+### 3-4. 배경 제거 모델 선택 실험 (EC2, 로컬 측정)
 | 후보 | 근거 |
 |---|---|
-| `u2netp` | rembg README: "A lightweight version of u2net model." — 가장 빠를 것으로 추정 |
+| `u2netp` | rembg README: "A lightweight version of u2net model." |
 | `isnet-general-use` | "A new pre-trained model for general use cases." |
 | `silueta` | "Same as u2net but the size is reduced to 43Mb." |
-- 측정: fixtures 사진 → (a) 시간 (b) quality() 통과율 (c) **Colab 평가 결과와 후보 일치율**. 사용자에게 표로 보고 → 사용자가 선택.
-- **판단 기준(사용자 확정)**: 배경 제거 포함 요청 1건이 **33초 이상**(현재 약 23초 + 10초 초과)이면 Plan B(브라우저 배경 제거) 검토를 사용자에게 제안. 그 미만이면 워커 유지.
-- ⚠ rembg 기본값 `bria-rmbg`는 README 원문 "requires a paid agreement for commercial use" → 사용 금지.
+- 측정: (a) 시간 (b) quality() 통과율 (c) Colab 평가 결과와 후보 일치율 → 표로 보고 → 사용자 선택.
+  (평가 사진은 이미 배경 제거 상태라 rembg는 Colab 평가에 쓰이지 않았음 — 별도 실험 필요)
+- **가중치 라이선스도 함께 확인**해서 표에 적는다. `bria-rmbg` 금지("requires a paid agreement for commercial use").
+- 판단 기준: 배경 제거 포함 요청 1건이 **33초 이상**이면 Plan B(브라우저 배경 제거) 검토 제안.
+
+### 3-5. 서버 대조 (fixtures) — 알약·처방전 둘 다 통과해야 배포 완료
+**OCR 지문** (UTF-8, sha256 hexdigest 전체):
+- 처방전 (R-E3b): `lines = RxReader.read_lines(사진)` (rec_texts·rec_scores 순서, 좌표 제외)
+  `sha256("\n".join(f"{l['text']}|{l['score']:.4f}" for l in lines).encode()).hexdigest()`
+- 알약 (P-E1): `reads = PillIdentifier.prepare(사진)["reads"]` (회전 순서 config `[0, 90, 180, 270]`)
+  `sha256("\n".join(f"{r['rot']}:{t}|{s:.4f}" for r in reads for t, s in zip(r["texts"], r["scores"])).encode()).hexdigest()`
+
+**판정 순서** (EC2·Colab CPU 차이로 확신도 4번째 자리가 다를 수 있음 — 추론. 지문이 달라도 바로 실패로 끝내지 않음):
+1. 글자 목록 동일 (필수) — 알약: fixture `photos[].texts` / 처방전: 줄 수 `n_lines`
+2. 확신도 최대 차이 보고
+3. 최종 결과 동일 — 알약: `analyze(photos[0], photos[1])` 의 band·imprint_match·top3 / 처방전: `decide(lines, fixture.llm_result) == fixture.drugs`
+- 알약은 fixture `photos` 순서 그대로 `analyze(photos[0], photos[1])` (side "0"/"1"은 원본 라벨, 앞뒷면 의미 없음).
+- 처방전은 LLM을 다시 호출한 결과로 비교하지 않는다.
+- 지문이 다르면 opencv·paddle 버전부터 확인.
 
 ---
 
-## 4. 백엔드 연결 (🔒 팀 코드 — 사용자 승인 후 PR, 최소 변경)
-- 새 파일: `backend/app/modules/pill/{__init__,router,schemas,service}.py` — 기존 `modules/ocr` 패턴(CamelModel, `CurrentUser`, `/{user.id}/` 소유 확인) 그대로.
-  - `service.py`: `httpx.AsyncClient(base_url=settings.pill_worker_url, timeout=90)` + `X-Worker-Token`.
-  - 경로: `POST /api/v1/pill/analyze|reject|imprint-choice|refine|confirm` → 워커로 전달.
-- 수정 2곳: `core/config.py`에 `pill_worker_url: str | None = None`, `pill_worker_token: str | None = None` / `api/router.py`에 `pill_router` 추가.
-- `httpx`가 backend 의존성에 없으면 추가 여부를 사용자에게 먼저 묻는다(`uv.lock` 변경 → 팀 영향).
-- 배포 값: 백엔드 EC2 `deploy/ec2/.env`(gitignore)에 `PILL_WORKER_URL=http://<worker_private_ip>:8000`, `PILL_WORKER_TOKEN=…`.
-- nginx `proxy_read_timeout 120s` 이미 있음 → 요청 30초 내외면 변경 불필요(확인만).
+## 4. 백엔드 연결 (🔒 사용자 승인 후 PR)
+- 새 모듈: `backend/app/modules/pill/{__init__,router,schemas,service}.py` — 기존 `modules/ocr` 패턴(CamelModel, `CurrentUser`, `/{user.id}/` 소유 확인).
+  `POST /api/v1/pill/analyze|reject|imprint-choice|refine|confirm` → 워커로 전달.
+- **`modules/ocr` 더미 교체** (작업자 본인이 10-12에 넣은 더미, 커밋 `e4ce109` 하나뿐 — 작업자 결정으로 교체 가능):
+  `POST /api/v1/ocr/prescriptions` → 워커 `/rx/analyze`. 응답은 **(b) 기존 필드 유지 + 새 필드 추가**
+  (`candidates[name, amount, timesPerDay, days]` 유지 + `drugs[…ui·candidates…]`, `privacy` 등 추가).
+  기존 형식에 그대로 맞추면(a) 확신도 낮은 숫자도 확정값처럼 보여 안전 규칙이 무력화됨.
+  ⚠ 프런트(`features/mypage/api.ts`)는 amount·timesPerDay·days 를 항상 number 로 가정 → "빈칸"(null) 표시 문제는 프런트 담당자에게 전달(프런트 수정 금지).
+- 수정: `core/config.py` 에 `pill_worker_url`, `pill_worker_token` / `api/router.py` 에 `pill_router`.
+- `httpx` 가 backend 의존성에 없으면 추가 여부를 사용자에게 먼저 묻는다(`uv.lock` 변경 → 팀 영향).
+- 배포 값: 백엔드 EC2 `deploy/ec2/.env`(gitignore)에 `PILL_WORKER_URL`, `PILL_WORKER_TOKEN`.
+- nginx `proxy_read_timeout 120s` → 처방전 최대 33초+여유면 변경 불필요(확인만). 백엔드 httpx timeout 90초.
 
 ---
 
 ## 5. 배포 순서
-1. (PC) 1~3단계 코드 작성 → `pytest` → (선택) PC Docker로 fixtures 대조 테스트.
-2. (PC) 🔒 `terraform apply` (사용자) → outputs 확인.
-3. (PC) 🔒 `aws s3 sync <deploy 폴더> s3://<model_bucket>/models/v5/ --exclude "yakon_pill.py"`.
-4. (PC) 🔒 `git push` (브랜치 → PR → 머지는 팀 규칙대로).
-5. (EC2, SSM) `git clone/pull` → `cd pill_model && bash scripts/fetch_models.sh && cp .env.example .env`(토큰 입력) → `docker compose up -d --build`.
-6. (EC2) `curl localhost:8000/health` → `python scripts/bench.py` (속도 5회 평균 + Colab 대조).
-7. (백엔드 EC2) 🔒 `.env`에 워커 주소 → `docker compose up -d backend` → 백엔드에서 `curl http://<worker_private_ip>:8000/health`.
+1. (PC) 문서 합치기 → 🔒 IAM plan/apply (prescription·Bedrock) → Dockerfile → 워커 앱 → `pytest`.
+2. (PC) 🔒 `aws s3 sync deploy/ s3://<model_bucket>/models/ --exclude "*.zip" --exclude "*/.cache/*"` (구조 그대로 `models/{cnn,ocr_models,rx}/`).
+3. (PC) 🔒 `git push` (브랜치 → PR → 머지는 팀 규칙대로).
+4. (EC2, SSM) `git clone/pull` → `cd pill_model && bash scripts/fetch_models.sh && cp .env.example .env`(토큰) → `docker compose up -d --build`.
+5. (EC2) `curl localhost:8000/health` → `python scripts/bench.py` (속도 5회 평균 + 3-5 대조, 알약·처방전).
+6. (백엔드 EC2) 🔒 `.env`에 워커 주소 → `docker compose up -d backend` → 백엔드에서 워커 `/health`.
 
 ## 6. 완료 기준
-- [ ] plan: 생성만, 팀 자원 변경·삭제 0
+- [x] 1차 plan/apply: 생성 13, 팀 자원 변경·삭제 0 (2026-10-22)
+- [ ] IAM 2차 apply (prescription·Bedrock), Bedrock 첫 호출 AccessDenied 없음
+- [ ] 빌드 검사: cv2 4.10.0 · opencv 패키지 1개 · numpy 2.1.3 · pillow 11.3.0 · rembg 1회 실행
+- [ ] OCR 모델 "Using cached files", 인터넷 다운로드 없음
 - [ ] `/health` 정상, image_index_size > 0
-- [ ] fixtures 대조: 후보 Top-3·band·imprint_match가 Colab과 동일 (다르면 원인 보고)
-- [ ] 요청 1건 평균 ≤ 30초 (배경 제거 포함 시간 따로 표기)
+- [ ] fixtures 대조 3-5: 알약 3쌍 + 처방전 3장 모두 글자 동일·최종 결과 동일 (다르면 원인 보고)
+- [ ] 알약 1건 평균 ≤ 30초 (배경 제거 포함 따로), 처방전 1건 EC2 5회 평균 기록
 - [ ] 백엔드 → 워커 호출 성공, 인터넷에서 8000 접근 불가 확인
-- [ ] `git diff`에 계정 번호·버킷 이름·토큰·모델 파일 없음
+- [ ] `git diff`에 계정 번호·버킷 이름·토큰·모델 파일·사진·노트북 없음
 - [ ] devlog.md 기록
 
-## 7. 아직 열린 항목 (진행 중 막히면 사용자에게 질문)
-- ~~운영 업로드 버킷 이름~~ → `pill-check-uploads-<계정>` 확인 (2026-10-23). 현재 presign 업로드는 운영에서 미동작(팀 작업 중)
-- 배경 제거 모델 (3-4 실험 후 사용자 선택)
-- crop 저장 동의 UI 문구 위치 (프런트 팀)
+## 7. 아직 열린 항목
+- 배경 제거 모델 (3-4 실험 후 사용자 선택, 라이선스 포함)
+- crop 저장 동의 UI 문구 위치, 처방전 "빈칸"(null) 표시 (프런트 팀)
+- 업로드 presign 운영 동작 (팀 작업 중 — 10-23 기준 미동작)
+- CPU 크레딧(standard): 알약·처방전이 CPU를 나눠 씀 → EC2 측정 후 인스턴스 크기 재검토

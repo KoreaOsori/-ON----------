@@ -1,0 +1,48 @@
+{
+ "code": "39916",
+ "item_seq_true": "201902071",
+ "shape": "원형",
+ "cv2": "4.10.0",
+ "photos": [
+  {
+   "file": "2020-10-29-20-52-12-081.png",
+   "side": "1",
+   "ocr_fingerprint": "9e3a29d0959f0e5526be00f7624a7293675d39e41ac824ae71df1e87a32befa3",
+   "texts": [
+    "CININ",
+    "UKP"
+   ],
+   "quality": {
+    "ok": true,
+    "issues": [],
+    "message": ""
+   }
+  },
+  {
+   "file": "2020-10-29-20-53-09-966.png",
+   "side": "0",
+   "ocr_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "texts": [],
+   "quality": {
+    "ok": true,
+    "issues": [],
+    "message": ""
+   }
+  }
+ ],
+ "expected": {
+  "band": "A",
+  "imprint_match": 1.0,
+  "top3": [
+   "201902071",
+   "200501004",
+   "200701089"
+  ],
+  "scores": [
+   0.2361,
+   0.167,
+   0.1669
+  ],
+  "next_step": "top1"
+ }
+}

@@ -1,0 +1,220 @@
+{
+ "image": "bag_0001.jpg",
+ "paddle": "3.2.2",
+ "ocr_fingerprint": "059710e32f261927114de005f3f75ac3d5f111be90e62716d18d8170fe4bf70a",
+ "n_lines": 27,
+ "privacy": {
+  "lines_dropped": 17,
+  "masked": 0
+ },
+ "llm_result": {
+  "doc_type": "medicine_bag",
+  "drugs": [
+   {
+    "name": "알레그라디정",
+    "name_line": 8,
+    "dose": "2정",
+    "dose_line": 11,
+    "times": 2,
+    "times_line": 11,
+    "days": 7,
+    "days_line": 11
+   },
+   {
+    "name": "판피린큐액",
+    "name_line": 12,
+    "dose": "15mL",
+    "dose_line": 15,
+    "times": 1,
+    "times_line": 15,
+    "days": 7,
+    "days_line": 15
+   },
+   {
+    "name": "알레그라정180밀리그람(억소페나딘염산염)",
+    "name_line": 16,
+    "dose": "1정",
+    "dose_line": 18,
+    "times": 1,
+    "times_line": 18,
+    "days": 10,
+    "days_line": 18
+   },
+   {
+    "name": "판피린티정",
+    "name_line": 19,
+    "dose": "1정",
+    "dose_line": 22,
+    "times": 1,
+    "times_line": 22,
+    "days": 7,
+    "days_line": 22
+   }
+  ]
+ },
+ "drugs": [
+  {
+   "name_read": "알레그라디정",
+   "name_conf": 0.9843,
+   "decision": "자동 배치",
+   "how": "① 전체",
+   "auto": true,
+   "item_seq": "200001308",
+   "candidates": [
+    {
+     "item_seq": "200001308",
+     "item_name": "알레그라디정",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "2정",
+     "conf": 0.8848,
+     "ui": "확인 필요",
+     "over": false,
+     "reason": ""
+    },
+    "times": {
+     "value": 2,
+     "conf": 0.8848,
+     "ui": "확인 필요",
+     "over": false,
+     "reason": ""
+    },
+    "days": {
+     "value": 7,
+     "conf": 0.8848,
+     "ui": "확인 필요",
+     "over": false,
+     "reason": ""
+    }
+   },
+   "confirmed": true,
+   "item_name": "알레그라디정"
+  },
+  {
+   "name_read": "판피린큐액",
+   "name_conf": 0.9671,
+   "decision": "함량 선택",
+   "how": "① 전체",
+   "auto": false,
+   "item_seq": null,
+   "candidates": [
+    {
+     "item_seq": "200700547",
+     "item_name": "판피린큐액",
+     "status": "정상"
+    },
+    {
+     "item_seq": "201603651",
+     "item_name": "판피린큐액(수출용)",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "15mL",
+     "conf": 0.9279,
+     "ui": "미리 채움"
+    },
+    "times": {
+     "value": 1,
+     "conf": 0.9279,
+     "ui": "미리 채움"
+    },
+    "days": {
+     "value": 7,
+     "conf": 0.9279,
+     "ui": "미리 채움"
+    }
+   }
+  },
+  {
+   "name_read": "알레그라정180밀리그람(억소페나딘염산염)",
+   "name_conf": 0.919,
+   "decision": "함량 선택",
+   "how": "② 괄호제외",
+   "auto": false,
+   "item_seq": null,
+   "candidates": [
+    {
+     "item_seq": "199801016",
+     "item_name": "알레그라정120밀리그람(펙소페나딘염산염)",
+     "status": "정상"
+    },
+    {
+     "item_seq": "200001279",
+     "item_name": "알레그라정180밀리그람(펙소페나딘염산염)",
+     "status": "정상"
+    },
+    {
+     "item_seq": "200100865",
+     "item_name": "알레그라정30밀리그람(펙소페나딘염산염)",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "1정",
+     "conf": 0.9241,
+     "ui": "미리 채움"
+    },
+    "times": {
+     "value": 1,
+     "conf": 0.9241,
+     "ui": "미리 채움"
+    },
+    "days": {
+     "value": 10,
+     "conf": 0.9241,
+     "ui": "미리 채움"
+    }
+   }
+  },
+  {
+   "name_read": "판피린티정",
+   "name_conf": 0.8885,
+   "decision": "자동 배치",
+   "how": "① 전체",
+   "auto": true,
+   "item_seq": "199400202",
+   "candidates": [
+    {
+     "item_seq": "199400202",
+     "item_name": "판피린티정",
+     "status": "정상"
+    }
+   ],
+   "fields": {
+    "dose": {
+     "value": "1정",
+     "conf": 0.9133,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    },
+    "times": {
+     "value": 1,
+     "conf": 0.9133,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    },
+    "days": {
+     "value": 7,
+     "conf": 0.9133,
+     "ui": "미리 채움",
+     "over": false,
+     "reason": ""
+    }
+   },
+   "confirmed": true,
+   "item_name": "판피린티정"
+  }
+ ],
+ "colab_sec": {
+  "ocr": 19.41,
+  "llm": 2.55
+ }
+}

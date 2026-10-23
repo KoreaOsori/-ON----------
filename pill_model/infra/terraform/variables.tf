@@ -53,6 +53,12 @@ variable "data_bucket_name" {
   type        = string
 }
 
+variable "bedrock_inference_profile_id" {
+  description = "처방전 LLM (config_rx.json 의 llm.model_id 와 같아야 함). 교차 리전 추론 프로필"
+  type        = string
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+
 variable "upload_bucket_name" {
   description = "운영 업로드 버킷 이름 (팀 Terraform이 만듦, pill/ 아래 사진만 읽음). 빈 값이면 해당 권한 생략"
   type        = string

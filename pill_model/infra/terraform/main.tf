@@ -26,6 +26,12 @@ data "aws_s3_bucket" "upload" {
   bucket = var.upload_bucket_name
 }
 
+# 처방전 LLM 교차 리전 추론 프로필 — 실제로 요청이 가는 기반 모델 ARN 목록을 AWS에서 받아온다
+# (리전 목록을 코드에 직접 쓰지 않기 위해. 10-23 조회: us-east-1·us-east-2·us-west-2)
+data "aws_bedrock_inference_profile" "rx_llm" {
+  inference_profile_id = var.bedrock_inference_profile_id
+}
+
 # Amazon Linux 2023 최신 AMI (SSM 에이전트 기본 설치) — 팀 EC2 모듈과 같은 방식
 data "aws_ssm_parameter" "al2023" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
@@ -194,14 +200,29 @@ data "aws_iam_policy_document" "worker" {
     ]
   }
 
-  # 업로드 버킷: 사용자가 올린 알약 사진 읽기 (버킷 이름이 정해졌을 때만)
+  # 업로드 버킷: 사용자가 올린 알약·처방전 사진 읽기 (버킷 이름이 정해졌을 때만)
+  # 백엔드 업로드 key = {purpose}/YYYY/MM/DD/{owner}/{uuid}.{ext}, purpose ∈ {pill, prescription}
   dynamic "statement" {
     for_each = local.upload_bucket_arn == null ? [] : [local.upload_bucket_arn]
     content {
-      sid       = "UploadRead"
-      actions   = ["s3:GetObject"]
-      resources = ["${statement.value}/pill/*"]
+      sid     = "UploadRead"
+      actions = ["s3:GetObject"]
+      resources = [
+        "${statement.value}/pill/*",
+        "${statement.value}/prescription/*",
+      ]
     }
+  }
+
+  # 처방전 LLM (Bedrock Converse). 교차 리전 추론 프로필은 프로필 ARN과
+  # 요청이 갈 수 있는 모든 리전의 기반 모델 ARN 양쪽에 권한이 있어야 한다
+  statement {
+    sid     = "RxLlmInvoke"
+    actions = ["bedrock:InvokeModel"]
+    resources = concat(
+      [data.aws_bedrock_inference_profile.rx_llm.inference_profile_arn],
+      [for m in data.aws_bedrock_inference_profile.rx_llm.models : m.model_arn],
+    )
   }
 }
 

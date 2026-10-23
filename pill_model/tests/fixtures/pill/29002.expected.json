@@ -1,0 +1,48 @@
+{
+ "code": "29002",
+ "item_seq_true": "201505259",
+ "shape": "타원형",
+ "cv2": "4.10.0",
+ "photos": [
+  {
+   "file": "IMG_20201202_163857.png",
+   "side": "1",
+   "ocr_fingerprint": "0dbf07de54f3e32aec3903a198ed2d0c06944a52131ef9b07b23e372341afd0c",
+   "texts": [
+    "OD0",
+    "OPQ"
+   ],
+   "quality": {
+    "ok": true,
+    "issues": [],
+    "message": ""
+   }
+  },
+  {
+   "file": "IMG_20201202_163933.png",
+   "side": "0",
+   "ocr_fingerprint": "b4a2914abd081c1c0471e00e06f6cbff22eef9be4e4a70a8696347df0a425a0f",
+   "texts": [],
+   "quality": {
+    "ok": true,
+    "issues": [],
+    "message": ""
+   }
+  }
+ ],
+ "expected": {
+  "band": "A",
+  "imprint_match": 1.0,
+  "top3": [
+   "201505259",
+   "201508411",
+   "201602158"
+  ],
+  "scores": [
+   0.3333,
+   0.1468,
+   0.1444
+  ],
+  "next_step": "top1"
+ }
+}
