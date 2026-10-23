@@ -1,5 +1,6 @@
 """Render verified interaction facts; the model may order blocks, not invent facts."""
 import json
+import re
 
 
 def interaction_blocks(payload):
@@ -15,10 +16,28 @@ def interaction_blocks(payload):
         fact = check['pair_explanation']
         pair = ' ↔ '.join(fact['products'])
         overlap = ', '.join('/'.join(values) for values in fact['same_ingredient_names'])
-        add(f"**{' ↔ '.join(fact['products'])}**\n"
-            f"- 제품 금기 조회: {fact['product_lookup']}.\n"
-            f"- 성분 비교: {fact['ingredient_comparison']}.\n"
-            f"- 동일 성분 중복: {overlap + ' — 병용금기와 별도로 확인된 중복이에요' if overlap else '조회된 성분에서는 찾지 못했어요'}.")
+        scope = fact['comparison_scope']
+        if scope == 'unavailable':
+            missing = [names[key] for key, coverage in check['mapping_coverage'].items()
+                       if coverage['missing_ingredient_rows']]
+            unlinked = [names[key] for key, coverage in check['mapping_coverage'].items()
+                        if not coverage['missing_ingredient_rows'] and not coverage['coded_count']]
+            parts = []
+            if missing:
+                parts.append(f"{', '.join(missing)}의 성분 자료를 찾지 못해 성분끼리 비교하지 못했어요.")
+            if unlinked:
+                parts.append(f"{', '.join(unlinked)}의 성분은 확인했지만 비교에 필요한 정보가 부족해 성분끼리 비교하지 못했어요.")
+            comparison = ' '.join(parts)
+        elif scope == 'partial':
+            comparison = ('일부 성분만 비교했고, 그 범위에서는 금기 규칙을 찾지 못했어요. 나머지 성분은 확인이 필요해요.'
+                          if not check['ingredient_matches'] else '일부 성분에서 금기·주의 규칙을 찾았어요. 적용 조건은 아래를 확인해 주세요.')
+        elif scope == 'no_distinct_pairs':
+            comparison = '비교 가능한 성분이 서로 같아 동일 성분 중복으로 구분했어요.'
+        else:
+            comparison = ('조회된 성분끼리 비교한 범위에서도 금기 규칙을 찾지 못했어요.'
+                          if not check['ingredient_matches'] else '성분 기준 금기·주의 규칙도 확인됐어요.')
+        add(f"**{pair}**\n{fact['product_lookup']}. {comparison}"
+            + (f'\n겹치는 성분: {overlap}. 성분 중복은 병용금기와 별개로 주의가 필요해요.' if overlap else ''))
         for rule in check['rules']:
             add(f'**{pair} 제품쌍 금기·주의 원문 및 조건**\n' + '\n'.join(
                 str(rule[k]) for k in ('prohbt_content', 'remark') if rule.get(k)))
@@ -28,15 +47,10 @@ def interaction_blocks(payload):
                 + '\n현재 제품에 적용되는 제형·투여경로·복합제 조건은 별도 확인이 필요해요.')
         for item in check['therapeutic_duplications']:
             add(f"**{pair} 효능군 중복 주의**\n{item['group']}: {', '.join(n for n in item['names'] if n)}. 병용금기와 다른 중복 주의 정보예요.")
-    coverage = {}
-    for check in payload['checks']:
-        coverage.update(check['mapping_coverage'])
-    for key, item in coverage.items():
-        details = '; '.join(f"{row['name']}: {row['reason']}" for row in item['unmapped_details'])
-        add(f"**{names[key]} 성분 확인 범위**\n{item['explanation']}" + (f'\n미연결 이유: {details}.' if details else ''))
     # Quantities are deliberately keyed to ingredient/formulation, never presented
     # as a syrup/tablet product dose without verified formulation applicability.
-    for check in payload['checks']:
+    dose_requested = bool(re.search(r'용량|상한|최대|몇\s*(?:정|알|미리|밀리|ml|mg)', payload.get('question', ''), re.I))
+    for check in payload['checks'] if dose_requested else []:
         for rule in check['daily_dose_limits']:
             add(f"**성분 용량 참고 원문 — 제품 복용량 아님**\n{rule['ingr_name']}: {rule['max_qty']}; "
                 f"제형: {rule.get('form_name') or '미확인'}, 투여경로: {rule.get('route') or '미확인'}. "
@@ -60,7 +74,7 @@ def render_interactions(blocks, result):
                 order = proposed
         except (ValueError, KeyError, TypeError):
             pass
-    return ('제품별 조회 결과를 구분해 안내드릴게요. 금기 미발견은 함께 복용해도 안전하다는 뜻이 아니에요.\n\n'
+    return ('함께 복용할 때 확인할 점을 약 조합별로 정리했어요.\n\n'
             + '\n\n'.join(blocks[i] for i in order)
-            + '\n\n성분 기준 비교는 조회·연결된 범위에 한정되며 제형·투여경로·복합제 적용 조건에 한계가 있어요. '
-            '함께 복용할지는 약사나 의사에게 확인해 주세요.')
+            + '\n\n금기를 찾지 못했다고 안전이 확인된 것은 아니에요. 약의 형태와 복합 성분에 따른 조건도 있어, '
+            '함께 드시기 전 약사나 의사에게 확인해 주세요.')
