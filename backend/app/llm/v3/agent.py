@@ -13,6 +13,7 @@ langchain/langgraph 없이 anthropic SDK 의 tools 기능을 직접 돌린다.
 """
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +24,7 @@ from app.llm.v3.config import V3Settings
 from app.llm.v3.db import build_engine, reader_factory_for, safe_error_name
 from app.llm.v3.gold_safety import GoldContraStore
 from app.llm.v3.contra_store import ContraStore
-from app.llm.v3.contra_tool import CONTRA_TOOL_NAME, ContraindicationTool
+from app.llm.v3.contra_tool import CONTRA_TOOL_NAME, MAX_PRODUCTS as CONTRA_MAX_PRODUCTS, ContraindicationTool
 from app.llm.v3.embedder import QueryEmbedder
 from app.llm.v3.harness import (
     Budget,
@@ -49,8 +50,10 @@ from app.llm.v3.prompts import (
     STOP_CONSULT_ANSWER,
     SYSTEM_PROMPT,
     TIMEOUT_ANSWER,
+    TOO_MANY_PRODUCTS_ANSWER,
     TRUNCATED_NOTICE,
     build_not_found_answer,
+    build_single_product_combination_answer,
     not_found_line,
     build_clarification_answer,
     build_user_content,
@@ -126,6 +129,18 @@ def _normalize_blocks(response: Any) -> list[dict[str, Any]]:
                 {"type": "tool_use", "id": _get(block, "id"), "name": _get(block, "name"), "input": _get(block, "input") or {}}
             )
     return blocks
+
+
+# 병용(함께 복용) 질문 표지
+COMBINATION_QUESTION = re.compile(r"같이|함께|병용|동시에|섞어|한꺼번에\s*먹")
+# 답변 첫 문장이 '자료에서 찾지 못했다'는 뜻인지(근거는 있었지만 물어본 내용이 없는 경우)
+_NOT_FOUND_FIRST_SENTENCE = re.compile(r"확인할\s*수\s*없(어요|었어요|습니다)|찾을\s*수\s*없(어요|었어요)|찾지\s*못했어요|내용은\s*없었어요")
+
+
+def says_not_found(text: str) -> bool:
+    """답변의 첫 문장이 '등록된 정보에서 확인할 수 없어요' 류인가. '병용금기 자료에서는 확인되지 않았어요'는 결과 안내라 해당하지 않는다."""
+    first = re.split(r"(?<=[.!?。])\s|\n", text.strip(), maxsplit=1)[0] if text.strip() else ""
+    return bool(_NOT_FOUND_FIRST_SENTENCE.search(first))
 
 
 def _expand_given_names(tool_name: str, arguments: Any, given: list[str]) -> Any:
@@ -334,6 +349,15 @@ class DrugInfoAgent:
             logger.error("agent 실패: %s", safe_error_name(exc))
             stop = "error"
 
+        if (
+            stop == "done" and not clarifications and not evidence and not tools_used
+            and not final_text.strip().startswith(OFF_TOPIC_MARKER) and COMBINATION_QUESTION.search(question)
+        ):
+            # 모델이 도구를 부르지 않고 끝난 병용 질문: 제품 수 때문이면(5개 초과·1개뿐) 범위 밖 문구 대신 그 이유를 안내한다.
+            if len(given) > CONTRA_MAX_PRODUCTS:
+                clarifications.append(TOO_MANY_PRODUCTS_ANSWER)
+            elif len(given) == 1:
+                clarifications.append(build_single_product_combination_answer(given[0]))
         candidates = next(iter(pending.values()), [])  # 먼저 생긴 해결 안 된 되묻기
         answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates, notice, missing)
         if clarifications and not emergency and stop not in ("error", "timeout", "budget", "refusal"):
@@ -342,6 +366,9 @@ class DrugInfoAgent:
         answer.tool_trace = trace
         answer.input_tokens, answer.output_tokens = tokens_in, tokens_out
         answer.cache_read_tokens, answer.cache_write_tokens = cache_read, cache_write
+        if answer.stop_reason == "done" and says_not_found(final_text):
+            # 근거 문단은 있었지만 물어본 내용은 자료에 없다고 답했다 → 화면이 '핵심 요약'으로 보이지 않게 상태를 바꾼다(답변 문장은 그대로).
+            answer.stop_reason = "no_evidence"
         answer.truncated = truncated and answer.stop_reason == "done"
         answer.elapsed_seconds = time.monotonic() - started
         logger.info(

@@ -28,6 +28,7 @@ from app.llm.v3.contra_store import LookupResult
 from app.llm.v3.db import ReaderFactory, safe_error_name
 from app.llm.v3.names import short_name
 from app.llm.v3.search import PRODUCT_KEY_PATTERN, active_run_id, fetch_section_texts, find_by_key, find_products
+from app.llm.v3.prompts import TOO_MANY_PRODUCTS_ANSWER, build_single_product_combination_answer
 from app.llm.v3.tools import MAX_NAME_CHARS, MAX_RESULT_CHARS, Evidence, ToolResult, _clean_str
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,22 @@ def build_contra_spec() -> dict[str, Any]:
     }
 
 
+def _same_name_key(name: str) -> str:
+    return "".join(name.split()).casefold()
+
+
+def _requested_names(arguments: Any) -> list[str]:
+    """인자에서 서로 다른 제품명(공백·대소문자 무시)만 순서대로. 형식이 틀리면 빈 목록."""
+    raw = arguments.get("products") if isinstance(arguments, dict) else None
+    if not isinstance(raw, list):
+        return []
+    names: dict[str, str] = {}
+    for value in raw:
+        if isinstance(value, str) and value.strip():
+            names.setdefault(_same_name_key(value), " ".join(value.split()))
+    return list(names.values())
+
+
 def _lookup_id(product: dict[str, Any]) -> str:
     """병용금기 저장소의 조회 키: 제품은 item_seq, 성분은 'ingr:D코드[+D코드]'."""
     if product["product_type"] == INGREDIENT_TYPE:
@@ -109,10 +126,10 @@ class ContraindicationTool:
             text = _clean_str(value, MAX_NAME_CHARS)
             if text:
                 items.append(text)
-        unique = list(dict.fromkeys(item.lower() for item in items))
+        unique = list(dict.fromkeys(_same_name_key(item) for item in items))  # 공백·대소문자만 다른 이름은 같은 제품
         if not MIN_PRODUCTS <= len(unique) <= MAX_PRODUCTS:
             raise ValueError(f"제품은 서로 다른 {MIN_PRODUCTS}~{MAX_PRODUCTS}개를 넣어야 합니다.")
-        return [next(i for i in items if i.lower() == key) for key in unique]
+        return [next(i for i in items if _same_name_key(i) == key) for key in unique]
 
     # ------------------------------------------------------------------ 제품 확정
     async def _resolve(self, reader: Any, run_id: str, text: str) -> tuple[dict[str, Any] | None, ToolResult | None, bool, str]:
@@ -181,7 +198,14 @@ class ContraindicationTool:
         try:
             requested = self._parse(arguments)
         except ValueError as exc:
-            return ToolResult(f"[인자 오류] {exc}", is_error=True)
+            # 제품 수 문제(5개 초과·1개뿐)는 모델에 다시 맡기지 않고 사용자에게 할 안내를 정해 준다(코드 문구로 바로 끝난다).
+            names = _requested_names(arguments)
+            clarification = ""
+            if len(names) > MAX_PRODUCTS:
+                clarification = TOO_MANY_PRODUCTS_ANSWER
+            elif len(names) == 1:
+                clarification = build_single_product_combination_answer(names[0])
+            return ToolResult(f"[인자 오류] {exc}", is_error=True, clarification=clarification)
 
         try:
             resolved: list[dict[str, Any]] = []
@@ -223,8 +247,11 @@ class ContraindicationTool:
                 if problems:
                     return _combine_problems(problems, resolved)
                 keys = list(dict.fromkeys(p["product_key"] for p in resolved))
-                if len(keys) < MIN_PRODUCTS:
-                    return ToolResult("[인자 오류] 서로 다른 제품 2개 이상이 필요합니다.", is_error=True)
+                if len(keys) < MIN_PRODUCTS:  # 서로 다른 이름이 같은 제품으로 확정됐다
+                    return ToolResult(
+                        "[인자 오류] 서로 다른 제품 2개 이상이 필요합니다.", is_error=True,
+                        clarification=build_single_product_combination_answer(short_name(resolved[0]["product_name"]) if resolved else None),
+                    )
                 by_key = {p["product_key"]: p for p in resolved}
                 for key in keys:
                     if by_key[key]["product_type"] == "health_food":  # 같은 읽기 전용 트랜잭션에서 한 번에 읽는다
