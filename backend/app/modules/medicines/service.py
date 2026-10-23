@@ -21,23 +21,37 @@ from app.modules.medicines.schemas import (
 )
 
 SEARCH_LIMIT = 50
-_SECTION_TITLE = re.compile(r"^\d+\.\s")  # 허가 문서 큰 항목 제목 (예: "3. 다음 환자에는 신중히 투여할 것.")
+# 허가 문서 큰 항목 제목 (띄어쓰기는 지우고 본다: "2.다음환자에는투여하지말것." 같은 문서가 있다).
+# "3. 다음 환자에는 신중히 투여할 것.", "○ 다음 …" ("2.5 mg" 같은 숫자는 제외). 일반의약품 문서 일부는
+# "(3) 이 약을 복용하는 동안 다음의 약을 … 말 것", "3) 다음과 같은 사람은 … 상의할 것.", "(9) 저장상의 주의사항" 처럼
+# 항목 번호 꼴로 쓴다. "1) … 환자에는 투여하지 말 것." 같은 항목과 구분하려고 번호 꼴은 "다음 … 할 것/말 것"
+# 이나 "… 사항" 으로 끝날 때만 제목으로 본다 (원본 XML 대조로 확인)
+_SECTION_TITLE = re.compile(r"^(?:\d+\.(?!\d)|○|(?:\(?\d+\))?(?:.*다음.*(?:할것|말것)|.*사항)\.?$)")
+# 시작 제목: "다음 … 투여하지/복용하지 말 것" 으로 끝나는 짧은 줄. 본문 속 "… 투여하지 말 것 항을 참조한다" 는 제외
+_CONTRAINDICATION_TITLE = re.compile(r"^(?:\d+\.|○|\(?\d+\))?다음.{0,30}(?:투여|복용)하지말것\.?$")
+
+
+def _compact(line: str) -> str:
+    return re.sub(r"\s|&nbsp;", "", line)  # 원문에 "1.&nbsp;다음 …" 처럼 남은 공백 문자도 있다
 
 
 def contraindicated_patients(precautions: str | None) -> list[str]:
-    """허가 문서 사용상의 주의사항 중 "다음 환자에는 투여하지 말 것" 항목의 줄들 (예: "6) 심한 고혈압 환자").
+    """허가 문서 사용상의 주의사항 중 "다음 환자에는 투여하지 말 것"(전문의약품) 또는
+    "다음과 같은 사람은 이 약을 복용하지 말 것"(일반의약품) 항목의 줄들 (예: "6) 심한 고혈압 환자").
     지병과 맞추는 일은 화면(브라우저)에서 한다 — 건강정보를 서버로 보내지 않기 위해"""
     lines = (precautions or "").split("\n")
-    start = next((i for i, line in enumerate(lines) if "투여하지 말 것" in line and _SECTION_TITLE.match(line)), None)
+    start = next((i for i, line in enumerate(lines) if _CONTRAINDICATION_TITLE.match(_compact(line))), None)
     if start is None:
         return []
     section = []
     for line in lines[start + 1 :]:
-        if _SECTION_TITLE.match(line):
+        if _SECTION_TITLE.match(_compact(line)):
             break
         if line.strip():
             section.append(line.strip())
     return section
+
+
 # 약 상세에 보여주는 DUR 주의 (이 순서로)
 DUR_CAUTION_TYPES = ("임부금기", "특정연령대금기", "노인주의", "투여기간주의", "서방정분할주의")
 

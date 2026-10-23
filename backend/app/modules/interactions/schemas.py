@@ -51,5 +51,5 @@ class MedicineCautions(CamelModel):
 class InteractionCheckResponse(CamelModel):
     pairs: list[InteractionPair]
     duplicates: list[DuplicateCaution] = []
-    medicine_cautions: list[MedicineCautions] = []  # DUR 주의가 있는 약만
+    medicine_cautions: list[MedicineCautions] = []  # 고른 약 모두 (주의가 없으면 빈 목록)
     notice: str = "3개 이상 동시 복용 시의 복합 상호작용은 확인할 수 없으며, 2개씩 비교한 결과만 제공합니다."

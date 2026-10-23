@@ -64,6 +64,10 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
   )
   // 지병 주의: 입력한 지병을 허가 문서 "투여하지 말 것" 항목과 맞춘다 (conditionMatch.ts, 브라우저에서만)
   const conditionCautions = [...matchConditions(profile.conditions, medicineCautions)]
+  // 허가 문서에서 그 항목을 찾지 못한 약은 지병을 확인하지 못한 것이다 (없음 ≠ 안전)
+  const unchecked = medicineCautions
+    .filter((medicine) => medicine.contraindicatedPatients.length === 0)
+    .map((medicine) => medicine.name)
 
   return (
     <section className="mb-6 space-y-4">
@@ -193,6 +197,11 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
               ))}
             </div>
           ))}
+          {conditionCautions.length > 0 && unchecked.length > 0 && (
+            <p className="text-sm text-amber-700">
+              {unchecked.join(", ")}: 허가 문서에서 &apos;투여하지 말 것&apos; 항목을 찾지 못해 지병은 확인하지 못했어요.
+            </p>
+          )}
           <p className="text-xs text-slate-500">식약처 DUR 기준 · 자세한 내용은 약 상세정보에서 볼 수 있어요</p>
           {conditionCautions.length > 0 && (
             <p className="text-xs text-slate-500">
