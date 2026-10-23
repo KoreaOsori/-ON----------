@@ -1,5 +1,6 @@
 """의약품 조회 서비스. DRUG_DATA_SOURCE 설정으로 목업 / 공공데이터 API / gold(RDS) 를 전환한다."""
 
+import re
 from typing import Annotated, Protocol
 
 from fastapi import Depends
@@ -20,6 +21,23 @@ from app.modules.medicines.schemas import (
 )
 
 SEARCH_LIMIT = 50
+_SECTION_TITLE = re.compile(r"^\d+\.\s")  # 허가 문서 큰 항목 제목 (예: "3. 다음 환자에는 신중히 투여할 것.")
+
+
+def contraindicated_patients(precautions: str | None) -> list[str]:
+    """허가 문서 사용상의 주의사항 중 "다음 환자에는 투여하지 말 것" 항목의 줄들 (예: "6) 심한 고혈압 환자").
+    지병과 맞추는 일은 화면(브라우저)에서 한다 — 건강정보를 서버로 보내지 않기 위해"""
+    lines = (precautions or "").split("\n")
+    start = next((i for i, line in enumerate(lines) if "투여하지 말 것" in line and _SECTION_TITLE.match(line)), None)
+    if start is None:
+        return []
+    section = []
+    for line in lines[start + 1 :]:
+        if _SECTION_TITLE.match(line):
+            break
+        if line.strip():
+            section.append(line.strip())
+    return section
 # 약 상세에 보여주는 DUR 주의 (이 순서로)
 DUR_CAUTION_TYPES = ("임부금기", "특정연령대금기", "노인주의", "투여기간주의", "서방정분할주의")
 
@@ -218,6 +236,7 @@ class GoldMedicineRepository:
                 )
                 for c in cautions
             ],
+            contraindicated_patients=contraindicated_patients(row.doc_precautions),
         )
 
     async def find_in_text(self, text: str) -> MedicineDetail | None:

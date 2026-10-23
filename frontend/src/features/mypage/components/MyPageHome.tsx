@@ -1,25 +1,42 @@
 import { Bell, CalendarDays, Camera, ChevronRight, Pill, Settings, UserRound } from "lucide-react"
 import type { HealthProfile } from "@/types/health"
-import { intakeSlots, type MedicationDraft, type MyPageViewName } from "../types"
+import {
+  checkKey,
+  isTakingOn,
+  scheduleOn,
+  toDateString,
+  type MyPageViewName,
+  type RegisteredMedication,
+} from "../types"
 
 export default function MyPageHome({
   profile,
   checked,
   toggleCheck,
-  savedMedication,
+  medications,
   onNavigate,
   onRegisterMedicine,
 }: {
   profile: HealthProfile
   checked: string[]
   toggleCheck: (key: string) => void
-  /** OCR로 등록한 약 (없으면 null) */
-  savedMedication: MedicationDraft | null
+  /** 약 등록으로 저장한 복용약·일정 */
+  medications: RegisteredMedication[]
   onNavigate: (view: MyPageViewName) => void
   onRegisterMedicine: () => void
 }) {
-  const profileMedicines = profile.medicines || []
-  const medicines = [...profileMedicines, ...(savedMedication ? [savedMedication.name] : [])]
+  const today = toDateString(new Date())
+  const todaySchedule = scheduleOn(medications, today)
+  // 건강정보에서 고른 약 (일정 없음) + 약 등록으로 넣은 약 (일정 있음)
+  const medicines = [
+    ...(profile.medicines || []).map((name) => ({ name, detail: "건강정보에서 등록" })),
+    ...medications.map((medication) => ({
+      name: medication.name,
+      detail: `1회 ${medication.amount}정 · 하루 ${medication.times}회 · ${medication.days}일 (${medication.start}부터)${
+        isTakingOn(medication, today) ? "" : " · 오늘은 복용 기간 아님"
+      }`,
+    })),
+  ]
   const shortcuts = [
     { label: "약 등록", icon: Camera, action: onRegisterMedicine },
     { label: "복약 캘린더", icon: CalendarDays, action: () => onNavigate("calendar") },
@@ -57,16 +74,23 @@ export default function MyPageHome({
       <div className="grid grid-cols-2 gap-7">
         <section className="rounded-2xl border p-5">
           <h2 className="mb-4 text-lg font-bold">오늘의 복약 체크리스트</h2>
-          {intakeSlots.map((time) => (
-            <label key={time} className="flex min-h-16 items-center gap-3 border-b border-slate-100">
+          {!todaySchedule.length && (
+            <p className="py-4 leading-7 text-slate-500">
+              {medications.length
+                ? "오늘 복용할 약이 없어요."
+                : "약 등록에서 복용 일정을 등록하면 여기에 나와요."}
+            </p>
+          )}
+          {todaySchedule.map(({ slot, names }) => (
+            <label key={slot} className="flex min-h-16 items-center gap-3 border-b border-slate-100">
               <input
                 type="checkbox"
                 className="h-5 w-5 accent-emerald-600"
-                checked={checked.includes(`7-${time}`)}
-                onChange={() => toggleCheck(`7-${time}`)}
+                checked={checked.includes(checkKey(today, slot))}
+                onChange={() => toggleCheck(checkKey(today, slot))}
               />
-              <span className="flex-1">{time}</span>
-              <span className="text-sm text-slate-500">가나다정</span>
+              <span className="flex-1">{slot}</span>
+              <span className="text-right text-sm text-slate-500">{names.join(", ")}</span>
             </label>
           ))}
         </section>
@@ -78,15 +102,11 @@ export default function MyPageHome({
             </p>
           )}
           {medicines.map((drug, index) => (
-            <div key={`${drug}-${index}`} className="flex min-h-20 items-center gap-3">
+            <div key={`${drug.name}-${index}`} className="flex min-h-20 items-center gap-3">
               <Pill className="text-blue-600" size={22} />
               <div>
-                <b className="font-medium">{drug}</b>
-                <p className="mt-1 text-sm text-slate-500">
-                  {savedMedication && index === profileMedicines.length
-                    ? `1회 ${savedMedication.amount}정 · 하루 ${savedMedication.times}회 · ${savedMedication.days}일`
-                    : "건강정보에서 등록"}
-                </p>
+                <b className="font-medium">{drug.name}</b>
+                <p className="mt-1 text-sm text-slate-500">{drug.detail}</p>
               </div>
             </div>
           ))}

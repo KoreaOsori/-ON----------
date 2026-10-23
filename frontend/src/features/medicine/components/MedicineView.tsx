@@ -24,7 +24,7 @@ const tabs: [Tab, string][] = [
 ]
 
 export default function MedicineView() {
-  const { logged, memberProfile } = useSession()
+  const { logged, memberProfile, medications } = useSession()
   const [tab, setTab] = useState<Tab>("search")
   const [query, setQuery] = useState("")
   const [type, setType] = useState<MedicineType | undefined>()
@@ -69,8 +69,13 @@ export default function MedicineView() {
     }
   }
 
-  // 마이페이지 건강정보에 등록한 복용약 (로그인했을 때만). 이미 담은 약은 빼고 5개까지
-  const mine = logged ? (memberProfile.medicineItems ?? []) : []
+  // 마이페이지 복용약 (로그인했을 때만): 건강정보에서 고른 약 + 약 등록에서 검색해 고른 약. 이미 담은 약은 빼고 5개까지
+  const mine = logged
+    ? [
+        ...(memberProfile.medicineItems ?? []),
+        ...medications.flatMap((medication) => (medication.medicine ? [medication.medicine] : [])),
+      ].filter((drug, index, all) => all.findIndex((item) => item.id === drug.id) === index)
+    : []
   const loadMine = () => {
     const added = mine.filter((drug) => !isSelected(drug))
     setSelected([...selected, ...added].slice(0, MAX_INTERACTION_DRUGS))

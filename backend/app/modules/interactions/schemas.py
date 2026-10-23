@@ -45,6 +45,7 @@ class MedicineCautions(CamelModel):
 
     name: str
     cautions: list[DurCaution]
+    contraindicated_patients: list[str] = []  # 허가 문서 "투여하지 말 것" 항목 줄 (화면에서 지병과 맞춤)
 
 
 class InteractionCheckResponse(CamelModel):

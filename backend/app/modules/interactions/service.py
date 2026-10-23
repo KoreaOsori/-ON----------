@@ -63,12 +63,19 @@ async def check_pairs(repository: MedicineRepository, medicine_ids: list[str]) -
 
 
 async def collect_cautions(repository: MedicineRepository, medicine_ids: list[str]) -> list[MedicineCautions]:
-    """고른 약마다 DUR 주의 (약 상세와 같은 것). 프로필이 없어도 보여주고, 해당 여부는 사용자가 판단한다"""
+    """고른 약마다 DUR 주의 (약 상세와 같은 것)와 허가 문서의 "투여하지 말 것" 환자 항목.
+    프로필이 없어도 DUR 주의는 보여주고, 지병과 맞추는 일은 화면에서 한다"""
     result = []
     for medicine_id in dict.fromkeys(medicine_ids):
         medicine = await repository.get(medicine_id)
-        if medicine and medicine.dur_cautions:
-            result.append(MedicineCautions(name=medicine.name, cautions=medicine.dur_cautions))
+        if medicine and (medicine.dur_cautions or medicine.contraindicated_patients):
+            result.append(
+                MedicineCautions(
+                    name=medicine.name,
+                    cautions=medicine.dur_cautions,
+                    contraindicated_patients=medicine.contraindicated_patients,
+                )
+            )
     return result
 
 

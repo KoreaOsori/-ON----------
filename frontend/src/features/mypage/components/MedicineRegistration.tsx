@@ -1,9 +1,10 @@
 "use client"
 
-import { useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Check, ChevronLeft, FileText, LoaderCircle } from "lucide-react"
 import Notice from "@/components/ui/Notice"
 import { button, inputClass } from "@/components/ui/styles"
+import { searchMedicines, type MedicineSummary } from "@/features/medicine/api"
 import type { MedicationDraft, OcrStep } from "../types"
 
 const titles: Record<Exclude<OcrStep, 0>, string> = {
@@ -35,8 +36,20 @@ export default function MedicineRegistration({
     setStep(2)
     setTimeout(() => setStep(3), 1100)
   }
-  const fields: { key: keyof MedicationDraft; label: string; type: string }[] = [
-    { key: "name", label: "약 이름", type: "text" },
+  // 약 이름: 약정보 검색과 같은 API 로 찾아 고른다 (고르지 않고 직접 쓴 이름도 저장은 되지만 병용 확인에는 못 불러옴)
+  const [found, setFound] = useState<MedicineSummary[]>([])
+  useEffect(() => {
+    const keyword = draft.name.trim()
+    if (!keyword || draft.medicine) return
+    const timer = setTimeout(() => {
+      searchMedicines(keyword)
+        .then((items) => setFound(items.slice(0, 5)))
+        .catch(() => setFound([]))
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [draft.name, draft.medicine])
+  const suggestions = draft.name.trim() && !draft.medicine ? found : []
+  const fields: { key: "amount" | "times" | "days" | "start"; label: string; type: string }[] = [
     { key: "amount", label: "1회 복용량 (정)", type: "number" },
     { key: "times", label: "하루 횟수", type: "number" },
     { key: "days", label: "복용 일수", type: "number" },
@@ -92,14 +105,40 @@ export default function MedicineRegistration({
       ) : step === 3 ? (
         <div className="mt-6 space-y-4">
           <Notice>실제 사진 인식이 아닌 예시 결과입니다. 내용을 직접 확인하고 저장해 주세요.</Notice>
+          <label className="block text-sm">
+            약 이름
+            {draft.medicine && <span className="ml-2 text-emerald-700">선택됨</span>}
+            <input
+              type="text"
+              placeholder="약 이름을 검색해 선택해 주세요"
+              className={`${inputClass} mt-2`}
+              value={draft.name}
+              onChange={(event) => setDraft({ ...draft, name: event.target.value, medicine: null })}
+            />
+          </label>
+          {suggestions.length > 0 && (
+            <div className="rounded-xl border border-slate-200">
+              {suggestions.map((medicine) => (
+                <button
+                  key={medicine.id}
+                  type="button"
+                  onClick={() => setDraft({ ...draft, name: medicine.name, medicine })}
+                  className="block min-h-11 w-full border-b border-slate-100 px-4 py-2 text-left text-sm last:border-0 hover:bg-blue-50"
+                >
+                  {medicine.name}
+                  <span className="ml-2 text-slate-500">{medicine.maker}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {fields.map((field, index) => (
             <label key={field.key} className="block text-sm">
               {field.label}
-              {index === 1 && <span className="ml-2 text-amber-700">확인해 주세요</span>}
+              {index === 0 && <span className="ml-2 text-amber-700">확인해 주세요</span>}
               <input
                 type={field.type}
                 min="1"
-                className={`${inputClass} mt-2 ${index === 1 ? "border-amber-400 bg-amber-50" : ""}`}
+                className={`${inputClass} mt-2 ${index === 0 ? "border-amber-400 bg-amber-50" : ""}`}
                 value={draft[field.key]}
                 onChange={(event) => setDraft({ ...draft, [field.key]: event.target.value })}
               />

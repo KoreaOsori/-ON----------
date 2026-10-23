@@ -4,7 +4,7 @@ import { useState } from "react"
 import { ChevronLeft } from "lucide-react"
 import { emptyProfile } from "@/lib/constants"
 import { useSession } from "@/providers/SessionProvider"
-import type { MedicationDraft, MyPageViewName, OcrStep } from "../types"
+import { toDateString, type MedicationDraft, type MyPageViewName, type OcrStep } from "../types"
 import AccountSettings from "./AccountSettings"
 import ConsentForm from "./ConsentForm"
 import HealthSetup from "./HealthSetup"
@@ -14,13 +14,15 @@ import MedicineRegistration from "./MedicineRegistration"
 import MyPageHome from "./MyPageHome"
 import NotificationSettings from "./NotificationSettings"
 
-const initialDraft: MedicationDraft = {
-  name: "가나다정",
+// 약 등록의 인식 결과 예시 (사진 인식은 체험용). 약 이름은 검색해서 고르고, 시작일은 오늘
+const newDraft = (): MedicationDraft => ({
+  name: "",
   amount: "1",
   times: "3",
   days: "7",
-  start: "2026-10-07",
-}
+  start: toDateString(new Date()),
+  medicine: null,
+})
 
 const viewTitles: Partial<Record<MyPageViewName, string>> = {
   calendar: "복약 캘린더",
@@ -29,26 +31,31 @@ const viewTitles: Partial<Record<MyPageViewName, string>> = {
 }
 
 export default function MyPageView() {
-  const { logged, setLogged, memberProfile: profile, setMemberProfile: setProfile } = useSession()
+  const {
+    logged,
+    setLogged,
+    memberProfile: profile,
+    setMemberProfile: setProfile,
+    medications,
+    setMedications,
+    intakeChecks: checked,
+    setIntakeChecks: setChecked,
+  } = useSession()
   const [view, setView] = useState<MyPageViewName>("home")
   const [email, setEmail] = useState("")
   const [consents, setConsents] = useState<boolean[]>([false, false, false])
-  const [checked, setChecked] = useState<string[]>([])
   const [ocr, setOcr] = useState<OcrStep>(0)
-  const [draft, setDraft] = useState<MedicationDraft>(initialDraft)
-  const [saved, setSaved] = useState(false)
+  const [draft, setDraft] = useState<MedicationDraft>(newDraft)
 
   const toggleCheck = (key: string) =>
-    setChecked((previous) =>
-      previous.includes(key) ? previous.filter((item) => item !== key) : [...previous, key],
-    )
+    setChecked(checked.includes(key) ? checked.filter((item) => item !== key) : [...checked, key])
 
   // 복용약(건강정보에서 고른 약·약 등록으로 넣은 약)과 복약 체크 기록만 지운다. 기본정보·지병은 남긴다
   const deleteData = () => {
     setProfile({ ...profile, medicines: [], medicineItems: [], medicineStatus: undefined })
+    setMedications([])
     setChecked([])
-    setSaved(false)
-    setDraft(initialDraft)
+    setDraft(newDraft())
     setConsents([false, false, false, false])
   }
 
@@ -85,7 +92,8 @@ export default function MyPageView() {
         draft={draft}
         setDraft={setDraft}
         onSave={() => {
-          setSaved(true)
+          // crypto.randomUUID 는 HTTPS 에서만 있어 (운영 웹은 HTTP) 시각 + 난수로 만든다
+          setMedications([...medications, { ...draft, id: `${Date.now()}-${Math.random().toString(36).slice(2)}` }])
           setOcr(4)
         }}
         onDone={() => {
@@ -112,12 +120,15 @@ export default function MyPageView() {
           profile={profile}
           checked={checked}
           toggleCheck={toggleCheck}
-          savedMedication={saved ? draft : null}
+          medications={medications}
           onNavigate={setView}
-          onRegisterMedicine={() => setOcr(1)}
+          onRegisterMedicine={() => {
+            setDraft(newDraft())
+            setOcr(1)
+          }}
         />
       ) : view === "calendar" ? (
-        <MedicationCalendar checked={checked} toggleCheck={toggleCheck} />
+        <MedicationCalendar checked={checked} toggleCheck={toggleCheck} medications={medications} />
       ) : view === "notifications" ? (
         <NotificationSettings />
       ) : (
@@ -129,6 +140,8 @@ export default function MyPageView() {
             // 서버 계정이 없어 브라우저에 저장한 건강정보·복용약이 곧 계정 데이터다. 같은 브라우저의 다음 사람에게 보이지 않게 지운다
             setLogged(false)
             setProfile(emptyProfile)
+            setMedications([])
+            setChecked([])
             setView("home")
           }}
           onDeleteData={deleteData}

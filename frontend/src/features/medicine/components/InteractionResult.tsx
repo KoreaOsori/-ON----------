@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import Notice from "@/components/ui/Notice"
 import { summarizeProfile } from "@/lib/constants"
 import { useSession } from "@/providers/SessionProvider"
+import { matchConditions } from "../conditionMatch"
 import { matchesProfile } from "../profileMatch"
 import MineBadge from "./MineBadge"
 import {
@@ -61,6 +62,8 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
   const sortedCautionGroups = [...cautionGroups].sort(
     ([, a], [, b]) => Number(b.some((line) => line.mine)) - Number(a.some((line) => line.mine)),
   )
+  // 지병 주의: 입력한 지병을 허가 문서 "투여하지 말 것" 항목과 맞춘다 (conditionMatch.ts, 브라우저에서만)
+  const conditionCautions = [...matchConditions(profile.conditions, medicineCautions)]
 
   return (
     <section className="mb-6 space-y-4">
@@ -147,7 +150,7 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
         </div>
       )}
       {/* 약마다의 DUR 주의: 프로필 없이 모두 보여주고, 해당 여부는 사용자가 확인한다 */}
-      {cautionGroups.size > 0 && (
+      {(cautionGroups.size > 0 || conditionCautions.length > 0) && (
         <div className="space-y-3 rounded-2xl border p-5">
           <div>
             <h3 className="font-bold">복용 대상별 주의</h3>
@@ -168,7 +171,35 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
               ))}
             </div>
           ))}
+          {conditionCautions.map(([condition, found]) => (
+            <div key={condition} className="rounded-xl bg-slate-100 p-4 leading-7">
+              <b className="text-sm">지병 · {condition}</b>
+              {found.length === 0 && (
+                <p className="text-sm text-slate-600">
+                  고른 약의 허가 문서 &apos;투여하지 말 것&apos; 항목에서 찾은 내용이 없어요.
+                </p>
+              )}
+              {found.map((item) => (
+                <p key={`${item.medicine}-${item.line}`} className="text-sm text-slate-600">
+                  <span
+                    className={`mr-2 rounded-md px-2 py-0.5 text-xs font-semibold ${
+                      item.contraindicated ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-700"
+                    }`}
+                  >
+                    {item.contraindicated ? "투여하지 말 것" : "주의"}
+                  </span>
+                  {item.medicine} — {item.line}
+                </p>
+              ))}
+            </div>
+          ))}
           <p className="text-xs text-slate-500">식약처 DUR 기준 · 자세한 내용은 약 상세정보에서 볼 수 있어요</p>
+          {conditionCautions.length > 0 && (
+            <p className="text-xs text-slate-500">
+              지병은 허가 문서 &apos;다음 환자에는 투여하지 말 것&apos; 항목의 문장으로 찾은 것으로, 판정이 아니에요. 정도(심한·중증 등)가
+              붙은 경우는 &apos;주의&apos;로 표시했어요.
+            </p>
+          )}
         </div>
       )}
       {others.length > 0 && (
