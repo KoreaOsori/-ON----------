@@ -5,7 +5,10 @@ import DrugArt from "@/components/ui/DrugArt"
 import Modal from "@/components/ui/Modal"
 import Notice from "@/components/ui/Notice"
 import { button } from "@/components/ui/styles"
+import { useSession } from "@/providers/SessionProvider"
 import { getMedicine, type MedicineDetail } from "../api"
+import { matchesProfile } from "../profileMatch"
+import MineBadge from "./MineBadge"
 
 export default function DrugDetailModal({
   id,
@@ -18,6 +21,8 @@ export default function DrugDetailModal({
   onCheckInteraction: () => void
   onClose: () => void
 }) {
+  const { logged, memberProfile, guestProfile } = useSession()
+  const profile = logged ? memberProfile : guestProfile
   const [drug, setDrug] = useState<MedicineDetail | null>(null)
   const [error, setError] = useState(false)
 
@@ -76,6 +81,7 @@ export default function DrugDetailModal({
                         .join(" · ")}
                     </span>
                     {caution.ingredient && ` (${caution.ingredient})`}
+                    {matchesProfile(caution, profile) === true && <MineBadge />}
                     {caution.content && <span className="block whitespace-pre-line">{caution.content}</span>}
                     {caution.remark && <span className="block text-sm">비고: {caution.remark}</span>}
                   </li>

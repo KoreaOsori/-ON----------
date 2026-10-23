@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react"
 import Notice from "@/components/ui/Notice"
+import { summarizeProfile } from "@/lib/constants"
+import { useSession } from "@/providers/SessionProvider"
+import { matchesProfile } from "../profileMatch"
+import MineBadge from "./MineBadge"
 import {
   checkInteractions,
   type DuplicateCaution,
@@ -13,6 +17,9 @@ import { slotLabels } from "./InteractionSelection"
 
 // 판정 기준: gold.drug_contraindication (품목 DUR = 금기, 성분 규칙 = 성분 기준 주의). 어떤 경우에도 "안전"이라고 표시하지 않는다.
 export default function InteractionResult({ selected }: { selected: MedicineSummary[] }) {
+  const { logged, memberProfile, guestProfile } = useSession()
+  const profile = logged ? memberProfile : guestProfile
+  const profileSummary = summarizeProfile(profile)
   const [pairs, setPairs] = useState<InteractionPair[] | null>(null)
   const [duplicates, setDuplicates] = useState<DuplicateCaution[]>([])
   const [medicineCautions, setMedicineCautions] = useState<MedicineCautions[]>([])
@@ -36,19 +43,24 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
     .filter((pair) => pair.contraindicated)
     .sort((a, b) => Number(b.level === "금기") - Number(a.level === "금기"))
   const others = pairs.filter((pair) => !pair.contraindicated)
-  // DUR 주의를 유형별로 묶는다 (백엔드가 임부금기 → 특정연령대금기 → 노인주의 … 순서로 준다)
-  const cautionGroups = new Map<string, string[]>()
+  // DUR 주의를 유형별로 묶는다 (백엔드가 임부금기 → 특정연령대금기 → 노인주의 … 순서로 준다).
+  // 건강정보가 있으면 해당하는 줄을 표시하고, 해당하는 줄이 있는 유형을 앞으로
+  const cautionGroups = new Map<string, { text: string; mine: boolean }[]>()
   for (const medicine of medicineCautions) {
     for (const caution of medicine.cautions) {
       const detail = [caution.grade, caution.ageBase, caution.maxDosageTerm, caution.ingredient]
         .filter(Boolean)
         .join(", ")
-      const line = detail ? `${medicine.name} (${detail})` : medicine.name
+      const text = detail ? `${medicine.name} (${detail})` : medicine.name
       const lines = cautionGroups.get(caution.type) ?? []
       // 내용만 다른 같은 성분 규칙은 한 줄로
-      if (!lines.includes(line)) cautionGroups.set(caution.type, [...lines, line])
+      if (!lines.some((line) => line.text === text))
+        cautionGroups.set(caution.type, [...lines, { text, mine: matchesProfile(caution, profile) === true }])
     }
   }
+  const sortedCautionGroups = [...cautionGroups].sort(
+    ([, a], [, b]) => Number(b.some((line) => line.mine)) - Number(a.some((line) => line.mine)),
+  )
 
   return (
     <section className="mb-6 space-y-4">
@@ -139,14 +151,19 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
         <div className="space-y-3 rounded-2xl border p-5">
           <div>
             <h3 className="font-bold">복용 대상별 주의</h3>
-            <p className="mt-1 text-sm text-slate-500">임신 중이거나 나이에 해당하면 확인이 필요해요.</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {profileSummary
+                ? `내 건강정보(${profileSummary}) 기준으로 해당하는 항목을 표시했어요.`
+                : "임신 중이거나 나이에 해당하면 확인이 필요해요. 건강정보를 입력하면 해당 항목을 표시해 드려요."}
+            </p>
           </div>
-          {[...cautionGroups].map(([type, lines]) => (
+          {sortedCautionGroups.map(([type, lines]) => (
             <div key={type} className="rounded-xl bg-slate-100 p-4 leading-7">
               <b className="text-sm">{type}</b>
               {lines.map((line) => (
-                <p key={line} className="text-sm text-slate-600">
-                  {line}
+                <p key={line.text} className="text-sm text-slate-600">
+                  {line.text}
+                  {line.mine && <MineBadge />}
                 </p>
               ))}
             </div>
