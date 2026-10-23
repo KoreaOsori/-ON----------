@@ -36,7 +36,6 @@ export default function MyPageView() {
   const [checked, setChecked] = useState<string[]>([])
   const [ocr, setOcr] = useState<OcrStep>(0)
   const [draft, setDraft] = useState<MedicationDraft>(initialDraft)
-  const [saved, setSaved] = useState(false)
 
   const toggleCheck = (key: string) =>
     setChecked((previous) =>
@@ -45,9 +44,15 @@ export default function MyPageView() {
 
   // 복용약(건강정보에서 고른 약·약 등록으로 넣은 약)과 복약 체크 기록만 지운다. 기본정보·지병은 남긴다
   const deleteData = () => {
-    setProfile({ ...profile, medicines: [], medicineItems: [], medicineStatus: undefined })
+    // 복용약(건강정보에서 고른 약 + 약 등록으로 저장한 약)을 한 번에 비움
+    setProfile({
+      ...profile,
+      medicines: [],
+      medicineItems: [],
+      medicineStatus: undefined,
+      registeredMedications: [],
+    })
     setChecked([])
-    setSaved(false)
     setDraft(initialDraft)
     setConsents([false, false, false, false])
   }
@@ -85,7 +90,12 @@ export default function MyPageView() {
         draft={draft}
         setDraft={setDraft}
         onSave={() => {
-          setSaved(true)
+          const { name, amount, times, days, start } = draft
+          const others = (profile.registeredMedications ?? []).filter((item) => item.name !== name.trim())
+          setProfile({
+            ...profile,
+            registeredMedications: [...others, { name: name.trim(), amount, times, days, start }],
+          })
           setOcr(4)
         }}
         onDone={() => {
@@ -112,7 +122,6 @@ export default function MyPageView() {
           profile={profile}
           checked={checked}
           toggleCheck={toggleCheck}
-          savedMedication={saved ? draft : null}
           onNavigate={setView}
           onRegisterMedicine={() => setOcr(1)}
         />

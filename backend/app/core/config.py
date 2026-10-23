@@ -54,7 +54,13 @@ class Settings(BaseSettings):
     bedrock_max_tokens: int = 16000
 
     # 처방전 OCR: textract 는 한국어 미지원 → 한국어 처방전은 claude(비전) 권장
-    ocr_provider: Literal["mock", "claude", "textract"] = "mock"
+    # worker = pill_model 워커(PaddleOCR + 개인정보 차단 + Haiku 구조화 + 허가목록 매칭)로 전달
+    ocr_provider: Literal["mock", "claude", "textract", "worker"] = "mock"
+
+    # pill_model 워커 (알약 /pill/*, 처방전 /rx/*). 주소는 워커 EC2 프라이빗 IP, 토큰은 워커 .env 의 WORKER_TOKEN 과 같은 값
+    pill_worker_url: str | None = None  # 예: http://<워커 프라이빗 IP>:8000
+    pill_worker_token: str | None = None
+    pill_worker_timeout_seconds: float = 90  # 처방전 최대 약 33초 + 대기 여유 (nginx 120초보다 짧게)
 
     # 의약품 데이터: gold = 데이터 파이프라인이 RDS 에 적재한 gold 스키마 / mock = 가상 데이터 (테스트·DB 없는 로컬) / public_api = 공공데이터 (data.go.kr) e약은요
     drug_data_source: Literal["mock", "public_api", "gold"] = "mock"
