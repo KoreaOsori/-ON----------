@@ -11,12 +11,23 @@ export type MedicineSummary = {
   saleStatus: string // 판매 | 판매중지
 }
 
+export type DurCaution = {
+  type: string // 임부금기 | 특정연령대금기 | 노인주의 | 투여기간주의 | 서방정분할주의
+  ingredient: string | null
+  grade: string | null
+  ageBase: string | null
+  maxDosageTerm: string | null
+  content: string | null
+  remark: string | null
+}
+
 export type MedicineDetail = MedicineSummary & {
   efficacy: string
   usage: string
   precautions: string
   interactionSummary: string
   source: string
+  durCautions: DurCaution[]
 }
 
 export type ContraindicationDetail = {
@@ -49,8 +60,15 @@ export const searchMedicines = (query: string, type?: MedicineType) =>
 
 export const getMedicine = (id: string) => apiFetch<MedicineDetail>(`/medicines/${id}`)
 
+export type MedicineCautions = { name: string; cautions: DurCaution[] }
+
 export const checkInteractions = (medicineIds: string[]) =>
-  apiFetch<{ pairs: InteractionPair[]; duplicates: DuplicateCaution[]; notice: string }>("/interactions/check", {
+  apiFetch<{
+    pairs: InteractionPair[]
+    duplicates: DuplicateCaution[]
+    medicineCautions: MedicineCautions[]
+    notice: string
+  }>("/interactions/check", {
     method: "POST",
     body: { medicineIds },
   })

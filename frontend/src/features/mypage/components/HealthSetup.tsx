@@ -11,8 +11,7 @@ import {
   UserRound,
   X,
 } from "lucide-react"
-import { extraCatalogMedicines } from "@/mocks/drugs"
-import type { CatalogMedicine } from "@/types/drug"
+import { searchMedicines, type MedicineSummary } from "@/features/medicine/api"
 import type { HealthProfile } from "@/types/health"
 
 const action =
@@ -23,12 +22,10 @@ const statuses = ["약을 선택할게요", "복용 중인 약 없음", "정확�
 
 export default function HealthSetup({
   profile,
-  medicines,
   onSave,
   onCancel,
 }: {
   profile: HealthProfile
-  medicines: CatalogMedicine[]
   onSave: (profile: HealthProfile) => void
   onCancel: () => void
 }) {
@@ -41,18 +38,39 @@ export default function HealthSetup({
     ...profile,
     medicineStatus: profile.medicineStatus || statuses[0],
     medicines: profile.medicines || [],
+    medicineItems: profile.medicineItems || [],
   })
   const [query, setQuery] = useState("")
   const [category, setCategory] = useState("전체")
   const [error, setError] = useState("")
-  const catalog = [...medicines, ...extraCatalogMedicines]
-  const categories = ["전체", ...new Set(catalog.map((item) => item.category))]
-  const results = catalog.filter(
-    (item) =>
-      (category === "전체" || item.category === category) &&
-      `${item.name} ${item.category} ${item.maker}`.includes(query.trim()),
-  )
-  const selected = draft.medicines || []
+  const [found, setFound] = useState<MedicineSummary[]>([])
+  const [searchError, setSearchError] = useState(false)
+
+  // 약정보 검색과 같은 API. 입력이 멈추면 검색한다 (글자마다 요청하지 않음)
+  useEffect(() => {
+    const keyword = query.trim()
+    if (!keyword) return
+    const timer = setTimeout(() => {
+      searchMedicines(keyword)
+        .then((items) => {
+          setFound(items)
+          setSearchError(false)
+        })
+        .catch(() => setSearchError(true))
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [query])
+
+  const visible = query.trim() ? found : []
+  const categories = ["전체", ...new Set(visible.map((item) => item.category).filter(Boolean))]
+  const results = visible.filter((item) => category === "전체" || item.category === category)
+  const selected = draft.medicineItems || []
+  const setSelected = (items: MedicineSummary[]) =>
+    setDraft((previous) => ({
+      ...previous,
+      medicineItems: items,
+      medicines: items.map((item) => item.name),
+    }))
   const update = (key: keyof HealthProfile, value: string) =>
     setDraft((previous) => ({ ...previous, [key]: value }))
   const today = new Date()
@@ -239,8 +257,8 @@ export default function HealthSetup({
                 복용 중인 약
               </h2>
               <p className="mb-5 leading-7 text-slate-500">
-                검색 후 목록에서 선택하면 등록돼요. 모든 약 이름과 분류는 화면
-                체험용 가상 데이터입니다.
+                검색 후 목록에서 선택하면 등록돼요. 식약처 허가 의약품에서
+                찾아요.
               </p>
               <fieldset className="mb-5 space-y-3">
                 <legend className="mb-3 font-medium">현재 복용 상태</legend>
@@ -264,6 +282,8 @@ export default function HealthSetup({
                           medicineStatus: status,
                           medicines:
                             status === statuses[0] ? previous.medicines : [],
+                          medicineItems:
+                            status === statuses[0] ? previous.medicineItems : [],
                         }))
                         setError("")
                       }}
@@ -276,7 +296,7 @@ export default function HealthSetup({
               {draft.medicineStatus === statuses[0] ? (
                 <>
                   <label htmlFor="profile-drug-search" className="font-medium">
-                    약 이름 또는 분류 검색
+                    약 이름 검색
                   </label>
                   <div className="relative mt-2">
                     <Search
@@ -287,13 +307,16 @@ export default function HealthSetup({
                       id="profile-drug-search"
                       type="search"
                       value={query}
-                      onChange={(event) => setQuery(event.target.value)}
-                      placeholder="예: 가, 가나다, 감기약"
+                      onChange={(event) => {
+                        setQuery(event.target.value)
+                        setCategory("전체")
+                      }}
+                      placeholder="예: 타이레놀, 판콜"
                       className={`${field} mt-0 pl-12`}
                     />
                   </div>
                   <p className="mb-3 mt-4 text-sm text-slate-500">
-                    이름이 기억나지 않으면 분류를 선택해 보세요.
+                    결과가 많으면 분류를 선택해 좁혀 보세요.
                   </p>
                   <div
                     className="mb-5 flex flex-wrap gap-2"
@@ -317,19 +340,18 @@ export default function HealthSetup({
                   </div>
                   <div className="max-h-72 overflow-y-auto rounded-xl border border-slate-200">
                     {results.map((item) => {
-                      const added = selected.includes(item.name)
+                      const added = selected.some((medicine) => medicine.id === item.id)
                       return (
                         <button
                           type="button"
-                          key={item.name}
+                          key={item.id}
                           aria-pressed={added}
                           onClick={() => {
-                            setDraft((previous) => ({
-                              ...previous,
-                              medicines: added
-                                ? selected.filter((name) => name !== item.name)
-                                : [...selected, item.name],
-                            }))
+                            setSelected(
+                              added
+                                ? selected.filter((medicine) => medicine.id !== item.id)
+                                : [...selected, item],
+                            )
                             setError("")
                           }}
                           className="flex min-h-20 w-full items-center gap-3 border-b border-slate-100 p-4 text-left last:border-0 hover:bg-blue-50"
@@ -342,7 +364,9 @@ export default function HealthSetup({
                               {item.name}
                             </span>
                             <span className="mt-1 block text-sm text-slate-500">
-                              {item.category} · {item.maker}
+                              {[item.category, item.maker, item.saleStatus === "판매중지" && "판매중지"]
+                                .filter(Boolean)
+                                .join(" · ")}
                             </span>
                           </span>
                           <span
@@ -361,9 +385,11 @@ export default function HealthSetup({
                     })}
                     {results.length === 0 && (
                       <p className="p-5 leading-7 text-slate-500">
-                        일치하는 가상 약이 없어요. 검색어를 줄이거나 다른 분류를
-                        선택해 주세요. 실제 약을 찾을 수 없다면 ‘정확히
-                        모르겠어요’를 선택해 주세요.
+                        {searchError
+                          ? "약을 검색하지 못했어요. 잠시 후 다시 시도해 주세요."
+                          : query.trim()
+                            ? "일치하는 약이 없어요. 검색어를 줄이거나 다른 분류를 선택해 주세요. 약을 찾을 수 없다면 ‘정확히 모르겠어요’를 선택해 주세요."
+                            : "약 이름을 입력하면 목록이 나와요."}
                       </p>
                     )}
                   </div>
@@ -375,22 +401,17 @@ export default function HealthSetup({
                       등록할 약 {selected.length}개
                     </p>
                     <div className="flex flex-wrap gap-2">
-                      {selected.map((name) => (
+                      {selected.map((medicine) => (
                         <button
-                          key={name}
+                          key={medicine.id}
                           type="button"
-                          aria-label={`${name} 삭제`}
+                          aria-label={`${medicine.name} 삭제`}
                           onClick={() =>
-                            setDraft((previous) => ({
-                              ...previous,
-                              medicines: selected.filter(
-                                (item) => item !== name,
-                              ),
-                            }))
+                            setSelected(selected.filter((item) => item.id !== medicine.id))
                           }
                           className="flex min-h-11 items-center gap-2 rounded-full bg-white px-3 text-emerald-800"
                         >
-                          {name}
+                          {medicine.name}
                           <X size={16} />
                         </button>
                       ))}
@@ -460,8 +481,9 @@ export default function HealthSetup({
             <Info size={24} className="mb-4 text-blue-600" />
             <h2 className="mb-3 text-lg font-bold">입력 전 확인해 주세요</h2>
             <p className="leading-7 text-slate-600">
-              입력한 건강정보는 이 데모의 현재 세션에서만 유지돼요. 서버에
-              전송하지 않으며 새로고침하면 초기화됩니다.
+              입력한 건강정보와 복용약은 지금 쓰는 브라우저에만 저장돼요.
+              서버에 전송하지 않으며, 로그아웃하거나 브라우저 데이터를 지우면
+              사라져요.
             </p>
           </section>
           <section className="rounded-2xl border border-slate-200 p-6">

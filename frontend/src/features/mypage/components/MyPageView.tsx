@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { ChevronLeft } from "lucide-react"
 import { emptyProfile } from "@/lib/constants"
-import { drugs } from "@/mocks/drugs"
 import { useSession } from "@/providers/SessionProvider"
 import type { MedicationDraft, MyPageViewName, OcrStep } from "../types"
 import AccountSettings from "./AccountSettings"
@@ -67,7 +66,6 @@ export default function MyPageView() {
     return (
       <HealthSetup
         profile={profile}
-        medicines={drugs}
         onCancel={() => setView(logged ? "home" : "consent")}
         onSave={(value) => {
           setProfile(value)

@@ -85,7 +85,7 @@ export default function MyPageHome({
                 <p className="mt-1 text-sm text-slate-500">
                   {savedMedication && index === profileMedicines.length
                     ? `1회 ${savedMedication.amount}정 · 하루 ${savedMedication.times}회 · ${savedMedication.days}일`
-                    : "건강정보에서 등록 · 가상 약 데이터"}
+                    : "건강정보에서 등록"}
                 </p>
               </div>
             </div>

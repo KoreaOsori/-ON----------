@@ -16,4 +16,5 @@ async def check_interactions(
 ):
     pairs = await service.check_pairs(repository, payload.medicine_ids)
     duplicates = await service.check_duplicates(repository, payload.medicine_ids)
-    return InteractionCheckResponse(pairs=pairs, duplicates=duplicates)
+    cautions = await service.collect_cautions(repository, payload.medicine_ids)
+    return InteractionCheckResponse(pairs=pairs, duplicates=duplicates, medicine_cautions=cautions)
