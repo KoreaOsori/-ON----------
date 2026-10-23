@@ -14,7 +14,7 @@ from typing import Any
 
 from app.llm.v3.config import SCHEMA_VERSION, V3Settings
 from app.llm.v3.db import Reader
-from app.llm.v3.names import name_variants, narrow_by_manufacturer
+from app.llm.v3.names import collapse_spaces, fold_brackets, name_variants, narrow_by_manufacturer
 
 SCHEMA = "product_search"
 PRODUCT_TYPES = ("drug", "health_food")
@@ -108,7 +108,45 @@ async def find_products(
                     "truncated": truncated,
                     "products": found,
                 }
+    brand = await _find_by_brand(reader, name, predicate, base, limit)
+    if brand is not None:
+        return brand
     return {"mode": "not_found", "approximate": False, "matched_as": None, "truncated": False, "products": []}
+
+
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+MAX_BRAND_ROWS = 100
+
+
+async def _find_by_brand(
+    reader: Reader, name: str, predicate: str, base: dict[str, Any], limit: int
+) -> dict[str, Any] | None:
+    """띄어 쓴 이름("타이레놀 500mg")을 전체로 못 찾았을 때: 첫 단어(브랜드)로 시작하는 제품을 찾고, 나머지에 숫자(함량)가 있으면
+    그 숫자가 이름에 들어 있는 제품으로 좁힌다. 근사 일치(approximate)로 표시하며, 여럿이면 호출 쪽이 되묻는다."""
+    tokens = collapse_spaces(fold_brackets(name)).split(" ")
+    if len(tokens) < 2 or len(tokens[0]) < 2:
+        return None
+    brand = tokens[0].lower()
+    rows = await reader.fetch(
+        f"SELECT DISTINCT product_key, product_name, manufacturer, product_type FROM {SCHEMA}.product_links "
+        f"WHERE {predicate} AND lower(product_name) LIKE :value ORDER BY product_key LIMIT :limit",
+        {**base, "value": like_literal(brand) + "%", "limit": MAX_BRAND_ROWS + 1},
+    )
+    if not rows:
+        return None
+    found = _product_rows(rows[:MAX_BRAND_ROWS])
+    numbers = _NUMBER.findall(" ".join(tokens[1:]))
+    if numbers:
+        narrowed = [p for p in found if all(n in p["product_name"] for n in numbers)]
+        if narrowed:
+            found = narrowed
+    return {
+        "mode": "brand",
+        "approximate": True,
+        "matched_as": brand,
+        "truncated": len(found) > limit or len(rows) > MAX_BRAND_ROWS and not numbers,
+        "products": found[:limit],
+    }
 
 
 async def find_by_key(reader: Reader, run_id: str, product_key: str) -> dict[str, Any] | None:
