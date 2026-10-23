@@ -138,11 +138,13 @@ Swagger는 http://127.0.0.1:8012/docs 입니다. Authorize 에 넣은 API 키는
   "candidates": [],
   "tools_used": ["check_contraindication"],
   "rounds": 2,
-  "usage": {"input_tokens": 5200, "output_tokens": 420},
+  "usage": {"input_tokens": 480, "output_tokens": 420, "cache_read_tokens": 7500, "cache_write_tokens": 0},
   "latency_ms": 5300,
   "model_id": "us.anthropic.claude-haiku-5-5"
 }
 ```
+
+- `usage`: `input_tokens`는 **캐시 없이 처리된 입력**만(사용자 메시지·도구 결과 등)이고, 시스템 프롬프트·도구 정의는 프롬프트 캐시를 쓰므로 `cache_read_tokens`(캐시 읽기, 저렴한 단가)로 따로 나옵니다. 캐시를 새로 쓴 첫 호출은 `cache_write_tokens`(1.25배 단가)에 잡히고, 캐시는 마지막 사용 후 약 5분 유지됩니다. 실제 처리량 = 세 값의 합이므로 비용은 `input` + 0.1×`cache_read` + 1.25×`cache_write` 기준으로 봅니다.
 
 | `status` | HTTP | 의미 |
 |---|---|---|
@@ -250,6 +252,7 @@ LLM_V2_AUTH_MODE=ec2_role
 | `LLM_V2_PROVIDER` | `bedrock`(InvokeModel, EC2 역할로 가능) / `mantle`(IAM에 `bedrock-mantle:CreateInference` 필요) | bedrock |
 | `LLM_V2_MAX_TOOL_ROUNDS`, `LLM_V2_MAX_TOOL_CALLS`, `LLM_V2_MAX_SECONDS` | 하니스 한도 | 4 / 6 / 60 |
 | `LLM_V2_SEARCH_TOP_K` | 도구 한 번에 가져올 근거 수 | 5 |
+| `LLM_V2_PROMPT_CACHE` | 시스템 프롬프트·도구 정의를 프롬프트 캐시에 올림(`0`/`false`/`off`로 끔). 이 엔드포인트가 `cache_control`을 거부하면 첫 오류 후 자동으로 꺼짐 | 켬 |
 | `LLM_V2_CONTRA_DB` | 병용금기 인덱스(SQLite) 경로. 비우면 `dev_data/contraindication.sqlite`가 있을 때 그 파일을 쓰고, 없으면 RDS를 읽음 | (없음) |
 | `LLM_V2_CONTRA_SOURCE` | 병용금기 자료 출처: `auto` / `rds` / `sqlite` / `off` | `auto` |
 | `LLM_V2_API_KEY` | HTTP API의 `X-API-Key` 값. 비우면 인증 없이 열림(localhost 전용) | (없음) |

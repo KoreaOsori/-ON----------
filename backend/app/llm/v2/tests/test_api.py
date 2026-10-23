@@ -63,7 +63,7 @@ def test_ask_returns_structured_answer():
     assert body["answer"].startswith("타이레놀은")
     assert body["sources"] == ["타이레놀정500밀리그램 · 효능·효과"]
     assert body["tools_used"] == ["search_drug_info"] and body["rounds"] == 1
-    assert body["usage"] == {"input_tokens": 1200, "output_tokens": 80}
+    assert body["usage"] == {"input_tokens": 1200, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0}
     assert body["latency_ms"] == 1234 and body["model_id"] == "test-model"
     assert "tool_trace" not in body and "evidence" not in body  # 내부 계측은 노출하지 않는다
     assert agent.calls == [("타이레놀 효능이 뭐예요?", None)]  # 앞뒤 공백 제거

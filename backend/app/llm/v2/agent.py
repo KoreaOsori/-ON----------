@@ -73,8 +73,10 @@ class AgentAnswer:
     candidates: list[dict[str, Any]] = field(default_factory=list)
     # --- 모델 비교/평가용 계측 (사용자 응답에는 쓰지 않는다) ---
     evidence: list[Evidence] = field(default_factory=list)
-    input_tokens: int = 0
+    input_tokens: int = 0  # 캐시 없이 처리된 입력 토큰(캐시 읽기·쓰기는 아래 별도)
     output_tokens: int = 0
+    cache_read_tokens: int = 0  # 프롬프트 캐시에서 읽은 입력 토큰(저렴한 단가)
+    cache_write_tokens: int = 0  # 프롬프트 캐시에 새로 쓴 입력 토큰(첫 호출, 단가 1.25배)
     elapsed_seconds: float = 0.0
     # 도구 호출별 {arguments(제품명·섹션·질문), result_head(결과 첫머리)}. 원인 분석용이며 로그에는 남기지 않는다.
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
@@ -84,11 +86,17 @@ def _get(obj: Any, key: str) -> Any:
     return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
 
 
-def _usage(response: Any) -> tuple[int, int]:
+def _usage(response: Any) -> tuple[int, int, int, int]:
+    """(캐시 없이 처리된 입력, 출력, 캐시 읽기, 캐시 쓰기) 토큰. Anthropic 의 input_tokens 는 캐시 읽기·쓰기를 뺀 값이다."""
     usage = _get(response, "usage")
     if usage is None:
-        return 0, 0
-    return int(_get(usage, "input_tokens") or 0), int(_get(usage, "output_tokens") or 0)
+        return 0, 0, 0, 0
+    return (
+        int(_get(usage, "input_tokens") or 0),
+        int(_get(usage, "output_tokens") or 0),
+        int(_get(usage, "cache_read_input_tokens") or 0),
+        int(_get(usage, "cache_creation_input_tokens") or 0),
+    )
 
 
 def _normalize_blocks(response: Any) -> list[dict[str, Any]]:
@@ -124,8 +132,10 @@ class DrugInfoAgent:
         limits: Limits,
         engine: Any = None,
         contra_tool: ContraindicationTool | None = None,
+        prompt_cache: bool = False,
     ) -> None:
         self._create = create_message
+        self._prompt_cache = prompt_cache
         self._tool = tool
         self._limits = limits
         self._engine = engine
@@ -146,10 +156,24 @@ class DrugInfoAgent:
             await self._engine.dispose()
 
     async def _call_model(self, messages: list[dict[str, Any]], budget: Budget) -> Any:
-        return await asyncio.wait_for(
-            self._create(system=self._system, tools=[t.spec for t in self._tools.values()], messages=list(messages)),
-            timeout=budget.remaining_seconds(),
-        )
+        tools = [t.spec for t in self._tools.values()]
+        if self._prompt_cache:
+            # 캐시 구간은 tools → system 순서의 앞부분. system 블록 끝에 표시하면 도구 정의와 시스템 프롬프트가 함께 캐시된다.
+            system: Any = [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
+        else:
+            system = self._system
+        try:
+            return await asyncio.wait_for(
+                self._create(system=system, tools=tools, messages=list(messages)), timeout=budget.remaining_seconds()
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._prompt_cache and "cache_control" in str(exc).lower():  # 이 엔드포인트·모델이 캐시 표시를 받지 않는다 → 끄고 한 번 다시
+                logger.warning("프롬프트 캐시를 지원하지 않아 끕니다: %s", safe_error_name(exc))
+                self._prompt_cache = False
+                return await asyncio.wait_for(
+                    self._create(system=self._system, tools=tools, messages=list(messages)), timeout=budget.remaining_seconds()
+                )
+            raise
 
     async def _run_tool(
         self,
@@ -226,15 +250,16 @@ class DrugInfoAgent:
         trace: list[dict[str, Any]] = []
         final_text = ""
         stop = "done"
-        tokens_in = tokens_out = 0
+        tokens_in = tokens_out = cache_read = cache_write = 0
 
         try:
             while True:
                 budget.check_time()
                 forced_final = budget.rounds_left <= 0  # 도구 라운드를 다 썼다 → 이번 호출은 최종 답변이어야 한다
                 response = await self._call_model(messages, budget)
-                used_in, used_out = _usage(response)
+                used_in, used_out, used_read, used_write = _usage(response)
                 tokens_in, tokens_out = tokens_in + used_in, tokens_out + used_out
+                cache_read, cache_write = cache_read + used_read, cache_write + used_write
 
                 if _get(response, "stop_reason") == "refusal":
                     stop = "refusal"
@@ -265,6 +290,7 @@ class DrugInfoAgent:
         answer.evidence = list(evidence)
         answer.tool_trace = trace
         answer.input_tokens, answer.output_tokens = tokens_in, tokens_out
+        answer.cache_read_tokens, answer.cache_write_tokens = cache_read, cache_write
         answer.elapsed_seconds = time.monotonic() - started
         logger.info(
             "agent stop=%s rounds=%d calls=%d evidence=%d elapsed=%.1fs",
@@ -341,7 +367,7 @@ def build_agent(settings: V2Settings | None = None) -> DrugInfoAgent:
     open_reader = reader_factory_for(engine)
     tool = DrugSearchTool(settings, open_reader, QueryEmbedder(settings))
     contra_tool = _build_contra_tool(settings, open_reader)
-    return DrugInfoAgent(build_create_message(settings), tool, Limits.from_settings(settings), engine, contra_tool)
+    return DrugInfoAgent(build_create_message(settings), tool, Limits.from_settings(settings), engine, contra_tool, settings.prompt_cache)
 
 
 def _build_contra_tool(settings: V2Settings, open_reader: Any) -> ContraindicationTool | None:
