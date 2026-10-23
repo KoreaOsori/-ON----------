@@ -138,10 +138,10 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.repo.dur_ingredient_rules.return_value = [
             dict(caution_type='효능군중복', mix_type='단일', sers_name='계열', ingr_code=code, ingr_name=code)
             for code in ('A', 'B')]
-        await self.service.ask(self.request(products=['약A', '약B']))
+        response = await self.service.ask(self.request(products=['약A', '약B']))
         self.repo.dur_ingredient_rules.assert_awaited_once_with(ingredients)
-        self.assertEqual(self.payload()['checks'][0]['therapeutic_duplications'][0]['verdict'], 'duplicate_caution')
-        self.assertEqual(self.payload()['checks'][0]['product_pair_result'], 'not_found')
+        self.assertIn('효능군 중복 주의', response.answer)
+        self.assertIn('제품 간 등록된 병용금기는 찾지 못했어요', response.answer)
 
     async def test_vector_information_still_used(self):
         self.repo.vector_documents.return_value = [{'product_key': 'drug:1', 'content': '벡터 근거'}]
@@ -204,8 +204,9 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
               'ingr_code': 'A', 'mixture_ingr_code': 'B', 'prohbt_content': '금기 원문', 'remark': '예외 원문'}])
         response = await self.service.ask(self.request(products=['약A', '약B']))
         self.assertEqual(response.status, 'answered')
-        self.assertEqual(self.payload()['checks'][0]['status'], 'contraindicated')
-        self.assertEqual(self.payload()['checks'][0]['rules'][0]['remark'], '예외 원문')
+        self.assertIn('제품 간 등록된 병용금기가 확인됐어요', response.answer)
+        self.assertIn('금기 원문', response.answer)
+        self.assertIn('예외 원문', response.answer)
 
     async def test_no_product_rule_is_explained_even_with_missing_codes(self):
         self.route.intent, self.route.sections = 'interactions', []
@@ -215,8 +216,8 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.repo.vector_warning = 'vector not ready'
         response = await self.service.ask(self.request(products=['약A', '약B']))
         self.assertEqual(response.status, 'answered')
-        self.assertEqual(self.payload()['checks'][0]['product_pair_result'], 'not_found')
-        self.assertTrue(self.payload()['checks'][0]['mapping_coverage']['drug:1']['missing_ingredient_rows'])
+        self.assertIn('제품 간 등록된 병용금기는 찾지 못했어요', response.answer)
+        self.assertIn('성분 자료를 찾지 못해', response.answer)
         self.assertNotIn('vector not ready', self.bedrock.generate.call_args.args[2])
 
     async def test_over_budget_asks_llm_for_narrower_scope(self):

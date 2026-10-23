@@ -1,6 +1,7 @@
 import json
 
 from .interactions import compare_gold
+from .grounded_answer import interaction_blocks, render_interactions
 from .routing import classify, scoped_question
 from .schemas import AskResponse
 
@@ -61,6 +62,21 @@ class Service:
         self.repo, self.bedrock, self.settings = repository, bedrock, settings
 
     async def respond(self, model_id, routing_usage, status, payload):
+        if (payload.get('intent') == 'interactions' and payload.get('checks')
+                and all(p['product_type'] == 'drug' for p in payload.get('products', []))):
+            blocks = interaction_blocks(payload)
+            # Only headings are needed for ordering. Medical content is rendered
+            # from verified facts, so generated classifications/advice cannot leak.
+            prompt = json.dumps({'blocks': [{'id': i, 'heading': block.split('\n', 1)[0]}
+                                            for i, block in enumerate(blocks)]}, ensure_ascii=False)
+            result = await self.bedrock.generate(model_id,
+                '사용자가 읽기 좋은 순서로 모든 블록 ID를 정확히 한 번씩 정렬한다. '
+                '제품쌍 결과를 먼저, 확인 범위와 원문을 뒤에 둔다. '
+                '다른 설명 없이 JSON만 출력: {"order":[0,1,...]}.', prompt)
+            if result.get('stop_reason') in {'guardrail_intervened', 'content_filtered', 'refusal'}:
+                return AskResponse(status='refused', answer='죄송해요. 지금은 답변을 드리기 어려워요. 약사나 의사에게 확인해 주세요.',
+                                   usage={'routing': routing_usage})
+            return AskResponse(status=status, answer=render_interactions(blocks, result), usage={'routing': routing_usage})
         prompt = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), default=str)
         if len(prompt) > self.settings.context_chars:
             status = 'insufficient_data'
