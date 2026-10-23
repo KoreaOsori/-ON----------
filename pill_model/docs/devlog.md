@@ -238,3 +238,11 @@
 
 - 해석(확신 낮음): 합성 사진이라 실제 촬영과 다름. quality 2/6 은 세 모델 공통이라 모델보다 합성 방식(알약 가장자리 등) 영향일 가능성. isnet 은 느리고 단색에서 정확도도 낮음.
   → 기본값 u2netp 유지(가장 빠름, 정확도 동률). 최종 선택은 실제 촬영 사진으로 EC2 에서 재측정 후.
+
+## 2026-10-23 — 워커 EC2 첫 배포 (사용자가 SSM 웹 콘솔로 실행)
+- `docker compose up -d --build` → healthy. `/health`: pill·rx·llm 모두 true, loadSec 19.2, cv2 4.10.0.
+- ❌ `imageIndex.status = error, error = ArrowTypeError` (0.6초 — 파일을 읽기 전에 실패)
+  - 원인: `pq.read_table` 은 dataset 방식이라 경로의 `snapshot=2026-10-23` 을 파티션 컬럼(dictionary)으로 만들고,
+    파일 안에도 `snapshot`(string) 컬럼이 있어 스키마 병합 실패. PC 로컬에서 같은 경로·컬럼으로 재현:
+    `Unable to merge: Field snapshot has incompatible types: string vs dictionary<values=string, ...>`
+  - 해결: PC 실측 때 쓴 `pq.ParquetFile(path).read(columns=["item_seq","pills"])` 로 변경 (`images.read_urls`), 재현 테스트 추가 (unit+api 25 passed).

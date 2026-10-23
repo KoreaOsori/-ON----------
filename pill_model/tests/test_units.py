@@ -66,6 +66,22 @@ def test_pick_urls_first_by_image_id_and_skip_empty():
     assert pick_urls(seqs, pills) == {"A": "u1"}
 
 
+def test_read_urls_with_snapshot_partition_path(tmp_path):
+    """EC2 10-23 ArrowTypeError 재현: 경로 snapshot=… + 파일 안 snapshot 컬럼(string) 이 함께 있어도 읽혀야 함"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from app.images import read_urls
+    d = tmp_path / "silver" / "drug_product" / "snapshot=2026-10-23"
+    d.mkdir(parents=True)
+    pq.write_table(pa.table({
+        "item_seq": ["A", "B"],
+        "pills": [[{"image_id": "2", "item_image": "u2"}, {"image_id": "1", "item_image": "u1"}], None],
+        "snapshot": ["2026-10-23", "2026-10-23"],
+    }), d / "data.parquet")
+    assert read_urls(str(d / "data.parquet")) == {"A": "u1"}
+
+
 def _png(mode, color):
     buf = io.BytesIO()
     Image.new(mode, (50, 40), color).save(buf, format="PNG")
