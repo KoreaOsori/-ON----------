@@ -48,7 +48,9 @@ async def ask(body: AskRequest, request: Request):
             async with conn.begin():
                 await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
                 await conn.execute(text("SET LOCAL statement_timeout = '15s'"))
-                return await Service(Repository(conn, settings), request.app.state.llm_bedrock, settings).ask(body)
+                service = Service(Repository(conn, settings), request.app.state.llm_bedrock, settings)
+                request.state.llm_service = service
+                return await service.ask(body)
     except (DataUnavailable, DatabaseConnectionError) as error:
         raise HTTPException(503, str(error)) from None
     except RoleCredentialsError as error:
@@ -87,6 +89,9 @@ def create_app(*, route_prefix: str = "") -> FastAPI:
                     405: "요청 방식을 확인해 주세요."}
         body = AskResponse(status="error", answer=messages.get(error.status_code,
             "지금은 정보를 확인하는 데 문제가 있어요. 잠시 후 다시 시도해 주세요."))
+        service = getattr(request.state, 'llm_service', None)
+        if service is not None:
+            body.usage = service.usage.snapshot()
         return JSONResponse(status_code=error.status_code, content=body.model_dump(), headers=error.headers)
 
     @application.exception_handler(RequestValidationError)

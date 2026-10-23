@@ -11,6 +11,18 @@ EMERGENCY_PATTERN = re.compile(
     r"피를?\s*토|토혈|혈변|심한\s*알레르기"
 )
 
+# 이미 약을 너무 많이(또는 잘못) 먹었다는 표현. 고의가 드러나지 않은 과다복용·오복용이며, 증상이 없어도 응급 연락을 먼저 안내한다.
+# "한 통에 몇 알이에요?" 같은 질문은 잡지 않도록 '먹었다/삼켰다'처럼 이미 먹은 표현이 뒤따를 때만 본다.
+_ATE = r"(먹었|먹어\s*버렸|먹어버렸|삼켰|마셨|복용했)"
+OVERDOSE_PATTERN = re.compile(
+    r"과다\s*복용|과량\s*복용|과량으로|"
+    rf"(한|두|세|여러|반)\s*(통|병|봉지|상자|갑|팩|박스)\s*(을|를)?\s*(다|전부|거의|넘게)?\s*{_ATE}|"
+    rf"(?<!\d)([5-9]|\d{{2,}})\s*(알|정|개|캡슐|포)\s*(을|를|이나|씩)?\s*(한꺼번에|한번에|한\s*번에|넘게)?\s*{_ATE}|"
+    rf"(열|스무|수십)\s*(알|정|개)\s*(을|를|이나|넘게)?\s*{_ATE}|"
+    rf"(너무|잔뜩|엄청|훨씬)\s*많이\s*{_ATE}|"
+    rf"(실수로|잘못)\s*.{{0,12}}{_ATE}"
+)
+
 # 자해·고의 과다복용을 시사하는 표현
 CRISIS_PATTERN = re.compile(
     r"자살|자해|죽고\s*싶|목숨을?\s*끊|극단적\s*선택|(약|알약).{0,10}(전부|다|한꺼번에|몽땅).{0,6}(먹|삼키|털어)|"
@@ -24,8 +36,12 @@ STOP_PATTERN = re.compile(
 )
 
 
+def is_overdose(question: str) -> bool:
+    return bool(OVERDOSE_PATTERN.search(question))
+
+
 def is_emergency(question: str) -> bool:
-    return bool(EMERGENCY_PATTERN.search(question))
+    return bool(EMERGENCY_PATTERN.search(question)) or is_overdose(question)
 
 
 def is_crisis(question: str) -> bool:

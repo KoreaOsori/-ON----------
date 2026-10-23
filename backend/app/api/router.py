@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.modules.auth.router import router as auth_router
 from app.modules.chat.router import router as chat_router
 from app.modules.health.router import router as health_router
+from app.modules.health_foods.router import router as health_foods_router
 from app.modules.interactions.router import router as interactions_router
 from app.modules.medications.router import router as medications_router
 from app.modules.medicines.router import router as medicines_router
@@ -19,6 +20,7 @@ for router in (
     users_router,
     chat_router,
     medicines_router,
+    health_foods_router,
     interactions_router,
     pharmacies_router,
     medications_router,

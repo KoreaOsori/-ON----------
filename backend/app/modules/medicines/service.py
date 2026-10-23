@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import get_db
 from app.integrations import public_data
+from app.modules.medicines.categories import class_code_patterns
 from app.modules.medicines.mock_data import MOCK_CONTRAINDICATED_PAIRS, MOCK_MEDICINES
 from app.modules.medicines.schemas import (
     ContraindicationRow,
@@ -120,7 +121,7 @@ class PublicApiMedicineRepository:
 class GoldMedicineRepository:
     """데이터 파이프라인이 RDS 에 적재한 gold 스키마 (gold.drug, gold.drug_contraindication)"""
 
-    _SUMMARY_COLUMNS = "item_seq, item_name, entp_name, class_name, etc_otc_name, sale_status"
+    _SUMMARY_COLUMNS = "item_seq, item_name, entp_name, class_name, etc_otc_name, sale_status, image_url"
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -134,26 +135,38 @@ class GoldMedicineRepository:
             "category": row.class_name or "",
             "type": (row.etc_otc_name or "").removesuffix("의약품"),  # 일반의약품 → 일반
             "sale_status": row.sale_status,
+            "image_url": row.image_url,
         }
 
     async def search(
         self, query: str, category: str | None, medicine_type: str | None
     ) -> list[MedicineSummary]:
-        if not query:  # 약 4만 개 전체를 내려보내지 않는다
+        # 하위 분류(일반·전문 안의 대표 분류)는 약효분류 코드 묶음으로 거른다 (categories.py)
+        patterns = class_code_patterns(medicine_type, category) if medicine_type and category else None
+        if not query and patterns is None:  # 검색어도 분류도 없으면 약 4만 개 전체를 내려보내지 않는다
             return []
-        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        conditions = ["item_name ILIKE :pattern"]
-        params: dict = {"pattern": f"%{escaped}%", "limit": SEARCH_LIMIT}
-        if category and category != "전체":
-            conditions.append("class_name = :category")
-            params["category"] = category
+        conditions = []
+        params: dict = {"limit": SEARCH_LIMIT}
+        if query:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conditions.append("item_name ILIKE :pattern")
+            params["pattern"] = f"%{escaped}%"
+        if patterns is not None:
+            codes, other = patterns
+            conditions.append(
+                "(class_code IS NULL OR NOT class_code LIKE ANY(:codes))"
+                if other
+                else "class_code LIKE ANY(:codes)"
+            )
+            params["codes"] = codes
         if medicine_type:
             conditions.append("etc_otc_name = :etc_otc_name")
             params["etc_otc_name"] = f"{medicine_type}의약품"
+        # 판매 중 → 사진 있는 약 → 이름이 짧은 순 (사진은 알약에만 있어 물약·주사·외용제는 뒤로 간다)
         result = await self.session.execute(
             text(
                 f"SELECT {self._SUMMARY_COLUMNS} FROM gold.drug WHERE {' AND '.join(conditions)} "
-                "ORDER BY sale_status = '판매중지', length(item_name), item_name LIMIT :limit"
+                "ORDER BY sale_status = '판매중지', image_url IS NULL, length(item_name), item_name LIMIT :limit"
             ),
             params,
         )

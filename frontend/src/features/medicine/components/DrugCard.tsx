@@ -21,7 +21,7 @@ export default function DrugCard({
 }) {
   return (
     <div className="flex items-center gap-4 rounded-2xl border p-4">
-      <DrugArt index={index} />
+      <DrugArt index={index} imageUrl={drug.imageUrl} />
       <button onClick={onOpen} className="min-h-14 flex-1 text-left">
         <b>{drug.name}</b>
         <p className="mt-1 text-sm text-slate-500">

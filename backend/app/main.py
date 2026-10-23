@@ -12,6 +12,8 @@ from app.llm.v1.api import create_app as create_llm_v1_app
 from app.llm.v1.api import lifespan as llm_v1_lifespan
 from app.llm.v2.api import create_app as create_llm_v2_app
 from app.llm.v2.api import mounted_lifespan as llm_v2_lifespan
+from app.llm.v3.api import create_app as create_llm_v3_app
+from app.llm.v3.api import mounted_lifespan as llm_v3_lifespan
 
 
 @asynccontextmanager
@@ -19,7 +21,11 @@ async def lifespan(app: FastAPI):
     configure_logging()
     try:
         # Mounted sub-app lifespans must be entered explicitly.
-        async with llm_v1_lifespan(app.state.llm_v1_app), llm_v2_lifespan(app.state.llm_v2_app):
+        async with (
+            llm_v1_lifespan(app.state.llm_v1_app),
+            llm_v2_lifespan(app.state.llm_v2_app),
+            llm_v3_lifespan(app.state.llm_v3_app),
+        ):
             yield
     finally:
         try:
@@ -50,6 +56,9 @@ def create_app() -> FastAPI:
     # v2: LLM_V2_API_KEY 가 없거나 초기화에 실패하면 v2 경로만 503 이고 백엔드는 계속 뜬다.
     app.state.llm_v2_app = create_llm_v2_app(route_prefix="", require_api_key=True)
     app.mount("/api/llm/v2", app.state.llm_v2_app)
+    # v3: X-API-Key 없이 열린다(인증 없음). 초기화에 실패하면 v3 경로만 503 이고 백엔드는 계속 뜬다.
+    app.state.llm_v3_app = create_llm_v3_app(route_prefix="")
+    app.mount("/api/llm/v3", app.state.llm_v3_app)
     app.include_router(api_router, prefix=settings.api_prefix)
     return app
 

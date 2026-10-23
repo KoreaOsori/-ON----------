@@ -1,6 +1,7 @@
-import { ArrowUp, ChevronRight, Info, Plus, UserRound } from "lucide-react"
-import { disclaimer, summarizeProfile } from "@/lib/constants"
+import { ArrowUp, ChevronRight, Info, Pill, Plus, UserRound, X } from "lucide-react"
+import { disclaimer } from "@/lib/constants"
 import type { HealthProfile } from "@/types/health"
+import { summarizeForChat } from "../profileContext"
 
 export default function ChatComposer({
   docked,
@@ -11,6 +12,8 @@ export default function ChatComposer({
   setText,
   disabled,
   sendDisabled,
+  products,
+  onRemoveProduct,
   onSubmit,
   onOpenProfile,
   onOpenPhoto,
@@ -24,11 +27,14 @@ export default function ChatComposer({
   setText: (value: string) => void
   disabled: boolean
   sendDisabled: boolean
+  /** 사진에서 확인해 질문과 함께 보낼 제품명 */
+  products: string[]
+  onRemoveProduct: (name: string) => void
   onSubmit: () => void
   onOpenProfile: () => void
   onOpenPhoto: () => void
 }) {
-  const summary = summarizeProfile(profile)
+  const summary = summarizeForChat(profile)
   return (
     <div
       className={`${docked ? "fixed inset-x-0 bottom-0 z-20" : "relative mb-12"} bg-gradient-to-t from-white via-white to-white/95 px-8 pb-6 pt-5`}
@@ -45,7 +51,7 @@ export default function ChatComposer({
               className="flex min-h-11 items-center gap-2 rounded-full border border-slate-200 px-4 text-slate-600 hover:border-blue-300"
             >
               <UserRound size={16} />
-              {Object.values(profile).some(Boolean) ? `임시 정보 · ${summary}` : "임시 건강정보 설정"}
+              {summary ? `임시 정보 · ${summary}` : "임시 건강정보 설정"}
               <ChevronRight size={15} />
             </button>
           )}
@@ -63,6 +69,27 @@ export default function ChatComposer({
             </>
           )}
         </div>
+        {products.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+            <span className="flex items-center gap-1 text-slate-500">
+              <Pill size={14} />
+              함께 확인할 약
+            </span>
+            {products.map((name) => (
+              <span key={name} className="flex items-center gap-1 rounded-full bg-blue-50 py-1 pl-3 pr-1 text-blue-700">
+                {name}
+                <button
+                  type="button"
+                  onClick={() => onRemoveProduct(name)}
+                  aria-label={`${name} 빼기`}
+                  className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-blue-100"
+                >
+                  <X size={14} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <form
           onSubmit={(event) => {
             event.preventDefault()

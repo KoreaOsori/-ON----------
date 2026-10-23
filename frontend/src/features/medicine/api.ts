@@ -9,6 +9,7 @@ export type MedicineSummary = {
   category: string
   type: string
   saleStatus: string // 판매 | 판매중지
+  imageUrl?: string | null // 식약처 의약품안전나라 제품 사진 (없는 약이 많음)
 }
 
 export type DurCaution = {
@@ -55,8 +56,36 @@ export type DuplicateCaution = {
   dailyMax: string[]
 }
 
-export const searchMedicines = (query: string, type?: MedicineType) =>
-  apiFetch<MedicineSummary[]>("/medicines", { query: { q: query, type } })
+export const searchMedicines = (query: string, type?: MedicineType, category?: string) =>
+  apiFetch<MedicineSummary[]>("/medicines", { query: { q: query, type, category } })
+
+/** 일반·전문의약품별 하위 분류 (대표 분류 10개 + 기타) */
+export const getMedicineCategories = () => apiFetch<Record<MedicineType, string[]>>("/medicines/categories")
+
+export type HealthFoodSummary = {
+  id: string
+  name: string
+  maker: string
+  form: string
+}
+
+export type HealthFoodDetail = HealthFoodSummary & {
+  functionality: string
+  intakeMethod: string
+  precautions: string
+  rawMaterials: string
+  storage: string
+  shelfLife: string
+  permitDate: string | null
+  source: string
+}
+
+export const searchHealthFoods = (query: string, form?: string) =>
+  apiFetch<HealthFoodSummary[]>("/health-foods", { query: { q: query, form } })
+
+export const getHealthFoodForms = () => apiFetch<string[]>("/health-foods/forms")
+
+export const getHealthFood = (id: string) => apiFetch<HealthFoodDetail>(`/health-foods/${id}`)
 
 export const getMedicine = (id: string) => apiFetch<MedicineDetail>(`/medicines/${id}`)
 
