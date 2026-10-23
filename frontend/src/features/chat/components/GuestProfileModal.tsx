@@ -71,10 +71,9 @@ export default function GuestProfileModal({
             <option>확인 필요</option>
           </select>
         </label>
-        {/* TODO(백엔드 연동): POST /api/v1/chat 은 임시 건강정보를 요청 본문으로 서버에 보낸다(저장은 안 함).
-            연동 시 "서버에 전송하지 않아요" → "답변 생성에만 사용하고 저장하지 않아요" 등으로 문구 수정 필요. */}
+        {/* 질문할 때 LLM v3 의 profile_context 로 함께 보낸다(서버는 저장하지 않음) */}
         <Notice>
-          현재 세션에서만 사용하며 서버에 전송하지 않아요. 새로고침하면 초기화돼요. 실제 의료 판단은 제공하지 않습니다.
+          질문할 때 답변을 만드는 데에만 함께 보내고 저장하지 않아요. 새로고침하면 초기화돼요. 실제 의료 판단은 제공하지 않습니다.
         </Notice>
         <label className="flex items-start gap-3 text-sm leading-6">
           <input

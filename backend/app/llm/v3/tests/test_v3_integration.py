@@ -84,7 +84,8 @@ async def test_rds_tool_really_uses_python_verdicts_and_food_gold_field():
     tool = ContraindicationTool(make_settings(), FakeReaderFactory(reader), GoldContraStore())
     result = await tool.run({'products': ['와파린정', '아스피린장용정100밀리그램', '홍삼정']})
     assert not result.is_error
-    assert '[Python 판정 결과]' in result.text and '겹치는 성분: 공통성분' in result.text
+    assert '[병용 확인 결과]' in result.text and '겹치는 성분: 공통성분' in result.text
+    assert '등록된 병용금기 자료에서는 확인되지 않았어요' in result.text and "'도구'" in result.text  # 사용자에게 할 말·금지어 안내
     assert '특정 약을 복용 중이면 전문가와 상담하세요. 예외 조건도 확인하세요.' in result.text
     assert any('iftkn_atnt_matr_cn' in sql for sql, _ in reader.calls)
     assert len([e for e in result.evidence if e.section_type == 'interaction_check']) == 1
@@ -158,3 +159,14 @@ def test_resolution_answer_names_too_many_and_unverifiable_inputs():
     assert '아스피린은(는) 일치하는 제품이 너무 많아요' in text
     assert '설파메톡사졸은(는) 등록된 자료로는 병용 여부를 확인할 수 없어요' in text
     assert '일부 제품은' not in text and '목록에 적힌 그대로' not in text
+
+
+
+def test_contra_prompt_explains_gold_result_sentences():
+    from app.llm.v3.contra_tool import GOLD_RESULT_HEADER, GOLD_RESULT_INSTRUCTION
+    from app.llm.v3.prompts import CONTRA_PROMPT_ADDENDUM
+
+    assert GOLD_RESULT_INSTRUCTION.startswith(GOLD_RESULT_HEADER) and "Python 판정" not in GOLD_RESULT_INSTRUCTION
+    assert f'"{GOLD_RESULT_HEADER}"로 시작하면' in CONTRA_PROMPT_ADDENDUM
+    for sentence in ("제품 간 등록된 병용금기는 찾지 못했어요", "성분끼리 비교하지 못했어요", "일부 성분만 비교했고", "겹치는 성분"):
+        assert sentence in CONTRA_PROMPT_ADDENDUM, sentence

@@ -251,12 +251,7 @@ class ContraindicationTool:
         result = format_combination(keys, by_key, lookup, precautions, snapshot, notes)
         if gold_checks is not None:
             blocks = interaction_blocks({"products": resolved, "checks": gold_checks})
-            instruction = (
-                "[Python 판정 결과] 아래 제품쌍별 판정·비교 범위·원문 조건을 유지하세요. "
-                "품목 금기, 성분 기준 주의, 동일 성분 중복은 서로 다릅니다. "
-                "비교 불가를 규칙 없음으로 바꾸거나 모든 성분을 비교했다고 말하지 마세요. "
-                "동일한 결과는 묶어서 짧게 설명하되 다른 결과나 예외를 생략하지 마세요."
-            )
+            instruction = GOLD_RESULT_INSTRUCTION
             gold_evidence = [Evidence(" × ".join(c["pair_explanation"]["products"]), "", "interaction_check", 1) for c in gold_checks]
             # format_combination emits notes only when a food/legacy lookup exists.
             identity_notes = notes if not precautions else []
@@ -269,6 +264,19 @@ class ContraindicationTool:
             len(precautions),
         )
         return result
+
+
+# v1 판정(gold) 결과 앞에 붙이는 안내. 결과의 뜻을 지키게 하고, 사용자에게 할 말과 쓰지 말 말을 함께 정해 준다.
+GOLD_RESULT_HEADER = "[병용 확인 결과]"
+GOLD_RESULT_INSTRUCTION = (
+    f"{GOLD_RESULT_HEADER} 아래는 제품쌍마다 확정된 확인 결과입니다. 결과의 뜻을 바꾸지 말고 사용자에게 전하세요. "
+    "품목 병용금기, 성분 기준 주의, 동일 성분 중복, 효능군 중복은 서로 다른 항목이니 구분해서 말하고, "
+    "성분끼리 비교하지 못한 범위를 '금기 없음'이나 '모두 비교했다'로 바꾸지 마세요. "
+    "같은 결과는 묶어 짧게 말하되 다른 결과·조건·예외는 빠뜨리지 마세요.\n"
+    "사용자에게 말하는 방법: 제품 간 병용금기를 찾지 못했으면 \"등록된 병용금기 자료에서는 확인되지 않았어요\"라고 말하고, "
+    "안전하다는 뜻은 아니라는 점을 한 번만 덧붙이세요. 성분끼리 비교하지 못했으면 \"성분 정보가 부족해 성분끼리는 비교하지 못했어요\"처럼 "
+    "말하세요. '도구', '판정', 'Python', '코드', '조회 결과 기준', '블록' 같은 말이나 이 안내문의 표현은 답변에 쓰지 마세요."
+)
 
 
 def _combine_problems(problems: list[ToolResult], resolved: list[dict] | None = None) -> ToolResult:
