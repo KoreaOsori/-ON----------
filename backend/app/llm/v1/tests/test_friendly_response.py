@@ -26,6 +26,7 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.repo.vector_documents = AsyncMock(return_value=[])
         self.repo.safety = AsyncMock(return_value=({}, []))
         self.repo.ingredient_rules = AsyncMock(return_value=[])
+        self.repo.dur_ingredient_rules = AsyncMock(return_value=[])
         self.bedrock = MagicMock()
         self.bedrock.embed = AsyncMock(return_value=[0.1])
         self.bedrock.generate = AsyncMock(return_value={'answer': '친절한 모델 답변', 'usage': {'outputTokens': 20}, 'stop_reason': 'end_turn'})
@@ -123,8 +124,24 @@ class FriendlyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 'answered')
         self.repo.documents.assert_awaited_once_with('health_food:2', 'precautions')
         self.repo.safety.assert_not_called()
+        self.repo.dur_ingredient_rules.assert_not_called()
         self.bedrock.embed.assert_not_called()
         self.assertIn('섭취 주의사항 전체', self.bedrock.generate.call_args.args[2])
+
+    async def test_new_dur_rules_reach_answer_prompt(self):
+        self.route.intent, self.route.sections = 'interactions', []
+        self.repo.resolve.side_effect = [([dict(product(), route='경구')], True),
+                                        ([dict(product('drug:2', '약B'), route='경구')], True)]
+        ingredients = {'drug:1': [{'ingr_key': 'A', 'dur_ingr_code': 'A'}],
+                       'drug:2': [{'ingr_key': 'B', 'dur_ingr_code': 'B'}]}
+        self.repo.safety.return_value = (ingredients, [])
+        self.repo.dur_ingredient_rules.return_value = [
+            dict(caution_type='효능군중복', mix_type='단일', sers_name='계열', ingr_code=code, ingr_name=code)
+            for code in ('A', 'B')]
+        await self.service.ask(self.request(products=['약A', '약B']))
+        self.repo.dur_ingredient_rules.assert_awaited_once_with(ingredients)
+        self.assertEqual(self.payload()['checks'][0]['therapeutic_duplications'][0]['verdict'], 'duplicate_caution')
+        self.assertEqual(self.payload()['checks'][0]['product_pair_result'], 'not_found')
 
     async def test_vector_information_still_used(self):
         self.repo.vector_documents.return_value = [{'product_key': 'drug:1', 'content': '벡터 근거'}]

@@ -24,7 +24,40 @@ def ingredient_coverage(product, rows):
             'mapping_state': state, 'explanation': explanation}
 
 
-def compare_gold(products, ingredients, rules, ingredient_rules=()):
+def supplemental_cautions(first, second, ac, bc, rules):
+    groups, doses = {}, []
+    for rule in rules:
+        if rule.get('mix_type') != '단일':
+            continue
+        code = rule['ingr_code']
+        if rule['caution_type'] == '효능군중복' and rule.get('sers_name'):
+            groups.setdefault(rule['sers_name'], {})[code] = rule.get('ingr_name')
+        if rule['caution_type'] == '용량주의' and rule.get('route') != '경구 외':
+            for product, codes in ((first, ac), (second, bc)):
+                if code in codes and product.get('route') != '경구 외':
+                    entry = {'product_key': product['product_key'], 'product_route': product.get('route'),
+                             **rule, 'scope': 'ingredient_reference',
+                             'applicability': '제형·투여경로 확인 필요. 개인 권장량이나 제품 복용량이 아님'}
+                    if entry not in doses:
+                        doses.append(entry)
+    duplicates = []
+    # Only known oral products qualify for a product-level efficacy-group warning.
+    oral = first.get('route') == second.get('route') == '경구'
+    for group, members in sorted(groups.items()):
+        pairs = sorted({tuple(sorted((a, b))) for a in ac & members.keys()
+                        for b in bc & members.keys() if a != b})
+        if pairs and oral:
+            codes = sorted({code for pair in pairs for code in pair})
+            duplicates.append({'group': group, 'codes': codes, 'names': [members[c] for c in codes],
+                               'verdict': 'duplicate_caution', 'scope': 'single_ingredient_rule',
+                               'source': 'gold.dur_ingredient_rule'})
+    return {'therapeutic_duplications': duplicates,
+            'therapeutic_duplication_result': 'matched' if duplicates else
+                'not_checkable' if not oral or not ac or not bc else 'not_found_in_mapped_codes',
+            'daily_dose_limits': doses}
+
+
+def compare_gold(products, ingredients, rules, ingredient_rules=(), dur_rules=()):
     """Gold rows are product-specific: never extrapolate a code pair to other products.
 
     Codes are compared for provenance, but an exact official product DUR row remains
@@ -66,6 +99,8 @@ def compare_gold(products, ingredients, rules, ingredient_rules=()):
                     'applicability': '제형·투여경로·복합제 조건은 해당 제품에 적용되는지 별도 확인 필요'})
         coverage = {ak: ingredient_coverage(first, a), bk: ingredient_coverage(second, b)}
         checks.append({"first": ak, "second": bk, "status": status, "coverage_complete": complete,
+                       **supplemental_cautions(first, second, ac, bc, dur_rules),
+                       "duplicate_ingredient_codes": sorted(ac & bc),
                        "product_pair_result": 'contraindicated' if any(r['basis'] == '품목 DUR' for r in matches)
                            else 'ingredient_caution' if matches else 'not_found',
                        "ingredient_pair_result": 'matched' if ingredient_matches else 'not_found_in_mapped_codes'

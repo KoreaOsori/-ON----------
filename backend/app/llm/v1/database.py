@@ -20,7 +20,7 @@ class DatabaseConnectionError(Exception):
 @dataclass(frozen=True)
 class RDSConfig:
     secret_id: str = "rds!db-71cf9992-e13e-4601-88da-425ac219f336"
-    host: str = "pill-check-dev-postgres.c43ekyi6yiie.us-east-1.rds.amazonaws.com"
+    host_secret_id: str = "pill-check/dev/app"
     database: str = "pill"
     port: int = 5432
     region: str = "us-east-1"
@@ -39,7 +39,11 @@ def read_credentials(settings: Settings, config: RDSConfig = RDS):
         username, password = secret["username"], secret["password"]
         if not all(isinstance(value, str) and value for value in (username, password)):
             raise ValueError("Invalid credential fields")
-        return username, password
+        app_response = client.get_secret_value(SecretId=config.host_secret_id, VersionStage="AWSCURRENT")
+        host = json.loads(app_response["SecretString"])["DB_HOST"]
+        if not isinstance(host, str) or not host.strip() or any(c.isspace() for c in host):
+            raise ValueError("Invalid DB_HOST")
+        return username, password, host
     finally:
         client.close()
 
@@ -48,9 +52,9 @@ def create_database_engine(settings: Settings):
     async def connect():
         try:
             # No connection URL interpolation: special characters in passwords are preserved.
-            username, password = await asyncio.to_thread(read_credentials, settings)
+            username, password, host = await asyncio.to_thread(read_credentials, settings)
             tls = ssl.create_default_context(cafile=str(CA_FILE))
-            return await asyncpg.connect(host=RDS.host, port=RDS.port, database=RDS.database,
+            return await asyncpg.connect(host=host, port=RDS.port, database=RDS.database,
                 user=username, password=password, ssl=tls, timeout=15, command_timeout=30)
         except (BotoCoreError, ClientError, KeyError, TypeError, ValueError, OSError, asyncpg.PostgresError):
             raise DatabaseConnectionError(
