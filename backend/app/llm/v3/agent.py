@@ -356,12 +356,12 @@ class DrugInfoAgent:
             stop = "error"
 
         if stop == "done" and not clarifications and final_text.strip().startswith(TOO_MANY_MARKER):
-            clarifications.append(TOO_MANY_PRODUCTS_ANSWER)  # 모델이 '합친 제품이 6개 이상'이라고 표시했다
+            clarifications.append(TOO_MANY_PRODUCTS_ANSWER)  # 모델이 '합친 제품(성분)이 11개 이상'이라고 표시했다
         if (
             stop == "done" and not clarifications and not evidence and not tools_used
             and not final_text.strip().startswith(OFF_TOPIC_MARKER) and COMBINATION_QUESTION.search(question)
         ):
-            # 모델이 도구를 부르지 않고 끝난 병용 질문: 제품 수 때문이면(5개 초과·1개뿐) 범위 밖 문구 대신 그 이유를 안내한다.
+            # 모델이 도구를 부르지 않고 끝난 병용 질문: 제품 수 때문이면(10개 초과·1개뿐) 범위 밖 문구 대신 그 이유를 안내한다.
             if len(given) > CONTRA_MAX_PRODUCTS:
                 clarifications.append(TOO_MANY_PRODUCTS_ANSWER)
             elif len(given) == 1:
@@ -509,7 +509,7 @@ async def answer(
     사용 예(나중에 라우터에서 한 줄):  result = await llm_v3.agent.answer(question, profile_context)
     stop_reason 이 "needs_clarification" 이면 result.answer(겹치는 제품 목록과 다시 입력 안내)를 사용자에게 보여 주고,
     사용자가 제품명을 제조사까지 적어 다시 질문하면 그 질문으로 다시 호출한다.
-    OCR 등으로 제품명 목록을 이미 알고 있으면 products=[...](최대 8개)로 넘긴다. 약 이름을 다시 묻지 않고 그 목록으로 조회한다.
+    OCR 등으로 제품명 목록을 이미 알고 있으면 products=[...](최대 10개)로 넘긴다. 약 이름을 다시 묻지 않고 그 목록으로 조회한다.
     """
     try:
         agent = await _get_agent()

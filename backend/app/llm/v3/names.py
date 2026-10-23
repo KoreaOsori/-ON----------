@@ -93,7 +93,7 @@ def short_name(name: str) -> str:
     return shortened
 
 
-MAX_GIVEN_PRODUCTS = 8
+MAX_GIVEN_PRODUCTS = 10  # 병용 확인 한도(contra_tool.MAX_PRODUCTS)와 맞춘다
 MAX_GIVEN_NAME_CHARS = 120
 
 

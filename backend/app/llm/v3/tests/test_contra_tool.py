@@ -118,7 +118,7 @@ async def test_argument_validation_does_not_touch_db():
     tool, reader = _tool([_row("100", "200")])
     for bad in (
         None, {}, {"products": "와파린정"}, {"products": ["와파린정"]}, {"products": ["와파린정", "와파린정"]},
-        {"products": ["a", "b", "c", "d", "e", "f"]}, {"products": ["와파린정", 5]}, {"products": ["와파린정", "가" * 101]},
+        {"products": [f"약{i}" for i in range(11)]}, {"products": ["와파린정", 5]}, {"products": ["와파린정", "가" * 101]},
     ):
         result = await tool.run(bad)
         assert result.is_error and result.text.startswith("[인자 오류]"), bad
@@ -160,7 +160,7 @@ def test_spec_shape():
     spec = build_contra_spec()
     assert spec["name"] == CONTRA_TOOL_NAME == "check_contraindication"
     products = spec["input_schema"]["properties"]["products"]
-    assert products["minItems"] == 2 and products["maxItems"] == 5 and spec["input_schema"]["required"] == ["products"]
+    assert products["minItems"] == 2 and products["maxItems"] == 10 and spec["input_schema"]["required"] == ["products"]
 
 
 # --------------------------------------------------------------------------- 평가 코드

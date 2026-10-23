@@ -1,6 +1,6 @@
 """병용금기 확인 도구 check_contraindication (임베딩 검색이 아니라 정확 조회).
 
-사용자가 말한 제품명 2~5개 → 검색 DB 에서 제품 하나씩 확정(product_key 'drug:<item_seq>' 또는 'health_food:<id>') →
+사용자가 말한 제품명(또는 성분 이름) 2~10개 → 검색 DB 에서 제품 하나씩 확정(product_key 'drug:<item_seq>' 또는 'health_food:<id>') →
 의약품끼리는 병용금기 인덱스(contra_store)에서 모든 조합을 조회 → '[출처 | A × B | 병용금기(DUR)]' 형식의 근거 문자열.
 제품명으로 찾을 수 없는 이름은 성분 이름으로 한 번 더 찾는다(RDS 저장소일 때만): 성분이 낀 조합은 DUR 성분 코드로 조회하고,
 결과에 "성분 기준 조회라 제형 등 제품별 조건이 반영되지 않았다"는 점을 코드가 적는다.
@@ -34,7 +34,7 @@ from app.llm.v3.tools import MAX_NAME_CHARS, MAX_RESULT_CHARS, Evidence, ToolRes
 logger = logging.getLogger(__name__)
 
 CONTRA_TOOL_NAME = "check_contraindication"
-MIN_PRODUCTS, MAX_PRODUCTS = 2, 5
+MIN_PRODUCTS, MAX_PRODUCTS = 2, 10  # 한 번에 확인하는 제품(성분) 수. 10개면 조합 45쌍
 MAX_RULES_SHOWN = 5
 FOOD_TOTAL_CHARS = 6000  # 건강기능식품 주의사항 전체 글자 예산(제품 수로 나눔)
 MIN_FOOD_CHARS = 1500  # 제품당 최소 예산. 첫 문단은 예산과 상관없이 항상 담는다
@@ -50,7 +50,7 @@ def build_contra_spec() -> dict[str, Any]:
     return {
         "name": CONTRA_TOOL_NAME,
         "description": (
-            "의약품 2~5개를 함께 복용해도 되는지, 등록된 병용금기(DUR) 자료에서 조합별로 확인한다. "
+            "의약품(또는 성분) 2~10개를 함께 복용해도 되는지, 등록된 병용금기(DUR) 자료에서 조합별로 확인한다. "
             "제품명은 사용자가 말한 이름을 그대로 넣는다(괄호 안 내용을 말했다면 포함, 말하지 않았다면 추측해서 넣지 않는다). "
             "사용자가 제품이 아니라 성분 이름(예: 아세트아미노펜)을 말했으면 그 이름을 그대로 넣는다. "
             "건강기능식품이 섞여 있으면 병용금기 판정은 할 수 없고, 그 제품의 섭취 주의사항만 보여 준다."
@@ -198,7 +198,7 @@ class ContraindicationTool:
         try:
             requested = self._parse(arguments)
         except ValueError as exc:
-            # 제품 수 문제(5개 초과·1개뿐)는 모델에 다시 맡기지 않고 사용자에게 할 안내를 정해 준다(코드 문구로 바로 끝난다).
+            # 제품 수 문제(10개 초과·1개뿐)는 모델에 다시 맡기지 않고 사용자에게 할 안내를 정해 준다(코드 문구로 바로 끝난다).
             names = _requested_names(arguments)
             clarification = ""
             if len(names) > MAX_PRODUCTS:
