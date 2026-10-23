@@ -91,7 +91,7 @@ async def test_run_scenarios_passes_profile_and_collects_records():
     calls = []
 
     class Agent:
-        async def run(self, question, profile_context=None, product_key=None):
+        async def run(self, question, profile_context=None, products=None):
             calls.append((question, profile_context))
             return answer("약사와 상의하세요.")
 

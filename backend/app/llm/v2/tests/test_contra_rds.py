@@ -14,14 +14,21 @@ def _rule(a, b, content="출혈 위험 증가", remark=None, ingr=("와파린",)
     }
 
 
-def _rds_handler(rules, base=_db, codes=None, ingredient_rules=()):
+def _rds_handler(rules, base=_db, codes=None, ingredient_rules=(), overlap_rules=(), routes=None, overlap_error=False):
     """gold.drug_contraindication 에 대한 SELECT 를 rules 리스트로 흉내 낸다. 그 밖의 SQL 은 base 로 넘긴다.
 
     codes: item_seq → DUR 성분 코드 목록(gold.drug_ingredient). 없으면 성분 코드를 모르는 제품으로 본다.
     ingredient_rules: 성분 코드 조합 규칙 [(코드, 상대 코드, 금기 내용, 비고, 앞 성분명, 뒤 성분명)] — 품목 병용금기가 없을 때의 성분 비교용."""
     codes = codes or {}
+    routes = routes or {}
 
     def handler(sql, params):
+        if "gold.drug WHERE" in sql:
+            if overlap_error:
+                raise RuntimeError("boom")
+            return [{"item_seq": seq, "route": routes.get(seq)} for seq in params["seqs"]]
+        if "gold.dur_ingredient_rule" in sql:
+            return [{"sers_name": ser, "ingr_code": code, "ingr_name": name} for ser, code, name in overlap_rules if code in params["codes"]]
         if "gold.drug_ingredient" in sql and "item_seq = :seq" in sql:
             return [{"dur_ingr_code": c} for c in codes.get(params["seq"], [])]
         if "ANY(:first_codes)" in sql:
@@ -115,7 +122,7 @@ async def test_product_dur_present_shows_only_product_dur_and_never_compares_ing
     assert "병용금기 규칙 있음" in text and "성분 기준 주의" not in text
     assert text.count("금기 내용:") == 1 and "출혈 위험 증가" in text
     assert "성분 단위 사유" not in text and "성분 비교 사유" not in text and "[성분 기준 조회]" not in text
-    assert not any("ANY(:first_codes)" in sql or "gold.drug_ingredient" in sql for sql, _ in reader.calls)  # 성분 비교 쿼리는 아예 나가지 않는다
+    assert not any("ANY(:first_codes)" in sql for sql, _ in reader.calls)  # 성분 비교 쿼리는 아예 나가지 않는다
     assert [e.section_type for e in result.evidence] == ["contraindication"]
 
 
@@ -168,6 +175,67 @@ async def test_three_products_compare_ingredients_only_for_pairs_without_product
     result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램", "타이레놀정500밀리그램"]})
     assert sorted(e.section_type for e in result.evidence) == ["contraindication", "contraindication_ingredient", "contraindication_none"]
     assert result.text.count("[성분 기준 조회]") == 1
+
+
+async def test_no_rule_text_says_ingredients_were_compared_or_could_not_be():
+    tool, _ = _tool([], codes={"100": ["D1"], "200": ["D2"]})
+    text = (await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})).text
+    assert "품목 단위와 성분(DUR 성분 코드) 기준 모두 비교했습니다" in text and "안전하다는 뜻이 아닙니다" in text
+    tool, _ = _tool([], codes={"100": ["D1"]})
+    text = (await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})).text
+    assert "성분 기준 비교는 하지 못했고 품목 단위로만 확인했습니다" in text
+
+
+OVERLAP = [("비스테로이드성 소염제", "D1", "이부프로펜"), ("비스테로이드성 소염제", "D2", "덱시부프로펜"), ("항히스타민제", "D3", "히드록시진")]
+
+
+async def test_efficacy_overlap_is_reported_next_to_contraindication_result():
+    tool, reader = _tool([], codes={"100": ["D1"], "200": ["D2"]}, overlap_rules=OVERLAP)
+    result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})
+    text = result.text
+    assert "병용금기 규칙 없음" in text and "효능군 중복 주의 규칙 있음(병용금기는 아님)" in text
+    assert "같은 계열: 비스테로이드성 소염제" in text and "와파린정(이부프로펜), 아스피린장용정100밀리그램(덱시부프로펜)" in text
+    assert "'병용금기'라고 하지 말고" in text
+    assert [e.section_type for e in result.evidence] == ["contraindication_none", "efficacy_overlap"]
+    assert result.evidence[1].label == "와파린정 × 아스피린장용정100밀리그램 · 효능군 중복 주의(성분 기준)"
+    assert any("gold.dur_ingredient_rule" in sql and "mix_type = '단일'" in sql for sql, _ in reader.calls)
+
+
+async def test_overlap_needs_different_ingredients_from_different_products():
+    # 같은 성분(D1)만 두 제품에 있으면 효능군 '서로 다른 성분' 중복이 아니다
+    tool, _ = _tool([], codes={"100": ["D1"], "200": ["D1"]}, overlap_rules=OVERLAP)
+    assert "효능군 중복" not in (await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})).text
+    # 한 제품 안에 두 성분이 모두 있고 다른 제품에는 계열이 없으면 중복이 아니다
+    tool, _ = _tool([], codes={"100": ["D1", "D2"], "200": ["D9"]}, overlap_rules=OVERLAP)
+    assert "효능군 중복" not in (await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})).text
+    # 다른 계열이면 해당 없음
+    tool, _ = _tool([], codes={"100": ["D1"], "200": ["D3"]}, overlap_rules=OVERLAP)
+    assert "효능군 중복" not in (await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})).text
+
+
+async def test_non_oral_products_are_left_out_of_the_overlap_check():
+    tool, _ = _tool([], codes={"100": ["D1"], "200": ["D2"]}, overlap_rules=OVERLAP, routes={"200": "경구 외"})
+    assert "효능군 중복" not in (await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})).text
+
+
+async def test_overlap_failure_never_breaks_the_contraindication_answer():
+    tool, _ = _tool([_rule("100", "200")], codes={"100": ["D1"], "200": ["D2"]}, overlap_rules=OVERLAP, overlap_error=True)
+    result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램"]})
+    assert not result.is_error and "병용금기 규칙 있음" in result.text and "효능군 중복" not in result.text
+
+
+async def test_overlap_works_with_a_contraindication_found_and_with_three_products():
+    tool, _ = _tool([_rule("100", "300")], codes={"100": ["D1"], "200": ["D3"], "300": ["D2"]}, overlap_rules=OVERLAP)
+    result = await tool.run({"products": ["와파린정", "아스피린장용정100밀리그램", "타이레놀정500밀리그램"]})
+    assert sorted(e.section_type for e in result.evidence) == ["contraindication", "contraindication_none", "contraindication_none", "efficacy_overlap"]
+    assert "와파린정 × 타이레놀정500밀리그램 · 효능군 중복 주의(성분 기준)" in [e.label for e in result.evidence]
+
+
+def test_outcome_ignores_efficacy_overlap():
+    from app.llm.v2.evaluation.contra_eval import outcome_of
+    from app.llm.v2.tools import Evidence, ToolResult
+
+    assert outcome_of(ToolResult("x", [Evidence("a", "", "contraindication_none", 1), Evidence("b", "", "efficacy_overlap", 1)])) == "none"
 
 
 async def test_no_rule_never_says_safe_and_reports_products_missing_from_the_data():
@@ -244,6 +312,8 @@ def _crow(code, mix_code, content="출혈 위험 증가", remark=None, basis="�
 
 def _ingredient_handler(rows, base=_db):
     def handler(sql, params):
+        if "gold.drug WHERE" in sql or "gold.dur_ingredient_rule" in sql:  # 효능군 중복 조회는 이 테스트들의 관심사가 아니다
+            return []
         if "gold.drug_ingredient" in sql:
             if "WHERE ingr_name = :name" in sql:
                 return [{"ingr_name": r["ingr_name"], "dur_ingr_code": r["dur_ingr_code"]} for r in INGREDIENT_NAMES if r["ingr_name"] == params["name"]]

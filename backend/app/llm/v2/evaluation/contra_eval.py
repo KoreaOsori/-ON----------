@@ -33,7 +33,7 @@ def outcome_of(result: ToolResult) -> str:
         return "clarify"
     if result.text.startswith("[검색 결과 없음]") or result.text.startswith("[확인 불가]"):
         return "not_found"
-    kinds = {e.section_type for e in result.evidence}
+    kinds = {e.section_type for e in result.evidence} - {"efficacy_overlap"}  # 효능군 중복은 병용금기 판정과 별개
     if kinds & {"contraindication", "contraindication_ingredient"}:
         return "found"
     if kinds == {"contraindication_none"}:
