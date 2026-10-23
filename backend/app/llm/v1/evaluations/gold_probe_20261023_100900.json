@@ -1,0 +1,900 @@
+{
+  "products": [
+    {
+      "product_key": "drug:196900130",
+      "source_id": "196900130",
+      "product_name": "코푸시럽",
+      "manufacturer": "(주)유한양행",
+      "product_type": "drug",
+      "sale_status": "판매",
+      "route": "경구"
+    },
+    {
+      "product_key": "drug:197000049",
+      "source_id": "197000049",
+      "product_name": "셉트린정",
+      "manufacturer": "삼일제약(주)",
+      "product_type": "drug",
+      "sale_status": "판매",
+      "route": "경구"
+    },
+    {
+      "product_key": "drug:197000215",
+      "source_id": "197000215",
+      "product_name": "코데농정",
+      "manufacturer": "동광제약(주)",
+      "product_type": "drug",
+      "sale_status": "판매",
+      "route": "경구"
+    }
+  ],
+  "unresolved": [],
+  "ingredients": {
+    "drug:196900130": [
+      {
+        "item_seq": "196900130",
+        "ingr_key": "염화암모늄",
+        "ingr_name": "염화암모늄",
+        "dur_ingr_code": null,
+        "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+      },
+      {
+        "item_seq": "196900130",
+        "ingr_key": "D000092",
+        "ingr_name": "디히드로코데인",
+        "dur_ingr_code": "D000092"
+      },
+      {
+        "item_seq": "196900130",
+        "ingr_key": "D000893",
+        "ingr_name": "클로르페니라민",
+        "dur_ingr_code": "D000893"
+      },
+      {
+        "item_seq": "196900130",
+        "ingr_key": "dl-메틸에페드린염산염",
+        "ingr_name": "dl-메틸에페드린염산염",
+        "dur_ingr_code": null,
+        "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+      }
+    ],
+    "drug:197000049": [
+      {
+        "item_seq": "197000049",
+        "ingr_key": "설파메톡사졸",
+        "ingr_name": "설파메톡사졸",
+        "dur_ingr_code": null,
+        "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+      },
+      {
+        "item_seq": "197000049",
+        "ingr_key": "트리메토프림",
+        "ingr_name": "트리메토프림",
+        "dur_ingr_code": null,
+        "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+      }
+    ],
+    "drug:197000215": [
+      {
+        "item_seq": "197000215",
+        "ingr_key": "카페인무수물",
+        "ingr_name": "카페인무수물",
+        "dur_ingr_code": null,
+        "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+      },
+      {
+        "item_seq": "197000215",
+        "ingr_key": "D000092",
+        "ingr_name": "디히드로코데인",
+        "dur_ingr_code": "D000092"
+      },
+      {
+        "item_seq": "197000215",
+        "ingr_key": "D000893",
+        "ingr_name": "클로르페니라민",
+        "dur_ingr_code": "D000893"
+      },
+      {
+        "item_seq": "197000215",
+        "ingr_key": "dl-메틸에페드린염산염",
+        "ingr_name": "dl-메틸에페드린염산염",
+        "dur_ingr_code": null,
+        "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+      }
+    ]
+  },
+  "checks": [
+    {
+      "first": "drug:196900130",
+      "second": "drug:197000049",
+      "status": "unknown",
+      "coverage_complete": false,
+      "therapeutic_duplications": [],
+      "therapeutic_duplication_result": "not_checkable",
+      "daily_dose_limits": [
+        {
+          "product_key": "drug:196900130",
+          "product_route": "경구",
+          "caution_type": "용량주의",
+          "mix_type": "단일",
+          "sers_name": null,
+          "ingr_code": "D000893",
+          "ingr_name": "클로르페니라민",
+          "max_qty": "24밀리그램",
+          "form_name": "정제",
+          "route": "경구",
+          "scope": "ingredient_reference",
+          "applicability": "제형·투여경로 확인 필요. 개인 권장량이나 제품 복용량이 아님"
+        }
+      ],
+      "duplicate_ingredient_codes": [],
+      "product_pair_result": "not_found",
+      "ingredient_pair_result": "not_checkable",
+      "ingredient_matches": [],
+      "mapping_coverage": {
+        "drug:196900130": {
+          "ingredient_count": 4,
+          "coded_count": 2,
+          "unmapped_details": [
+            {
+              "name": "염화암모늄",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            },
+            {
+              "name": "dl-메틸에페드린염산염",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            }
+          ],
+          "unmapped_names": [
+            "염화암모늄",
+            "dl-메틸에페드린염산염"
+          ],
+          "missing_ingredient_rows": false,
+          "mapping_state": "partial",
+          "explanation": "코푸시럽: 조회된 성분 4개 중 2개만 병용금기 비교에 연결할 수 있어요."
+        },
+        "drug:197000049": {
+          "ingredient_count": 2,
+          "coded_count": 0,
+          "unmapped_details": [
+            {
+              "name": "설파메톡사졸",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            },
+            {
+              "name": "트리메토프림",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            }
+          ],
+          "unmapped_names": [
+            "설파메톡사졸",
+            "트리메토프림"
+          ],
+          "missing_ingredient_rows": false,
+          "mapping_state": "none",
+          "explanation": "셉트린정: 조회된 성분 2개 중 병용금기 비교에 연결할 수 있는 성분은 0개예요."
+        }
+      },
+      "rules": [],
+      "ingredients": {
+        "drug:196900130": [
+          {
+            "item_seq": "196900130",
+            "ingr_key": "염화암모늄",
+            "ingr_name": "염화암모늄",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          },
+          {
+            "item_seq": "196900130",
+            "ingr_key": "D000092",
+            "ingr_name": "디히드로코데인",
+            "dur_ingr_code": "D000092"
+          },
+          {
+            "item_seq": "196900130",
+            "ingr_key": "D000893",
+            "ingr_name": "클로르페니라민",
+            "dur_ingr_code": "D000893"
+          },
+          {
+            "item_seq": "196900130",
+            "ingr_key": "dl-메틸에페드린염산염",
+            "ingr_name": "dl-메틸에페드린염산염",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          }
+        ],
+        "drug:197000049": [
+          {
+            "item_seq": "197000049",
+            "ingr_key": "설파메톡사졸",
+            "ingr_name": "설파메톡사졸",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          },
+          {
+            "item_seq": "197000049",
+            "ingr_key": "트리메토프림",
+            "ingr_name": "트리메토프림",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          }
+        ]
+      },
+      "duplicate_ingredients": [],
+      "ingredient_sources": [
+        "gold.drug_ingredient"
+      ],
+      "pair_explanation": {
+        "products": [
+          "코푸시럽",
+          "셉트린정"
+        ],
+        "product_lookup": "제품 간 등록된 병용금기는 찾지 못했어요",
+        "ingredient_comparison": "한쪽 이상에 비교용 코드가 없어 성분 기준 금기 비교는 진행하지 못했어요",
+        "comparison_scope": "unavailable",
+        "distinct_code_pairs_compared": 0,
+        "same_ingredient_names": [],
+        "overlap_result": "조회된 성분에서 동일 성분 중복 미발견"
+      }
+    },
+    {
+      "first": "drug:196900130",
+      "second": "drug:197000215",
+      "status": "unknown",
+      "coverage_complete": false,
+      "therapeutic_duplications": [],
+      "therapeutic_duplication_result": "not_found_in_mapped_codes",
+      "daily_dose_limits": [
+        {
+          "product_key": "drug:196900130",
+          "product_route": "경구",
+          "caution_type": "용량주의",
+          "mix_type": "단일",
+          "sers_name": null,
+          "ingr_code": "D000893",
+          "ingr_name": "클로르페니라민",
+          "max_qty": "24밀리그램",
+          "form_name": "정제",
+          "route": "경구",
+          "scope": "ingredient_reference",
+          "applicability": "제형·투여경로 확인 필요. 개인 권장량이나 제품 복용량이 아님"
+        },
+        {
+          "product_key": "drug:197000215",
+          "product_route": "경구",
+          "caution_type": "용량주의",
+          "mix_type": "단일",
+          "sers_name": null,
+          "ingr_code": "D000893",
+          "ingr_name": "클로르페니라민",
+          "max_qty": "24밀리그램",
+          "form_name": "정제",
+          "route": "경구",
+          "scope": "ingredient_reference",
+          "applicability": "제형·투여경로 확인 필요. 개인 권장량이나 제품 복용량이 아님"
+        }
+      ],
+      "duplicate_ingredient_codes": [
+        "D000092",
+        "D000893"
+      ],
+      "product_pair_result": "not_found",
+      "ingredient_pair_result": "not_found_in_mapped_codes",
+      "ingredient_matches": [],
+      "mapping_coverage": {
+        "drug:196900130": {
+          "ingredient_count": 4,
+          "coded_count": 2,
+          "unmapped_details": [
+            {
+              "name": "염화암모늄",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            },
+            {
+              "name": "dl-메틸에페드린염산염",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            }
+          ],
+          "unmapped_names": [
+            "염화암모늄",
+            "dl-메틸에페드린염산염"
+          ],
+          "missing_ingredient_rows": false,
+          "mapping_state": "partial",
+          "explanation": "코푸시럽: 조회된 성분 4개 중 2개만 병용금기 비교에 연결할 수 있어요."
+        },
+        "drug:197000215": {
+          "ingredient_count": 4,
+          "coded_count": 2,
+          "unmapped_details": [
+            {
+              "name": "카페인무수물",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            },
+            {
+              "name": "dl-메틸에페드린염산염",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            }
+          ],
+          "unmapped_names": [
+            "카페인무수물",
+            "dl-메틸에페드린염산염"
+          ],
+          "missing_ingredient_rows": false,
+          "mapping_state": "partial",
+          "explanation": "코데농정: 조회된 성분 4개 중 2개만 병용금기 비교에 연결할 수 있어요."
+        }
+      },
+      "rules": [],
+      "ingredients": {
+        "drug:196900130": [
+          {
+            "item_seq": "196900130",
+            "ingr_key": "염화암모늄",
+            "ingr_name": "염화암모늄",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          },
+          {
+            "item_seq": "196900130",
+            "ingr_key": "D000092",
+            "ingr_name": "디히드로코데인",
+            "dur_ingr_code": "D000092"
+          },
+          {
+            "item_seq": "196900130",
+            "ingr_key": "D000893",
+            "ingr_name": "클로르페니라민",
+            "dur_ingr_code": "D000893"
+          },
+          {
+            "item_seq": "196900130",
+            "ingr_key": "dl-메틸에페드린염산염",
+            "ingr_name": "dl-메틸에페드린염산염",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          }
+        ],
+        "drug:197000215": [
+          {
+            "item_seq": "197000215",
+            "ingr_key": "카페인무수물",
+            "ingr_name": "카페인무수물",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          },
+          {
+            "item_seq": "197000215",
+            "ingr_key": "D000092",
+            "ingr_name": "디히드로코데인",
+            "dur_ingr_code": "D000092"
+          },
+          {
+            "item_seq": "197000215",
+            "ingr_key": "D000893",
+            "ingr_name": "클로르페니라민",
+            "dur_ingr_code": "D000893"
+          },
+          {
+            "item_seq": "197000215",
+            "ingr_key": "dl-메틸에페드린염산염",
+            "ingr_name": "dl-메틸에페드린염산염",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          }
+        ]
+      },
+      "duplicate_ingredients": [
+        "D000092",
+        "D000893",
+        "dl-메틸에페드린염산염"
+      ],
+      "ingredient_sources": [
+        "gold.drug_ingredient"
+      ],
+      "pair_explanation": {
+        "products": [
+          "코푸시럽",
+          "코데농정"
+        ],
+        "product_lookup": "제품 간 등록된 병용금기는 찾지 못했어요",
+        "ingredient_comparison": "연결된 일부 성분에서 서로 다른 성분 조합 1개를 비교했고, 해당 범위의 성분 기준 금기 규칙은 찾지 못했어요",
+        "comparison_scope": "partial",
+        "distinct_code_pairs_compared": 1,
+        "same_ingredient_names": [
+          [
+            "디히드로코데인"
+          ],
+          [
+            "클로르페니라민"
+          ],
+          [
+            "dl-메틸에페드린염산염"
+          ]
+        ],
+        "overlap_result": "동일 성분 중복 확인(병용금기와 별개)"
+      }
+    },
+    {
+      "first": "drug:197000049",
+      "second": "drug:197000215",
+      "status": "unknown",
+      "coverage_complete": false,
+      "therapeutic_duplications": [],
+      "therapeutic_duplication_result": "not_checkable",
+      "daily_dose_limits": [
+        {
+          "product_key": "drug:197000215",
+          "product_route": "경구",
+          "caution_type": "용량주의",
+          "mix_type": "단일",
+          "sers_name": null,
+          "ingr_code": "D000893",
+          "ingr_name": "클로르페니라민",
+          "max_qty": "24밀리그램",
+          "form_name": "정제",
+          "route": "경구",
+          "scope": "ingredient_reference",
+          "applicability": "제형·투여경로 확인 필요. 개인 권장량이나 제품 복용량이 아님"
+        }
+      ],
+      "duplicate_ingredient_codes": [],
+      "product_pair_result": "not_found",
+      "ingredient_pair_result": "not_checkable",
+      "ingredient_matches": [],
+      "mapping_coverage": {
+        "drug:197000049": {
+          "ingredient_count": 2,
+          "coded_count": 0,
+          "unmapped_details": [
+            {
+              "name": "설파메톡사졸",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            },
+            {
+              "name": "트리메토프림",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            }
+          ],
+          "unmapped_names": [
+            "설파메톡사졸",
+            "트리메토프림"
+          ],
+          "missing_ingredient_rows": false,
+          "mapping_state": "none",
+          "explanation": "셉트린정: 조회된 성분 2개 중 병용금기 비교에 연결할 수 있는 성분은 0개예요."
+        },
+        "drug:197000215": {
+          "ingredient_count": 4,
+          "coded_count": 2,
+          "unmapped_details": [
+            {
+              "name": "카페인무수물",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            },
+            {
+              "name": "dl-메틸에페드린염산염",
+              "reason": "같은 성분명으로 비교용 코드를 찾지 못함"
+            }
+          ],
+          "unmapped_names": [
+            "카페인무수물",
+            "dl-메틸에페드린염산염"
+          ],
+          "missing_ingredient_rows": false,
+          "mapping_state": "partial",
+          "explanation": "코데농정: 조회된 성분 4개 중 2개만 병용금기 비교에 연결할 수 있어요."
+        }
+      },
+      "rules": [],
+      "ingredients": {
+        "drug:197000049": [
+          {
+            "item_seq": "197000049",
+            "ingr_key": "설파메톡사졸",
+            "ingr_name": "설파메톡사졸",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          },
+          {
+            "item_seq": "197000049",
+            "ingr_key": "트리메토프림",
+            "ingr_name": "트리메토프림",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          }
+        ],
+        "drug:197000215": [
+          {
+            "item_seq": "197000215",
+            "ingr_key": "카페인무수물",
+            "ingr_name": "카페인무수물",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          },
+          {
+            "item_seq": "197000215",
+            "ingr_key": "D000092",
+            "ingr_name": "디히드로코데인",
+            "dur_ingr_code": "D000092"
+          },
+          {
+            "item_seq": "197000215",
+            "ingr_key": "D000893",
+            "ingr_name": "클로르페니라민",
+            "dur_ingr_code": "D000893"
+          },
+          {
+            "item_seq": "197000215",
+            "ingr_key": "dl-메틸에페드린염산염",
+            "ingr_name": "dl-메틸에페드린염산염",
+            "dur_ingr_code": null,
+            "mapping_issue": "같은 성분명으로 비교용 코드를 찾지 못함"
+          }
+        ]
+      },
+      "duplicate_ingredients": [],
+      "ingredient_sources": [
+        "gold.drug_ingredient"
+      ],
+      "pair_explanation": {
+        "products": [
+          "셉트린정",
+          "코데농정"
+        ],
+        "product_lookup": "제품 간 등록된 병용금기는 찾지 못했어요",
+        "ingredient_comparison": "한쪽 이상에 비교용 코드가 없어 성분 기준 금기 비교는 진행하지 못했어요",
+        "comparison_scope": "unavailable",
+        "distinct_code_pairs_compared": 0,
+        "same_ingredient_names": [],
+        "overlap_result": "조회된 성분에서 동일 성분 중복 미발견"
+      }
+    }
+  ],
+  "vector_ready": false,
+  "vector_warning": "gold와 벡터 snapshot 불일치 또는 미공개: gold 조회만 사용했습니다.",
+  "schema": [
+    {
+      "table_name": "drug",
+      "column_name": "item_seq",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "item_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "item_eng_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "entp_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "sale_status",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "etc_otc_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "class_code",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "class_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "atc_code",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "main_item_ingr",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "chart",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "route",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "image_url",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "item_permit_date",
+      "data_type": "date"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "easy_efcy",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "easy_use_method",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "easy_atpn_warn",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "easy_atpn",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "easy_intrc",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "easy_se",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "easy_deposit_method",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "doc_efficacy",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "doc_dosage",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug",
+      "column_name": "doc_precautions",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "id",
+      "data_type": "bigint"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "item_seq",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "mixture_item_seq",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "basis",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "source_key",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "ingr_code",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "ingr_names",
+      "data_type": "ARRAY"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "mixture_ingr_code",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "mixture_ingr_names",
+      "data_type": "ARRAY"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "prohbt_content",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "remark",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "notification_date",
+      "data_type": "date"
+    },
+    {
+      "table_name": "drug_contraindication",
+      "column_name": "carried_from",
+      "data_type": "date"
+    },
+    {
+      "table_name": "drug_ingredient",
+      "column_name": "item_seq",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_ingredient",
+      "column_name": "ingr_key",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_ingredient",
+      "column_name": "ingr_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "drug_ingredient",
+      "column_name": "dur_ingr_code",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "ingr_code",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "caution_type",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "ingr_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "mix_type",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "mix_ingr",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "form_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "route",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "max_qty",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "sers_name",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "prohbt_content",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "remark",
+      "data_type": "text"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "notification_date",
+      "data_type": "date"
+    },
+    {
+      "table_name": "dur_ingredient_rule",
+      "column_name": "source_key",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "prdlst_report_no",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "prdlst_nm",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "bssh_nm",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "permit_date",
+      "data_type": "date"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "prdt_shap_cd_nm",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "dispos",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "primary_fnclty",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "ntk_mthd",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "iftkn_atnt_matr_cn",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "rawmtrl_nm",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "cstdy_mthd",
+      "data_type": "text"
+    },
+    {
+      "table_name": "health_food",
+      "column_name": "pog_daycnt",
+      "data_type": "text"
+    }
+  ],
+  "gold_run": "gold:2026-10-23:2026-10-22T21:24:08",
+  "vector_active": [
+    {
+      "run_id": "a0788eab131e3c9dce3b921fb74a97e10e6482f66a167b49b10d0349b1bf7b75",
+      "snapshot": "2026-10-19",
+      "status": "complete"
+    }
+  ],
+  "evidence": [],
+  "missing_code_rule_candidates": []
+}
