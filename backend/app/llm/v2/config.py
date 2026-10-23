@@ -95,6 +95,8 @@ class V2Settings:
     default_model: str = "haiku"  # haiku | sonnet
     llm_model_id: str | None = None  # 지정하면 위 두 값보다 우선(임의 모델 ID)
     llm_max_tokens: int = 2000
+    # 시스템 프롬프트·도구 정의를 Bedrock 프롬프트 캐시에 올린다(같은 prefix 를 5분 안에 다시 보내면 캐시 읽기 단가로 처리).
+    prompt_cache: bool = True
 
     # --- 하니스 한도 ---
     max_tool_rounds: int = 4
@@ -199,6 +201,7 @@ class V2Settings:
             default_model=default_model,
             llm_model_id=env.get("LLM_V2_MODEL_ID") or None,
             llm_max_tokens=_int(env, "LLM_V2_MAX_TOKENS", 2000),
+            prompt_cache=(env.get("LLM_V2_PROMPT_CACHE", "1").lower() not in ("0", "false", "no", "off")),
             max_tool_rounds=_int(env, "LLM_V2_MAX_TOOL_ROUNDS", 4),
             max_tool_calls=_int(env, "LLM_V2_MAX_TOOL_CALLS", 6),
             max_seconds=_float(env, "LLM_V2_MAX_SECONDS", 60.0),

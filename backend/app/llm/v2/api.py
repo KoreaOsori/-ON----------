@@ -67,8 +67,10 @@ class Candidate(BaseModel):
 
 
 class Usage(BaseModel):
-    input_tokens: int = 0
+    input_tokens: int = 0  # 캐시 없이 처리된 입력 토큰
     output_tokens: int = 0
+    cache_read_tokens: int = 0  # 프롬프트 캐시에서 읽은 입력 토큰(저렴한 단가)
+    cache_write_tokens: int = 0  # 프롬프트 캐시에 새로 쓴 입력 토큰
 
 
 class ErrorBody(BaseModel):
@@ -189,7 +191,10 @@ async def ask(body: AskRequest, request: Request) -> AskResponse:
         candidates=[Candidate(**c) for c in result.candidates],
         tools_used=result.tools_used,
         rounds=result.rounds,
-        usage=Usage(input_tokens=result.input_tokens, output_tokens=result.output_tokens),
+        usage=Usage(
+            input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens, cache_write_tokens=result.cache_write_tokens,
+        ),
         latency_ms=round(result.elapsed_seconds * 1000),
         model_id=settings.resolved_model_id,
     )

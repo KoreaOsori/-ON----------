@@ -15,7 +15,7 @@ def answer(text="답변이에요.", stop="done", tools=None, grounded=True, emer
     body = f"{text}\n\n{SAFETY_FOOTER}" if grounded else text
     return SimpleNamespace(
         answer=body, stop_reason=stop, tools_used=tools or [], grounded=grounded, emergency=emergency,
-        sources=sources or [], elapsed_seconds=0.5, rounds=1, input_tokens=1, output_tokens=1, tool_trace=[],
+        sources=sources or [], elapsed_seconds=0.5, rounds=1, input_tokens=1, output_tokens=1, cache_read_tokens=0, cache_write_tokens=0, tool_trace=[],
     )
 
 
