@@ -116,6 +116,17 @@ export default function MedicineView() {
               onLoadMine={mine.length ? loadMine : undefined}
             />
           )}
+          {/* 병용 확인은 버튼·결과를 검색창 위에 둬서 스크롤하지 않고 확인할 수 있게 한다 */}
+          {tab === "interaction" && (
+            <button
+              disabled={selected.length < 2}
+              onClick={() => setResult(true)}
+              className={`${button} mb-6 w-full`}
+            >
+              병용 확인하기 ({selected.length}/{MAX_INTERACTION_DRUGS})
+            </button>
+          )}
+          {result && <InteractionResult selected={selected} />}
           <div className="relative">
             <Search size={20} className="absolute left-4 top-4 text-slate-400" />
             <input
@@ -167,19 +178,10 @@ export default function MedicineView() {
                   : "약 이름을 입력하거나 분류를 골라 보세요."}
             </div>
           )}
-          {tab === "interaction" && (
-            <button
-              disabled={selected.length < 2}
-              onClick={() => setResult(true)}
-              className={`${button} mb-6 w-full`}
-            >
-              병용 확인하기 ({selected.length}/{MAX_INTERACTION_DRUGS})
-            </button>
-          )}
-          {result && <InteractionResult selected={selected} />}
         </>
       )}
-      <Notice />
+      {/* 병용 확인 탭은 안내 문구를 위쪽(InteractionSelection)에 둔다 */}
+      {tab !== "interaction" && <Notice />}
       {detail && (
         <DrugDetailModal
           id={detail.drug.id}

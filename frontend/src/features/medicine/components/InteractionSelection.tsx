@@ -1,5 +1,6 @@
 import { X } from "lucide-react"
-import { MAX_INTERACTION_DRUGS } from "@/lib/constants"
+import Notice from "@/components/ui/Notice"
+import { disclaimer, MAX_INTERACTION_DRUGS } from "@/lib/constants"
 import type { MedicineSummary } from "../api"
 
 export const slotLabels = "ABCDE"
@@ -16,9 +17,16 @@ export default function InteractionSelection({
 }) {
   return (
     <>
-      <p className="mb-5 leading-7">
+      <p className="mb-3 leading-7">
         궁금한 약을 최대 5개까지 담으면 서로 함께 먹어도 되는지 확인해드려요.
       </p>
+      <div className="mb-5">
+        <Notice>
+          3개 이상을 동시에 복용할 때의 복합 상호작용은 확인할 수 없고, 약을 2개씩 비교한 결과만 제공해요.
+          <br />
+          {disclaimer}
+        </Notice>
+      </div>
       {onLoadMine && (
         <button onClick={onLoadMine} className="mb-4 min-h-11 text-blue-600">
           내 복용약 불러오기
