@@ -9,6 +9,7 @@ from app.modules.medications.router import router as medications_router
 from app.modules.medicines.router import router as medicines_router
 from app.modules.ocr.router import router as ocr_router
 from app.modules.pharmacies.router import router as pharmacies_router
+from app.modules.pill.router import router as pill_router
 from app.modules.uploads.router import router as uploads_router
 from app.modules.users.router import router as users_router
 
@@ -25,5 +26,6 @@ for router in (
     medications_router,
     uploads_router,
     ocr_router,
+    pill_router,
 ):
     api_router.include_router(router)

@@ -1,0 +1,35 @@
+# 루트 .gitignore 는 팀 파일이라 수정하지 않고, pill_model 전용 규칙만 여기에 둔다.
+
+# 모델·데이터 파일 (원본은 S3 모델 버킷)
+deploy/
+crops/
+*.pt
+*.npy
+*.parquet
+*.onnx
+
+# 대조용 사진 (JSON 결과만 커밋). 처방전 사진에 개인정보가 있으므로 하위 폴더(pill/, rx/)까지 막는다
+# (예전 규칙 tests/fixtures/*.png 는 하위 폴더에 적용되지 않았음). 리눅스는 대소문자를 구분하므로 둘 다 적음
+tests/fixtures/**/*.png
+tests/fixtures/**/*.PNG
+tests/fixtures/**/*.jpg
+tests/fixtures/**/*.JPG
+tests/fixtures/**/*.jpeg
+tests/fixtures/**/*.JPEG
+tests/fixtures/**/*.webp
+tests/fixtures/**/*.heic
+tests/fixtures/**/*.HEIC
+
+# 비밀값
+.env
+
+# Terraform 로컬 상태·실제 값 (계정 번호·ID가 들어가므로 커밋 금지)
+infra/terraform/.terraform/
+infra/terraform/*.tfstate*
+infra/terraform/terraform.tfvars
+infra/terraform/backend.hcl
+# plan -out=tfplan 결과 파일 (루트 규칙 *.tfplan 에 안 걸리는 이름이라 따로 추가)
+infra/terraform/tfplan
+
+# 루트 .gitignore 의 "docs" 규칙 때문에 개발 기록이 빠지지 않도록 다시 포함
+!docs/

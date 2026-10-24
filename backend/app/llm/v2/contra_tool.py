@@ -189,6 +189,7 @@ class ContraindicationTool:
                 run_id = await active_run_id(reader)
                 if run_id is None:
                     return ToolResult("[검색 불가] 공개된 의약품 정보가 아직 없습니다.", is_error=True)
+                problems: list[ToolResult] = []  # 제품마다 확인하고 문제를 모아 한 번에 알린다(첫 문제에서 멈추면 나머지 제품을 모른다)
                 for text in requested:
                     product, problem, approximate, fallback = await self._resolve(reader, run_id, text)
                     if problem is not None and fallback:
@@ -202,9 +203,14 @@ class ContraindicationTool:
                             resolved.append(ingredient)
                             continue
                         if ingredient_problem is not None and fallback == "missing":
-                            return ingredient_problem
+                            problems.append(ingredient_problem)
+                            continue
+                        if fallback == "missing":
+                            problems.append(ToolResult(problem.text, missing=[text]))
+                            continue
                     if problem is not None:
-                        return problem
+                        problems.append(problem)
+                        continue
                     assert product is not None
                     if approximate:
                         notes.append(
@@ -212,6 +218,8 @@ class ContraindicationTool:
                             "답변에서 어떤 제품 기준인지 밝히세요."
                         )
                     resolved.append(product)
+                if problems:
+                    return _combine_problems(problems)
                 keys = list(dict.fromkeys(p["product_key"] for p in resolved))
                 if len(keys) < MIN_PRODUCTS:
                     return ToolResult("[인자 오류] 서로 다른 제품 2개 이상이 필요합니다.", is_error=True)
@@ -234,6 +242,23 @@ class ContraindicationTool:
             len(precautions),
         )
         return result
+
+
+def _combine_problems(problems: list[ToolResult]) -> ToolResult:
+    """확정하지 못한 제품들의 안내를 하나로 묶는다. 되묻기 후보는 첫 번째 제품의 것만 넘긴다(여러 제품 후보를 섞으면 헷갈린다)."""
+    if len(problems) == 1:
+        return problems[0]
+    candidates = next((p.candidates for p in problems if p.candidates), [])
+    missing = [name for p in problems for name in p.missing]
+    text = "\n\n".join(p.text for p in problems)
+    if len(problems) > 1:
+        text += "\n\n제품을 모두 확정하지 못해 병용금기는 확인하지 않았습니다."
+    return ToolResult(
+        text,
+        candidates=list(candidates),
+        missing=missing,
+        other_problem=any(not p.candidates and not p.missing for p in problems),
+    )
 
 
 def _rule_lines(pair_rules: list, limit: int) -> list[str]:

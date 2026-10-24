@@ -1,0 +1,27 @@
+# 버전은 constraints.txt 가 고정한다 (여기는 "무엇을 설치하는지"만).
+# torch·torchvision 은 CPU 인덱스에서, rembg 는 --no-deps 로 따로 설치 (Dockerfile 참고)
+
+# OCR (알약 각인 + 처방전 공용 엔진)
+paddlepaddle
+paddleocr
+paddlex[ocr-core]
+opencv-contrib-python
+
+# 알약 식별 (yakon_pill)
+timm
+rapidfuzz
+scipy
+pandas
+numpy
+pillow
+
+# 처방전 (yakon_rx) — Bedrock Converse
+boto3
+
+# silver drug_product 컬럼만 읽기
+pyarrow
+
+# 워커 API
+fastapi
+uvicorn
+pydantic

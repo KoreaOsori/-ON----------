@@ -2,16 +2,52 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Plus } from "lucide-react"
+import { LoaderCircle, Plus } from "lucide-react"
+import {
+  analyzePill,
+  errorMessage as photoErrorMessage,
+  recognizePrescription,
+  uploadPhoto,
+  type PhotoPurpose,
+  type PillStep,
+} from "@/features/photo/api"
 import { useSession } from "@/providers/SessionProvider"
-import useChat from "../hooks/useChat"
+import type { LlmCandidate } from "../api"
+import useChat, { MAX_CHAT_PRODUCTS } from "../hooks/useChat"
 import ChatComposer from "./ChatComposer"
-import ChatMessageItem from "./ChatMessageItem"
+import ChatMessageItem, { candidateLabel } from "./ChatMessageItem"
 import ChatStatusNotice from "./ChatStatusNotice"
 import ChatWelcome from "./ChatWelcome"
-import DrugCandidates from "./DrugCandidates"
+import PhotoThumbs from "./PhotoThumbs"
 import GuestProfileModal from "./GuestProfileModal"
 import PhotoSourceModal from "./PhotoSourceModal"
+import PillDialog from "./PillDialog"
+import { prescriptionProducts } from "../prescriptionProducts"
+
+/** 사진 인식 진행 상태. 처방전은 인식 직후 v3 질문으로 이어진다. */
+type PhotoState =
+  | { phase: "working"; text: string }
+  | { phase: "pill"; step: PillStep }
+  | { phase: "error"; message: string }
+
+/** 보내기 전 첨부한 사진 (미리보기 주소는 브라우저 안에서만 쓰임) */
+type Attachment = { purpose: PhotoPurpose; files: File[]; urls: string[] }
+
+/** 사진과 함께 보낸 말풍선. 약을 확인하면 이 글로 질문하고, 답이 오면 일반 대화 기록으로 넘어간다 */
+type PhotoTurn = { urls: string[]; text: string; /** 질문을 보낸 시점의 대화 수 (보내기 전 null) */ sentAt: number | null }
+
+const photoLabels: Record<PhotoPurpose, string> = { pill: "알약 사진", prescription: "처방전·약봉투 사진" }
+
+const compact = (value: string) => value.replace(/\s+/g, "").toLowerCase()
+
+/** 같은 이름(공백·대소문자 무시)은 한 번만, 최대 개수까지 */
+function mergeProducts(current: string[], added: string[]) {
+  const merged = [...current]
+  for (const name of added.map((item) => item.trim()).filter(Boolean)) {
+    if (!merged.some((item) => compact(item) === compact(name))) merged.push(name)
+  }
+  return merged.slice(0, MAX_CHAT_PRODUCTS)
+}
 
 /** 로고를 누르면 homeRevision이 바뀌어 대화가 초기화된다 */
 export default function ChatScreen() {
@@ -28,13 +64,23 @@ function ChatView() {
   const [profileOpen, setProfileOpen] = useState(false)
   const [healthConsent, setHealthConsent] = useState(false)
   const [sheet, setSheet] = useState(false)
-  const [candidates, setCandidates] = useState(false)
-  const [rejected, setRejected] = useState<string[]>([])
-  const [photoType, setPhotoType] = useState("")
+  const [photo, setPhoto] = useState<PhotoState | null>(null)
+  const [purpose, setPurpose] = useState<PhotoPurpose>("pill")
+  const [saveCrops, setSaveCrops] = useState(false)
+  const [prevSession, setPrevSession] = useState<string | undefined>()
+  const [attached, setAttached] = useState<Attachment | null>(null)
+  const [photoTurn, setPhotoTurn] = useState<PhotoTurn | null>(null)
+  // 사진 인식·알약 확인 중에는 일반 질문을 막는다 (오류 화면은 제외)
+  const candidates = photo !== null && photo.phase !== "error"
+  // 사진(알약·처방전)에서 확인한 제품명. 질문할 때 v3 의 products 로 함께 보낸다
+  const [products, setProducts] = useState<string[]>([])
   const upload = useRef<HTMLInputElement>(null)
   const bottom = useRef<HTMLDivElement>(null)
+  const photoGeneration = useRef(0)
 
-  const { messages, status, setStatus, remaining, send, reset } = useChat({
+  useEffect(() => () => { photoGeneration.current += 1 }, [])
+
+  const { messages, status, setStatus, errorMessage, remaining, send, retry, reset } = useChat({
     logged,
     profile,
     blocked: candidates,
@@ -42,17 +88,113 @@ function ChatView() {
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-  }, [messages, status, candidates])
+  }, [messages, status, candidates, photoTurn])
 
-  const ask = (question: string, confirmed = false) => {
-    if (send(question, confirmed)) setText("")
+  // 사진으로 시작한 질문의 답이 도착하면 임시 말풍선은 숨긴다 (같은 사진이 대화 기록 말풍선에 들어감)
+  const showTurn = photoTurn && (photoTurn.sentAt === null || messages.length <= photoTurn.sentAt)
+
+  const ask = (question: string, confirmed = false, list = products, images?: string[]) => {
+    if (send(question, { confirmed, products: list, images })) setText("")
   }
+
+  /**
+   * 사진 인식(OCR) 결과를 받는 곳. OCR 연동 시 인식·확인된 제품명 목록을 이 함수로 넘기면
+   * 이후 질문에 products 로 함께 전달된다. 반환값은 합쳐진 목록이다.
+   */
+  const addProducts = (names: string[]) => {
+    const next = mergeProducts(products, names)
+    setProducts(next)
+    return next
+  }
+
+  /** 되묻기 후보를 고르면, 겹치던 이름 대신 "제품명 (제조사)" 를 넣고 같은 질문을 다시 보낸다 */
+  const pickCandidate = (candidate: LlmCandidate, question: string, sent: string[]) => {
+    const chosen = compact(candidate.product_name)
+    const kept = sent.filter((name) => !chosen.startsWith(compact(name)))
+    const next = mergeProducts(kept, [candidateLabel(candidate)])
+    setProducts(next)
+    ask(question, true, next)
+  }
+
   const login = () => router.push("/mypage")
-  const isEmpty = !messages.length && status === "idle" && !candidates
+
+  // 사진 선택 → 업로드(presign) → 사진 종류에 따라 알약(OCR+CNN) / 처방전(OCR+LLM) 인식
+  const recognize = async (files: File[], kind: PhotoPurpose, turn: PhotoTurn) => {
+    const generation = ++photoGeneration.current
+    setStatus("idle")
+    try {
+      setPhoto({ phase: "working", text: "사진을 올리고 있어요" })
+      if (kind === "pill") {
+        const [frontKey, backKey] = await Promise.all(files.slice(0, 2).map((file) => uploadPhoto(file, "pill")))
+        setPhoto({ phase: "working", text: "알약을 확인하고 있어요 (최대 1분)" })
+        const step = await analyzePill({ frontKey, backKey, saveCrops, prevSessionId: prevSession })
+        if (generation !== photoGeneration.current) return
+        setPhoto({ phase: "pill", step })
+      } else {
+        const key = await uploadPhoto(files[0], "prescription")
+        setPhoto({ phase: "working", text: "처방전을 읽고 있어요 (최대 1분)" })
+        const result = await recognizePrescription(key)
+        if (generation !== photoGeneration.current) return
+        const names = prescriptionProducts(result)
+        if (!names.length) throw new Error("처방전에서 약 이름을 찾지 못했어요. 약 이름이 선명하게 보이는 사진을 다시 첨부해 주세요.")
+        // 일부 약만 조용히 제외하면 병용 답변의 대상이 달라지므로 제한 초과 시 전송하지 않는다.
+        if (names.length > MAX_CHAT_PRODUCTS) throw new Error(`한 번에 ${MAX_CHAT_PRODUCTS}개까지 확인할 수 있어요. 약 목록을 나누어 첨부해 주세요.`)
+        setProducts(names)
+        setPhoto(null)
+        setPhotoTurn({ ...turn, sentAt: messages.length })
+        send(turn.text || "이 약들 같이 먹어도 돼?", { confirmed: true, products: names, images: turn.urls })
+      }
+    } catch (error) {
+      if (generation !== photoGeneration.current) return
+      setPhoto({ phase: "error", message: photoErrorMessage(error) })
+    } finally {
+      if (generation === photoGeneration.current) setPrevSession(undefined)
+    }
+  }
+  // 사진에서 사용자가 확인한 약 → products 에 더하고 질문 시작 (사진과 함께 쓴 글이 있으면 그 글로)
+  const askAbout = (drugName: string) => {
+    const next = addProducts([drugName])
+    const question = photoTurn?.text || `${drugName}에 대해 알려주세요`
+    const images = photoTurn?.urls
+    setPhoto(null)
+    setPhotoTurn((turn) => (turn ? { ...turn, sentAt: messages.length } : turn))
+    setTimeout(() => ask(question, true, next, images), 0)
+  }
+  // 파일 선택 → 바로 보내지 않고 입력창 위에 미리보기로 붙인다
+  const attach = (files: File[]) => {
+    attached?.urls.forEach((url) => URL.revokeObjectURL(url))
+    const picked = files.slice(0, purpose === "pill" ? 2 : 1)
+    setAttached({ purpose, files: picked, urls: picked.map((file) => URL.createObjectURL(file)) })
+  }
+  const removeAttachment = () => {
+    attached?.urls.forEach((url) => URL.revokeObjectURL(url))
+    setAttached(null)
+  }
+  // 보내기: 사진이 있으면 사진+글을 말풍선으로 올리고 인식 시작, 없으면 일반 질문
+  const submit = () => {
+    if (!attached) return ask(text)
+    const turn = { urls: attached.urls, text: text.trim(), sentAt: null }
+    setPhotoTurn(turn)
+    setText("")
+    setAttached(null)
+    recognize(attached.files, attached.purpose, turn)
+  }
+  const reopen = (prev?: string) => {
+    setPhoto(null)
+    setPhotoTurn(null)
+    setPrevSession(prev)
+    if (prev) {
+      // 재촬영은 같은 알약 종류로 바로 사진 선택
+      setPurpose("pill")
+      if (upload.current) upload.current.multiple = true
+      upload.current?.click()
+    } else setSheet(true)
+  }
+  const isEmpty = !messages.length && status === "idle" && photo === null && !showTurn
 
   return (
     <div className="relative mx-auto max-w-[1120px]">
-      <div className={`px-10 ${isEmpty ? "pb-8" : "pb-[225px]"}`}>
+      <div className={`px-10 ${isEmpty ? "pb-8" : attached ? "pb-[340px]" : products.length ? "pb-[270px]" : "pb-[225px]"}`}>
         {isEmpty ? (
           <ChatWelcome />
         ) : (
@@ -63,7 +205,10 @@ function ChatView() {
                 className="min-h-11 px-3"
                 onClick={() => {
                   reset()
-                  setCandidates(false)
+                  photoGeneration.current += 1
+                  setPhoto(null)
+                  setPhotoTurn(null)
+                  setProducts([])
                 }}
               >
                 새 대화 <Plus size={15} className="ml-1 inline" />
@@ -76,28 +221,35 @@ function ChatView() {
                 showFollowUps={index === messages.length - 1}
                 followUpDisabled={status === "loading" || candidates}
                 onFollowUp={(question) => ask(question)}
+                onPickCandidate={(candidate) => pickCandidate(candidate, message.question, message.products)}
               />
             ))}
-            {candidates && (
-              <DrugCandidates
-                photoType={photoType}
-                rejected={rejected}
-                onConfirm={(drugName) => {
-                  setCandidates(false)
-                  setTimeout(() => ask(`${drugName}에 대해 알려주세요`, true), 0)
-                }}
-                onReject={(drugName) => setRejected((previous) => [...previous, drugName])}
-                onRetry={() => {
-                  setCandidates(false)
-                  setSheet(true)
-                }}
-              />
+            {showTurn && (
+              <div className="flex justify-end">
+                <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-blue-600 px-5 py-3.5 text-white">
+                  <PhotoThumbs urls={photoTurn.urls} />
+                  {photoTurn.text}
+                </div>
+              </div>
             )}
-            <ChatStatusNotice
-              status={status}
-              onRetry={() => ask("가나다정에 대해 알려주세요")}
-              onLogin={login}
-            />
+            {photo?.phase === "working" && (
+              <div className="flex items-center gap-3 rounded-2xl border p-5 text-slate-600">
+                <LoaderCircle className="animate-spin text-blue-600" size={24} />
+                {photo.text}
+              </div>
+            )}
+            {photo?.phase === "error" && (
+              <div className="rounded-2xl border p-5">
+                <p className="text-sm text-red-600">{photo.message}</p>
+                <button className="mt-3 min-h-11 text-sm text-blue-600" onClick={() => reopen()}>
+                  다시 사진 첨부하기
+                </button>
+              </div>
+            )}
+            {photo?.phase === "pill" && (
+              <PillDialog initial={photo.step} onConfirm={askAbout} onRetake={(sid) => reopen(sid)} />
+            )}
+            <ChatStatusNotice status={status} errorMessage={errorMessage} onRetry={retry} onLogin={login} />
             <div ref={bottom} />
           </section>
         )}
@@ -110,8 +262,12 @@ function ChatView() {
         text={text}
         setText={setText}
         disabled={candidates}
-        sendDisabled={!text.trim() || status === "loading" || candidates}
-        onSubmit={() => ask(text)}
+        sendDisabled={(!text.trim() && !attached) || status === "loading" || candidates}
+        products={products}
+        onRemoveProduct={(name) => setProducts((previous) => previous.filter((item) => item !== name))}
+        attachment={attached && { urls: attached.urls, label: photoLabels[attached.purpose] }}
+        onRemoveAttachment={removeAttachment}
+        onSubmit={submit}
         onOpenProfile={() => setProfileOpen(true)}
         onOpenPhoto={() => setSheet(true)}
       />
@@ -119,13 +275,11 @@ function ChatView() {
         ref={upload}
         type="file"
         accept="image/*"
+        multiple={purpose === "pill"}
         className="hidden"
         onChange={(event) => {
-          if (event.target.files?.length) {
-            setRejected([])
-            setCandidates(true)
-            setStatus("idle")
-          }
+          const files = Array.from(event.target.files ?? [])
+          if (files.length) attach(files)
           event.target.value = ""
         }}
       />
@@ -143,9 +297,13 @@ function ChatView() {
       )}
       {sheet && (
         <PhotoSourceModal
-          onSelect={(label) => {
-            setPhotoType(label)
+          saveCrops={saveCrops}
+          setSaveCrops={setSaveCrops}
+          onSelect={(value) => {
+            setPurpose(value)
             setSheet(false)
+            // 다시 그리기 전에 바로 열리므로 여러 장 선택 여부를 직접 지정
+            if (upload.current) upload.current.multiple = value === "pill"
             upload.current?.click()
           }}
           onClose={() => setSheet(false)}

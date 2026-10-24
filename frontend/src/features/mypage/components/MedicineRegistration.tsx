@@ -1,10 +1,21 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useRef, useState } from "react"
 import { Check, ChevronLeft, FileText, LoaderCircle } from "lucide-react"
 import Notice from "@/components/ui/Notice"
 import { button, inputClass } from "@/components/ui/styles"
-import { searchMedicines, type MedicineSummary } from "@/features/medicine/api"
+import {
+  confirmPrescriptionDrug,
+  errorMessage,
+  needsCheck,
+  recognizePrescription,
+  rxDrugName,
+  uploadPhoto,
+  type RxDrug,
+  type RxField,
+  type RxResult,
+} from "@/features/photo/api"
+import { today } from "../medications"
 import type { MedicationDraft, OcrStep } from "../types"
 
 const titles: Record<Exclude<OcrStep, 0>, string> = {
@@ -14,8 +25,13 @@ const titles: Record<Exclude<OcrStep, 0>, string> = {
   4: "약 등록이 완료됐어요",
 }
 
-// 약봉투·처방전 촬영 → 인식(OCR) → 확인 → 저장
-// 백엔드 연동 시: POST /api/v1/uploads/presign 으로 S3 업로드 → POST /api/v1/ocr/prescriptions (Textract)
+/** "1정"·"3" → "1"·"3" (빈칸이면 빈 문자열 — 0 으로 채우지 않음) */
+const numberText = (field?: RxField) => {
+  if (!field || field.ui === "빈칸" || !field.value) return ""
+  return String(field.value).match(/\d+(?:\.\d+)?/)?.[0] ?? ""
+}
+
+// 약봉투·처방전 촬영 → 업로드(presign) → 인식(POST /ocr/prescriptions → pill_model 워커) → 확인 → 저장
 export default function MedicineRegistration({
   step,
   setStep,
@@ -32,29 +48,77 @@ export default function MedicineRegistration({
   onDone: () => void
 }) {
   const file = useRef<HTMLInputElement>(null)
-  const scan = () => {
+  const [result, setResult] = useState<RxResult | null>(null)
+  const [selected, setSelected] = useState(0)
+  const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
+
+  const fill = (drug: RxDrug) =>
+    setDraft({
+      ...draft,
+      name: rxDrugName(drug),
+      amount: numberText(drug.fields.dose),
+      times: numberText(drug.fields.times),
+      days: numberText(drug.fields.days),
+      // 처방전 날짜가 아니라 오늘부터 (브라우저 시간대 기준)
+      start: today(),
+    })
+
+  const scan = async (photo: File) => {
+    setError("")
     setStep(2)
-    setTimeout(() => setStep(3), 1100)
+    try {
+      const key = await uploadPhoto(photo, "prescription")
+      const recognized = await recognizePrescription(key)
+      setResult(recognized)
+      setSelected(0)
+      if (recognized.drugs[0]) fill(recognized.drugs[0])
+      else setDraft({ ...draft, name: "", amount: "", times: "", days: "" })
+      setStep(3)
+    } catch (caught) {
+      setError(errorMessage(caught))
+      setStep(1)
+    }
   }
-  // 약 이름: 약정보 검색과 같은 API 로 찾아 고른다 (고르지 않고 직접 쓴 이름도 저장은 되지만 병용 확인에는 못 불러옴)
-  const [found, setFound] = useState<MedicineSummary[]>([])
-  useEffect(() => {
-    const keyword = draft.name.trim()
-    if (!keyword || draft.medicine) return
-    const timer = setTimeout(() => {
-      searchMedicines(keyword)
-        .then((items) => setFound(items.slice(0, 5)))
-        .catch(() => setFound([]))
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [draft.name, draft.medicine])
-  const suggestions = draft.name.trim() && !draft.medicine ? found : []
-  const fields: { key: "amount" | "times" | "days" | "start"; label: string; type: string }[] = [
+  // 사진 없이 직접 입력 (빈 칸에서 시작)
+  const manual = () => {
+    setResult(null)
+    setError("")
+    setStep(3)
+  }
+  // 이름 후보를 고르면 그 품목 기준으로 권장 용법 상한 검증(over·reason)이 반영된다
+  const chooseName = async (itemSeq: string) => {
+    if (!result?.sessionId) return
+    setBusy(true)
+    try {
+      const { drug } = await confirmPrescriptionDrug(result.sessionId, selected, itemSeq)
+      const drugs = result.drugs.map((item, index) => (index === selected ? drug : item))
+      setResult({ ...result, drugs })
+      fill(drug)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const current = result?.drugs[selected]
+  const fieldOf: Partial<Record<keyof MedicationDraft, RxField>> = current
+    ? { amount: current.fields.dose, times: current.fields.times, days: current.fields.days }
+    : {}
+  const fields: { key: keyof MedicationDraft; label: string; type: string }[] = [
+    { key: "name", label: "약 이름", type: "text" },
     { key: "amount", label: "1회 복용량 (정)", type: "number" },
     { key: "times", label: "하루 횟수", type: "number" },
     { key: "days", label: "복용 일수", type: "number" },
     { key: "start", label: "시작일", type: "date" },
   ]
+  // 강조할 칸: 인식 결과에서 ui 가 "미리 채움"이 아닌 칸 + 이름 미확정 (직접 입력은 강조 없음)
+  const warn = (key: keyof MedicationDraft) => {
+    if (!result) return false
+    if (key === "name") return !!current && !current.auto && !current.confirmed
+    return needsCheck(fieldOf[key])
+  }
   const invalid =
     !draft.name.trim() || !draft.start || +draft.amount <= 0 || +draft.times <= 0 || +draft.days <= 0
 
@@ -75,78 +139,109 @@ export default function MedicineRegistration({
           />
         ))}
       </div>
-      <h1 className="text-2xl font-bold">{titles[step]}</h1>
+      <h1 className="text-2xl font-bold">{step === 3 && !result ? "약 정보를 입력해 주세요" : titles[step]}</h1>
       {step === 1 ? (
         <>
           <p className="my-4 leading-7 text-slate-500">약 이름과 복용 방법이 잘 보이도록 담아주세요.</p>
           <div className="flex h-60 items-center justify-center rounded-2xl border-2 border-dashed border-blue-200 bg-blue-50">
             <FileText size={64} className="text-blue-300" />
           </div>
+          {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
           <input
             type="file"
             ref={file}
             className="hidden"
             accept="image/*"
             onChange={(event) => {
-              if (event.target.files?.length) scan()
+              const photo = event.target.files?.[0]
+              if (photo) scan(photo)
+              event.target.value = ""
             }}
           />
           <button onClick={() => file.current?.click()} className={`${button} mt-5 w-full`}>
             촬영 / 앨범에서 선택
           </button>
-          <button onClick={scan} className="mt-3 min-h-11 w-full text-blue-600">
-            예시 처방전으로 체험하기
+          <button onClick={manual} className="mt-3 min-h-11 w-full text-blue-600">
+            사진 없이 직접 입력하기
           </button>
+          <p className="mt-3 text-xs text-slate-500">처방전·약봉투 사진과 읽은 글자는 저장되지 않습니다.</p>
         </>
       ) : step === 2 ? (
-        <div className="flex min-h-60 items-center justify-center">
+        <div className="flex min-h-60 flex-col items-center justify-center gap-3 text-sm text-slate-500">
           <LoaderCircle className="animate-spin text-blue-600" size={40} />
+          처방전을 읽고 있어요 (최대 1분)
         </div>
       ) : step === 3 ? (
         <div className="mt-6 space-y-4">
-          <Notice>실제 사진 인식이 아닌 예시 결과입니다. 내용을 직접 확인하고 저장해 주세요.</Notice>
-          <label className="block text-sm">
-            약 이름
-            {draft.medicine && <span className="ml-2 text-emerald-700">선택됨</span>}
-            <input
-              type="text"
-              placeholder="약 이름을 검색해 선택해 주세요"
-              className={`${inputClass} mt-2`}
-              value={draft.name}
-              onChange={(event) => setDraft({ ...draft, name: event.target.value, medicine: null })}
-            />
-          </label>
-          {suggestions.length > 0 && (
-            <div className="rounded-xl border border-slate-200">
-              {suggestions.map((medicine) => (
+          <Notice>
+            {result ? result.notice : "약봉투나 처방전에 적힌 대로 약 이름과 복용 정보를 입력해 주세요."}
+          </Notice>
+          {result && result.drugs.length === 0 && (
+            <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
+              약 이름을 찾지 못했어요. 직접 입력하거나 다시 촬영해 주세요.
+            </p>
+          )}
+          {result && result.drugs.length > 1 && (
+            <div className="flex flex-wrap gap-2">
+              {result.drugs.map((drug, index) => (
                 <button
-                  key={medicine.id}
-                  type="button"
-                  onClick={() => setDraft({ ...draft, name: medicine.name, medicine })}
-                  className="block min-h-11 w-full border-b border-slate-100 px-4 py-2 text-left text-sm last:border-0 hover:bg-blue-50"
+                  key={index}
+                  onClick={() => {
+                    setSelected(index)
+                    fill(drug)
+                  }}
+                  className={`min-h-11 rounded-lg border px-3 text-sm ${index === selected ? "border-blue-600 bg-blue-50 text-blue-700" : ""}`}
                 >
-                  {medicine.name}
-                  <span className="ml-2 text-slate-500">{medicine.maker}</span>
+                  {rxDrugName(drug)}
                 </button>
               ))}
             </div>
           )}
-          {fields.map((field, index) => (
-            <label key={field.key} className="block text-sm">
-              {field.label}
-              {index === 0 && <span className="ml-2 text-amber-700">확인해 주세요</span>}
-              <input
-                type={field.type}
-                min="1"
-                className={`${inputClass} mt-2 ${index === 0 ? "border-amber-400 bg-amber-50" : ""}`}
-                value={draft[field.key]}
-                onChange={(event) => setDraft({ ...draft, [field.key]: event.target.value })}
-              />
-            </label>
-          ))}
+          {current && !current.auto && !current.confirmed && current.candidates.length > 0 && (
+            <div className="rounded-xl bg-slate-50 p-3 text-sm">
+              <p className="mb-2 text-amber-700">{current.decision} — 맞는 약 이름을 골라 주세요</p>
+              <div className="flex flex-wrap gap-2">
+                {current.candidates.map((candidate) => (
+                  <button
+                    key={candidate.itemSeq}
+                    disabled={busy}
+                    onClick={() => chooseName(candidate.itemSeq)}
+                    className="min-h-11 rounded-lg border bg-white px-3"
+                  >
+                    {candidate.itemName}
+                    {candidate.status && <span className="ml-1 text-xs text-red-600">({candidate.status})</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {fields.map((field) => {
+            const flagged = warn(field.key)
+            const info = fieldOf[field.key]
+            return (
+              <label key={field.key} className="block text-sm">
+                {field.label}
+                {flagged && (
+                  <span className="ml-2 text-amber-700">
+                    {info && info.ui !== "확인 필요" ? info.ui : "확인해 주세요"}
+                  </span>
+                )}
+                <input
+                  type={field.type}
+                  min="1"
+                  className={`${inputClass} mt-2 ${flagged ? "border-amber-400 bg-amber-50" : ""}`}
+                  value={draft[field.key]}
+                  onChange={(event) => setDraft({ ...draft, [field.key]: event.target.value })}
+                />
+                {info?.over && info.reason && <span className="mt-1 block text-xs text-amber-700">{info.reason}</span>}
+              </label>
+            )
+          })}
           <button disabled={invalid} onClick={onSave} className={`${button} w-full`}>
             확인하고 저장
           </button>
+          {result?.storage && <p className="text-xs text-slate-500">{result.storage}</p>}
+          <Notice />
         </div>
       ) : (
         <div className="py-10 text-center">
@@ -155,8 +250,22 @@ export default function MedicineRegistration({
             className="mx-auto mb-5 rounded-full bg-emerald-50 p-2 text-emerald-600"
           />
           <p className="mb-6">{draft.name}을 내 복용약에 추가했어요.</p>
+          {result && result.drugs.length > 1 && (
+            <button
+              className="mb-3 min-h-11 w-full rounded-xl border text-blue-600"
+              onClick={() => {
+                // 같은 처방전의 다음 약으로 넘어가 이어서 등록
+                const next = (selected + 1) % result.drugs.length
+                setSelected(next)
+                fill(result.drugs[next])
+                setStep(3)
+              }}
+            >
+              같은 처방전의 다른 약도 등록하기
+            </button>
+          )}
           <button className={`${button} w-full`} onClick={onDone}>
-            복약 알림 설정하기
+            마이페이지로 돌아가기
           </button>
         </div>
       )}

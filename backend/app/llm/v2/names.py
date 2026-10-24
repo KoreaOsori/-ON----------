@@ -32,6 +32,25 @@ def strip_parentheticals(text: str) -> str:
     return collapse_spaces(text)
 
 
+_MG_AFTER_NUMBER = re.compile(r"(?<=\d)\s*mg")
+
+
+def unit_spellings(text: str) -> list[str]:
+    """단위 표기만 다른 같은 이름: '밀리그램'↔'밀리그람', '그램'↔'그람', 숫자 뒤 'mg'→'밀리그람/밀리그램'.
+
+    식약처 제품명에는 '타이레놀정500밀리그람'처럼 '그람'이 많지만 사용자는 '그램'이나 'mg'으로 쓰는 경우가 많다.
+    뜻은 같으므로 approximate 로 보지 않는다."""
+    alternates: list[str] = []
+    if "그램" in text:
+        alternates.append(text.replace("그램", "그람"))
+    if "그람" in text:
+        alternates.append(text.replace("그람", "그램"))
+    if _MG_AFTER_NUMBER.search(text):
+        as_gram = _MG_AFTER_NUMBER.sub("밀리그람", text)
+        alternates += [as_gram, as_gram.replace("밀리그람", "밀리그램")]
+    return alternates
+
+
 def name_variants(raw: str) -> list[tuple[str, bool]]:
     """검색 시도 순서대로 (이름, approximate) 목록.
 
@@ -59,9 +78,10 @@ def name_variants(raw: str) -> list[tuple[str, bool]]:
     seen: set[str] = set()
     variants: list[tuple[str, bool]] = []
     for text, approximate in candidates:
-        if text and text not in seen:
-            seen.add(text)
-            variants.append((text, approximate))
+        for spelling in (text, *unit_spellings(text)):  # 원래 표기를 먼저, 단위 표기만 바꾼 이름을 바로 뒤에
+            if spelling and spelling not in seen:
+                seen.add(spelling)
+                variants.append((spelling, approximate))
     return variants
 
 

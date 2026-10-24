@@ -1,0 +1,52 @@
+{
+ "code": "34342",
+ "item_seq_true": "200502050",
+ "shape": "타원형",
+ "cv2": "4.10.0",
+ "photos": [
+  {
+   "file": "IMG_20201124_155225.png",
+   "side": "1",
+   "ocr_fingerprint": "613ce0d16710f1a2b5eddea9b95d938d0f851a9ab1773808fcb26a84b5f25d3f",
+   "texts": [
+    "11",
+    "EMOS",
+    "SDWE",
+    "SDWE11",
+    "ZMAS",
+    "ZMAS11"
+   ],
+   "quality": {
+    "ok": true,
+    "issues": [],
+    "message": ""
+   }
+  },
+  {
+   "file": "IMG_20201124_155314.png",
+   "side": "0",
+   "ocr_fingerprint": "d9042a2a1b8e5d7418952fc84b6d272d3218e48ee4c8c3ba15a3e51bf74120f7",
+   "texts": [],
+   "quality": {
+    "ok": true,
+    "issues": [],
+    "message": ""
+   }
+  }
+ ],
+ "expected": {
+  "band": "A",
+  "imprint_match": 1.0,
+  "top3": [
+   "200502050",
+   "201508411",
+   "200005087"
+  ],
+  "scores": [
+   0.1713,
+   0.1692,
+   0.167
+  ],
+  "next_step": "top1"
+ }
+}

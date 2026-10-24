@@ -41,6 +41,7 @@ from app.llm.v2.prompts import (
     ERROR_ANSWER,
     FORCED_FINAL_HINT,
     NO_EVIDENCE_ANSWER,
+    OVERDOSE_NOTICE,
     NON_DRUG_ANSWER,
     OFF_TOPIC_MARKER,
     OUT_OF_SCOPE_ANSWER,
@@ -48,11 +49,15 @@ from app.llm.v2.prompts import (
     STOP_CONSULT_ANSWER,
     SYSTEM_PROMPT,
     TIMEOUT_ANSWER,
+    TRUNCATED_NOTICE,
+    build_not_found_answer,
+    not_found_line,
     build_clarification_answer,
     build_user_content,
 )
 from app.llm.v2.names import clean_product_names, expand_with_given
-from app.llm.v2.safety import is_crisis, is_emergency, is_stop_question
+from app.llm.v2.safety import is_crisis, is_emergency, is_overdose, is_stop_question
+from app.llm.v2.textcut import drop_unfinished_tail
 from app.llm.v2.tools import TOOL_NAME, DrugSearchTool, Evidence
 
 DEFAULT_CONTRA_DB = Path(__file__).resolve().parent / "dev_data" / "contraindication.sqlite"
@@ -73,9 +78,12 @@ class AgentAnswer:
     candidates: list[dict[str, Any]] = field(default_factory=list)
     # --- 모델 비교/평가용 계측 (사용자 응답에는 쓰지 않는다) ---
     evidence: list[Evidence] = field(default_factory=list)
-    input_tokens: int = 0
+    input_tokens: int = 0  # 캐시 없이 처리된 입력 토큰(캐시 읽기·쓰기는 아래 별도)
     output_tokens: int = 0
+    cache_read_tokens: int = 0  # 프롬프트 캐시에서 읽은 입력 토큰(저렴한 단가)
+    cache_write_tokens: int = 0  # 프롬프트 캐시에 새로 쓴 입력 토큰(첫 호출, 단가 1.25배)
     elapsed_seconds: float = 0.0
+    truncated: bool = False  # 답변이 max_tokens 에 걸려 중간에 끊겨 정리했는가
     # 도구 호출별 {arguments(제품명·섹션·질문), result_head(결과 첫머리)}. 원인 분석용이며 로그에는 남기지 않는다.
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
 
@@ -84,11 +92,26 @@ def _get(obj: Any, key: str) -> Any:
     return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
 
 
-def _usage(response: Any) -> tuple[int, int]:
+def _usage(response: Any) -> tuple[int, int, int, int]:
+    """(캐시 없이 처리된 입력, 출력, 캐시 읽기, 캐시 쓰기) 토큰. Anthropic 의 input_tokens 는 캐시 읽기·쓰기를 뺀 값이다."""
     usage = _get(response, "usage")
     if usage is None:
-        return 0, 0
-    return int(_get(usage, "input_tokens") or 0), int(_get(usage, "output_tokens") or 0)
+        return 0, 0, 0, 0
+    return (
+        int(_get(usage, "input_tokens") or 0),
+        int(_get(usage, "output_tokens") or 0),
+        int(_get(usage, "cache_read_input_tokens") or 0),
+        int(_get(usage, "cache_creation_input_tokens") or 0),
+    )
+
+
+def _block_kinds(response: Any) -> str:
+    """응답 content 블록 종류별 개수(예: 'text=1,tool_use=2'). 보이지 않는 블록(thinking 등)도 센다. 내용은 남기지 않는다."""
+    counts: dict[str, int] = {}
+    for block in _get(response, "content") or []:
+        kind = str(_get(block, "type") or "?")
+        counts[kind] = counts.get(kind, 0) + 1
+    return ",".join(f"{k}={v}" for k, v in counts.items()) or "-"
 
 
 def _normalize_blocks(response: Any) -> list[dict[str, Any]]:
@@ -124,8 +147,10 @@ class DrugInfoAgent:
         limits: Limits,
         engine: Any = None,
         contra_tool: ContraindicationTool | None = None,
+        prompt_cache: bool = False,
     ) -> None:
         self._create = create_message
+        self._prompt_cache = prompt_cache
         self._tool = tool
         self._limits = limits
         self._engine = engine
@@ -146,10 +171,24 @@ class DrugInfoAgent:
             await self._engine.dispose()
 
     async def _call_model(self, messages: list[dict[str, Any]], budget: Budget) -> Any:
-        return await asyncio.wait_for(
-            self._create(system=self._system, tools=[t.spec for t in self._tools.values()], messages=list(messages)),
-            timeout=budget.remaining_seconds(),
-        )
+        tools = [t.spec for t in self._tools.values()]
+        if self._prompt_cache:
+            # 캐시 구간은 tools → system 순서의 앞부분. system 블록 끝에 표시하면 도구 정의와 시스템 프롬프트가 함께 캐시된다.
+            system: Any = [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
+        else:
+            system = self._system
+        try:
+            return await asyncio.wait_for(
+                self._create(system=system, tools=tools, messages=list(messages)), timeout=budget.remaining_seconds()
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._prompt_cache and "cache_control" in str(exc).lower():  # 이 엔드포인트·모델이 캐시 표시를 받지 않는다 → 끄고 한 번 다시
+                logger.warning("프롬프트 캐시를 지원하지 않아 끕니다: %s", safe_error_name(exc))
+                self._prompt_cache = False
+                return await asyncio.wait_for(
+                    self._create(system=self._system, tools=tools, messages=list(messages)), timeout=budget.remaining_seconds()
+                )
+            raise
 
     async def _run_tool(
         self,
@@ -160,6 +199,8 @@ class DrugInfoAgent:
         pending: dict[str, list[dict[str, Any]]],
         trace: list[dict[str, Any]] | None = None,
         given: list[str] | None = None,
+        missing: list[str] | None = None,
+        terminal: list[bool] | None = None,
     ) -> dict[str, Any]:
         def result(text: str, is_error: bool = False) -> dict[str, Any]:
             item = {"type": "tool_result", "tool_use_id": block["id"], "content": text}
@@ -192,6 +233,10 @@ class DrugInfoAgent:
                 "result_head": outcome.text[:80],
             })
         evidence.extend(outcome.evidence)
+        if missing is not None:
+            missing.extend(outcome.missing)
+        if terminal is not None:
+            terminal.append(outcome.terminal)
         # 되묻기(제품 후보)는 풀릴 때까지 '해결 안 됨'으로 들고 간다. 같은 이름으로 다시 찾아 근거가 나오면 풀린 것이다.
         shown_args = arguments if isinstance(arguments, dict) else {}
         pending_key = name if name != TOOL_NAME else " ".join(str(shown_args.get("product_name") or "").split()).casefold()
@@ -215,6 +260,7 @@ class DrugInfoAgent:
             return AgentAnswer(CRISIS_ANSWER, stop_reason="crisis", emergency=True)
 
         emergency = is_emergency(question)
+        notice = OVERDOSE_NOTICE if is_overdose(question) else EMERGENCY_NOTICE
         if not emergency and is_stop_question(question):  # 끊어도 되는지는 근거 검색 없이 상담 안내로 답한다(응급이면 아래 일반 경로의 119 안내가 우선)
             return AgentAnswer(STOP_CONSULT_ANSWER, stop_reason="consult")
         budget = Budget(self._limits)
@@ -225,24 +271,39 @@ class DrugInfoAgent:
         tools_used: list[str] = []
         trace: list[dict[str, Any]] = []
         final_text = ""
+        truncated = False
+        missing: list[str] = []  # 이름으로 찾지 못한 제품
         stop = "done"
-        tokens_in = tokens_out = 0
+        tokens_in = tokens_out = cache_read = cache_write = 0
 
         try:
             while True:
                 budget.check_time()
                 forced_final = budget.rounds_left <= 0  # 도구 라운드를 다 썼다 → 이번 호출은 최종 답변이어야 한다
                 response = await self._call_model(messages, budget)
-                used_in, used_out = _usage(response)
+                used_in, used_out, used_read, used_write = _usage(response)
                 tokens_in, tokens_out = tokens_in + used_in, tokens_out + used_out
+                cache_read, cache_write = cache_read + used_read, cache_write + used_write
 
-                if _get(response, "stop_reason") == "refusal":
+                model_stop = _get(response, "stop_reason")
+                logger.info(
+                    "model_call round=%d model_stop=%s blocks=%s input=%d output=%d cache_read=%d cache_write=%d",
+                    budget.rounds, model_stop, _block_kinds(response), used_in, used_out, used_read, used_write,
+                )
+                if model_stop == "refusal":
                     stop = "refusal"
                     break
                 blocks = _normalize_blocks(response)
                 tool_uses = [b for b in blocks if b["type"] == "tool_use"]
+                if model_stop == "max_tokens" and tool_uses:
+                    logger.error("도구 요청이 max_tokens 에서 끊겼습니다(입력이 불완전할 수 있음)")
+                    stop = "error"
+                    break
                 if not tool_uses:
                     final_text = "".join(b["text"] for b in blocks if b["type"] == "text")
+                    if model_stop == "max_tokens":  # 답이 길어 중간에 끊겼다 → 미완성 문장을 지우고 알린다
+                        truncated = True
+                        final_text = f"{drop_unfinished_tail(final_text)}\n\n{TRUNCATED_NOTICE}"
                     break
                 if forced_final:
                     stop = "budget"  # 한도를 다 썼는데도 도구를 또 부르려 한다
@@ -250,7 +311,16 @@ class DrugInfoAgent:
 
                 budget.consume_round()
                 messages.append({"role": "assistant", "content": blocks})
-                results = [await self._run_tool(b, budget, evidence, tools_used, pending, trace, given) for b in tool_uses]
+                terminal: list[bool] = []
+                results = [
+                    await self._run_tool(b, budget, evidence, tools_used, pending, trace, given, missing, terminal)
+                    for b in tool_uses
+                ]
+                if not evidence and terminal and all(terminal):
+                    # 이번 도구 결과가 모두 '되묻기' 또는 '찾지 못함'이고 근거가 하나도 없다 → 답은 코드가 만드는 안내로 정해져 있다.
+                    # 모델을 한 번 더 불러 봐야 그 문장은 버려지므로 여기서 끝낸다(호출 1회·출력 토큰 절약).
+                    logger.info("terminal tool results without evidence; skip final model call")
+                    break
                 if budget.rounds_left <= 0:
                     results.append({"type": "text", "text": FORCED_FINAL_HINT})
                 messages.append({"role": "user", "content": results})
@@ -261,14 +331,16 @@ class DrugInfoAgent:
             stop = "error"
 
         candidates = next(iter(pending.values()), [])  # 먼저 생긴 해결 안 된 되묻기
-        answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates)
+        answer = self._assemble(stop, final_text, evidence, tools_used, budget.rounds, emergency, candidates, notice, missing)
         answer.evidence = list(evidence)
         answer.tool_trace = trace
         answer.input_tokens, answer.output_tokens = tokens_in, tokens_out
+        answer.cache_read_tokens, answer.cache_write_tokens = cache_read, cache_write
+        answer.truncated = truncated and answer.stop_reason == "done"
         answer.elapsed_seconds = time.monotonic() - started
         logger.info(
-            "agent stop=%s rounds=%d calls=%d evidence=%d elapsed=%.1fs",
-            answer.stop_reason, budget.rounds, budget.calls, len(evidence), time.monotonic() - started,
+            "agent stop=%s truncated=%s rounds=%d calls=%d evidence=%d elapsed=%.1fs",
+            answer.stop_reason, answer.truncated, budget.rounds, budget.calls, len(evidence), time.monotonic() - started,
         )
         return answer
 
@@ -281,8 +353,11 @@ class DrugInfoAgent:
         rounds: int,
         emergency: bool,
         candidates: list[dict[str, Any]] | None = None,
+        notice: str = EMERGENCY_NOTICE,
+        missing: list[str] | None = None,
     ) -> AgentAnswer:
         candidates = candidates or []
+        missing = missing or []
         sources = list(dict.fromkeys(e.label for e in evidence))
         grounded = False
         if stop == "timeout":
@@ -298,10 +373,12 @@ class DrugInfoAgent:
                 str(c.get("product_key", "")).startswith("health_food:") for c in candidates
             )
             text, stop = build_clarification_answer(candidates, food_combination=food_combination), "needs_clarification"
+            if missing:
+                text = f"{text}\n\n{not_found_line(missing)}"
         elif not evidence:
             # 근거가 하나도 없으면 모델의 문장은 쓰지 않는다. 도구를 한 번도 못 쓴 경우(약 이름 없음·범위 밖 질문)는 할 수 있는 일을 안내한다.
             if tools_used:
-                text = NO_EVIDENCE_ANSWER
+                text = build_not_found_answer(missing) if missing else NO_EVIDENCE_ANSWER
             elif final_text.strip().startswith(OFF_TOPIC_MARKER):  # 모델이 약과 무관한 질문이라고 표시했다
                 text = NON_DRUG_ANSWER
             else:
@@ -313,9 +390,9 @@ class DrugInfoAgent:
             text, grounded = f"{final_text.strip()}\n\n{SAFETY_FOOTER}", True
         if emergency and stop in ("no_evidence", "needs_clarification"):
             # 근거 없는 답이나 제품 되묻기를 응급 안내 뒤에 이어 붙이지 않는다 — 119 안내만. 되묻기는 후보도 내보내지 않는다.
-            text, stop = EMERGENCY_NOTICE, "no_evidence"
+            text, stop = notice, "no_evidence"
         elif emergency:
-            text = f"{EMERGENCY_NOTICE}\n\n{text}"
+            text = f"{notice}\n\n{text}"
         return AgentAnswer(
             answer=text,
             sources=sources if grounded else [],
@@ -341,7 +418,7 @@ def build_agent(settings: V2Settings | None = None) -> DrugInfoAgent:
     open_reader = reader_factory_for(engine)
     tool = DrugSearchTool(settings, open_reader, QueryEmbedder(settings))
     contra_tool = _build_contra_tool(settings, open_reader)
-    return DrugInfoAgent(build_create_message(settings), tool, Limits.from_settings(settings), engine, contra_tool)
+    return DrugInfoAgent(build_create_message(settings), tool, Limits.from_settings(settings), engine, contra_tool, settings.prompt_cache)
 
 
 def _build_contra_tool(settings: V2Settings, open_reader: Any) -> ContraindicationTool | None:

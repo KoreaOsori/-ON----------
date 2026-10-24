@@ -24,7 +24,7 @@ const tabs: [Tab, string][] = [
 ]
 
 export default function MedicineView() {
-  const { logged, memberProfile, medications } = useSession()
+  const { logged, memberProfile } = useSession()
   const [tab, setTab] = useState<Tab>("search")
   const [query, setQuery] = useState("")
   const [type, setType] = useState<MedicineType | undefined>()
@@ -69,13 +69,8 @@ export default function MedicineView() {
     }
   }
 
-  // 마이페이지 복용약 (로그인했을 때만): 건강정보에서 고른 약 + 약 등록에서 검색해 고른 약. 이미 담은 약은 빼고 5개까지
-  const mine = logged
-    ? [
-        ...(memberProfile.medicineItems ?? []),
-        ...medications.flatMap((medication) => (medication.medicine ? [medication.medicine] : [])),
-      ].filter((drug, index, all) => all.findIndex((item) => item.id === drug.id) === index)
-    : []
+  // 마이페이지 건강정보에 등록한 복용약 (로그인했을 때만). 이미 담은 약은 빼고 5개까지
+  const mine = logged ? (memberProfile.medicineItems ?? []) : []
   const loadMine = () => {
     const added = mine.filter((drug) => !isSelected(drug))
     setSelected([...selected, ...added].slice(0, MAX_INTERACTION_DRUGS))
@@ -121,6 +116,17 @@ export default function MedicineView() {
               onLoadMine={mine.length ? loadMine : undefined}
             />
           )}
+          {/* 병용 확인은 버튼·결과를 검색창 위에 둬서 스크롤하지 않고 확인할 수 있게 한다 */}
+          {tab === "interaction" && (
+            <button
+              disabled={selected.length < 2}
+              onClick={() => setResult(true)}
+              className={`${button} mb-6 w-full`}
+            >
+              병용 확인하기 ({selected.length}/{MAX_INTERACTION_DRUGS})
+            </button>
+          )}
+          {result && <InteractionResult selected={selected} />}
           <div className="relative">
             <Search size={20} className="absolute left-4 top-4 text-slate-400" />
             <input
@@ -172,19 +178,10 @@ export default function MedicineView() {
                   : "약 이름을 입력하거나 분류를 골라 보세요."}
             </div>
           )}
-          {tab === "interaction" && (
-            <button
-              disabled={selected.length < 2}
-              onClick={() => setResult(true)}
-              className={`${button} mb-6 w-full`}
-            >
-              병용 확인하기 ({selected.length}/{MAX_INTERACTION_DRUGS})
-            </button>
-          )}
-          {result && <InteractionResult selected={selected} />}
         </>
       )}
-      <Notice />
+      {/* 병용 확인 탭은 안내 문구를 위쪽(InteractionSelection)에 둔다 */}
+      {tab !== "interaction" && <Notice />}
       {detail && (
         <DrugDetailModal
           id={detail.drug.id}

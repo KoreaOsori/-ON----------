@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import Notice from "@/components/ui/Notice"
 import { summarizeProfile } from "@/lib/constants"
 import { useSession } from "@/providers/SessionProvider"
 import { matchConditions } from "../conditionMatch"
@@ -227,9 +226,6 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
           </div>
         </details>
       )}
-      <Notice>
-        3개 이상을 동시에 복용할 때의 복합 상호작용은 확인할 수 없고, 약을 2개씩 비교한 결과만 제공해요.
-      </Notice>
     </section>
   )
 }

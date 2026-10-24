@@ -14,6 +14,7 @@ from app.llm.v2.prompts import (
     OUT_OF_SCOPE_ANSWER,
     SAFETY_FOOTER,
     TIMEOUT_ANSWER,
+    TRUNCATED_NOTICE,
 )
 from app.llm.v2.safety import is_crisis, is_emergency
 from app.llm.v2.tests.helpers import ScriptedModel, make_settings, raises, response, text_block, tool_use_block
@@ -247,8 +248,13 @@ async def test_clarification_answer_is_built_by_code_not_by_model():
 
 
 async def test_clarification_is_dropped_when_evidence_was_found_later():
-    model = ScriptedModel(response(search_call("a")), response(search_call("b")), response(text_block("정리")))
-    result = await make_agent(model, FakeTool(CLARIFY, FOUND)).run("대한포도당주사액 용법")
+    # 첫 라운드에 다른 제품의 근거도 있어 바로 끝나지 않고, 같은 이름을 다시 찾아 근거가 나오면 되묻기가 풀린다.
+    model = ScriptedModel(
+        response(search_call("a"), search_call("c", product_name="다른약")),
+        response(search_call("b")),
+        response(text_block("정리")),
+    )
+    result = await make_agent(model, FakeTool(CLARIFY, FOUND, FOUND)).run("대한포도당주사액 용법")
     assert result.grounded and result.candidates == [] and result.stop_reason == "done"
 
 
@@ -549,11 +555,11 @@ async def test_unresolved_clarification_wins_over_evidence_for_another_product()
 
 async def test_clarification_resolved_by_retry_with_same_name_is_cleared():
     model = ScriptedModel(
-        response(search_call("a", product_name="대한포도당주사액")),
+        response(search_call("a", product_name="대한포도당주사액"), search_call("c", product_name="다른약")),
         response(search_call("b", product_name=" 대한포도당주사액 ")),  # 공백·대소문자는 같은 이름으로 본다
         response(text_block("정리")),
     )
-    result = await make_agent(model, FakeTool(CLARIFY, FOUND)).run("대한포도당주사액 용법")
+    result = await make_agent(model, FakeTool(CLARIFY, FOUND, FOUND)).run("대한포도당주사액 용법")
     assert result.grounded and result.stop_reason == "done" and result.candidates == []
 
 
@@ -575,3 +581,154 @@ def test_clarification_text_asks_to_retype_not_to_select():
 def test_fixed_messages_ask_to_ask_again_with_name():
     for text in (NO_EVIDENCE_ANSWER, OUT_OF_SCOPE_ANSWER):
         assert "알려주시면" not in text and "질문해 주" in text
+
+
+# ---- 프롬프트 캐시
+
+def _with_cache_usage(resp, tokens_in, tokens_out, read=0, write=0):
+    from types import SimpleNamespace
+
+    resp.usage = SimpleNamespace(input_tokens=tokens_in, output_tokens=tokens_out, cache_read_input_tokens=read, cache_creation_input_tokens=write)
+    return resp
+
+
+async def test_prompt_cache_marks_system_block_and_counts_cache_tokens():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(
+        _with_cache_usage(response(search_call()), 120, 30, write=7000),
+        _with_cache_usage(response(text_block("정리")), 400, 50, read=7000),
+    )
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), prompt_cache=True)
+    result = await agent.run("타이레놀 효능")
+    for call in model.calls:
+        assert call["system"] == [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+    assert (result.input_tokens, result.output_tokens, result.cache_read_tokens, result.cache_write_tokens) == (520, 80, 7000, 7000)
+
+
+async def test_prompt_cache_is_off_by_default_in_the_class_and_sends_plain_system():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(response(text_block("x")))
+    await make_agent(model, FakeTool(FOUND)).run("질문")
+    assert model.calls[0]["system"] == SYSTEM_PROMPT
+
+
+async def test_prompt_cache_falls_back_when_endpoint_rejects_cache_control():
+    from app.llm.v2.prompts import SYSTEM_PROMPT
+
+    model = ScriptedModel(RuntimeError("Unknown field: cache_control"), response(search_call()), response(text_block("정리")))
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), prompt_cache=True)
+    result = await agent.run("타이레놀 효능")
+    assert result.grounded and isinstance(model.calls[0]["system"], list)
+    assert model.calls[1]["system"] == SYSTEM_PROMPT and model.calls[2]["system"] == SYSTEM_PROMPT  # 한 번 실패한 뒤로는 계속 끈다
+
+
+async def test_other_model_errors_are_not_swallowed_by_cache_fallback():
+    model = ScriptedModel(RuntimeError("throttled"))
+    agent = DrugInfoAgent(model, FakeTool(FOUND), Limits(), prompt_cache=True)
+    result = await agent.run("질문")
+    assert result.stop_reason == "error" and len(model.calls) == 1
+
+
+def test_prompt_cache_setting_defaults_on_and_can_be_disabled():
+    from app.llm.v2.config import V2Settings
+
+    assert V2Settings.from_env({}).prompt_cache is True
+    assert V2Settings.from_env({"LLM_V2_PROMPT_CACHE": "0"}).prompt_cache is False
+    assert V2Settings.from_env({"LLM_V2_PROMPT_CACHE": "off"}).prompt_cache is False
+
+
+async def test_max_tokens_final_answer_is_trimmed_and_flagged():
+    import logging
+
+    model = ScriptedModel(
+        response(search_call(), stop_reason="tool_use"),
+        response(text_block("첫 문장이에요. 둘째 문장은 이렇게 끊"), stop_reason="max_tokens"),
+    )
+    records: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler, agent_logger = _Collect(level=logging.INFO), logging.getLogger("app.llm.v2.agent")
+    previous = agent_logger.level
+    agent_logger.addHandler(handler)
+    agent_logger.setLevel(logging.INFO)
+    try:
+        result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 부작용")
+    finally:
+        agent_logger.removeHandler(handler)
+        agent_logger.setLevel(previous)
+    assert result.stop_reason == "done" and result.truncated and result.grounded
+    assert result.answer.startswith("첫 문장이에요.\n\n" + TRUNCATED_NOTICE) and "이렇게 끊" not in result.answer
+    assert result.answer.endswith(SAFETY_FOOTER)
+    logs = "\n".join(records)
+    assert "model_stop=max_tokens" in logs and "blocks=text=1" in logs and "model_stop=tool_use" in logs
+    assert "타이레놀 부작용" not in logs and "첫 문장" not in logs  # 질문·답변 내용은 로그에 남기지 않는다
+
+
+async def test_normal_answer_is_not_flagged_truncated():
+    model = ScriptedModel(response(search_call(), stop_reason="tool_use"), response(text_block("끝난 답이에요."), stop_reason="end_turn"))
+    result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 용법")
+    assert not result.truncated and TRUNCATED_NOTICE not in result.answer
+
+
+async def test_max_tokens_during_tool_request_is_error():
+    model = ScriptedModel(response(search_call(), stop_reason="max_tokens"))
+    result = await make_agent(model, FakeTool(FOUND)).run("타이레놀 용법")
+    assert result.stop_reason == "error" and result.answer == ERROR_ANSWER and not result.truncated
+
+
+
+NOT_FOUND = ToolResult("[검색 결과 없음] '없는약정'과(와) 일치하는 제품을 찾지 못했습니다.", missing=["없는약정"])
+
+
+async def test_not_found_stops_without_final_model_call_and_names_product():
+    model = ScriptedModel(response(search_call(product_name="없는약정")))  # 두 번째 응답이 없다 → 부르면 실패한다
+    result = await make_agent(model, FakeTool(NOT_FOUND)).run("없는약정 부작용")
+    assert len(model.calls) == 1 and result.stop_reason == "no_evidence" and not result.grounded
+    assert "'없는약정'은(는) 등록된 정보에서 찾지 못했어요" in result.answer
+
+
+async def test_clarification_stops_without_final_model_call():
+    model = ScriptedModel(response(search_call("a", product_name="대한포도당주사액")))
+    result = await make_agent(model, FakeTool(CLARIFY)).run("대한포도당주사액 용법")
+    assert len(model.calls) == 1 and result.stop_reason == "needs_clarification" and len(result.candidates) == 2
+
+
+async def test_clarification_with_missing_product_mentions_both():
+    combined = ToolResult("[확인 필요] ...\n\n[검색 결과 없음] ...", candidates=CLARIFY.candidates, missing=["타이레놀정500밀리그램"])
+    model = ScriptedModel(response(contra_call(products=["대한포도당주사액", "타이레놀정500밀리그램"])))
+    result = await DrugInfoAgent(model, FakeTool(FOUND), Limits(), contra_tool=FakeContraTool(combined)).run("같이 먹어도 돼요?")
+    assert result.stop_reason == "needs_clarification" and "대한포도당주사액(5%)" in result.answer
+    assert "'타이레놀정500밀리그램'은(는) 등록된 정보에서 찾지 못했어요" in result.answer
+
+
+async def test_terminal_result_with_other_evidence_still_calls_model():
+    model = ScriptedModel(
+        response(search_call("a", product_name="없는약정"), search_call("b", product_name="타이레놀")),
+        response(text_block("타이레놀 답이에요.")),
+    )
+    result = await make_agent(model, FakeTool(NOT_FOUND, FOUND)).run("없는약정이랑 타이레놀 용법")
+    assert len(model.calls) == 2 and result.grounded and result.answer.startswith("타이레놀 답이에요.")
+
+
+async def test_overdose_question_gets_overdose_notice_even_without_drug_found():
+    from app.llm.v2.prompts import OVERDOSE_NOTICE
+
+    model = ScriptedModel(response(text_block("어떤 약인지 모르겠어요")))
+    result = await make_agent(model, FakeTool(FOUND)).run("타이레놀을 한 통 다 먹었어요")
+    assert result.emergency and result.answer == OVERDOSE_NOTICE and "119" in result.answer
+
+
+def test_overdose_patterns():
+    from app.llm.v2.safety import is_overdose
+
+    for q in ("타이레놀을 한 통 다 먹었어요", "아이가 실수로 혈압약을 먹었어요", "10알 먹었어요", "약을 너무 많이 먹었어요",
+              "감기약 두 병 마셨어요", "과다 복용한 것 같아요", "5알을 한꺼번에 먹었어요"):
+        assert is_overdose(q) and is_emergency(q), q
+    for q in ("타이레놀 한 통에 몇 알 들어 있어요?", "하루에 2알 먹었는데 괜찮아요?", "1회 2정 먹었어요", "500mg 먹었어요",
+              "한 번에 몇 알 먹어요?", "12시간마다 먹었어요", "셉트린정 먹다가 그만 먹어도 돼요?"):
+        assert not is_overdose(q), q

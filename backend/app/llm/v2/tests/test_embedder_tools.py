@@ -84,7 +84,41 @@ def test_format_outcome_no_evidence_cases():
 def test_format_outcome_truncates_long_content():
     long_hit = SearchHit("h", "가" * 5000, "drug", "usage", 0.1, 1, [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
     text = format_outcome(SearchOutcome("ok", "r", hits=[long_hit]), "A").text
-    assert len(text) < 2200 and text.endswith("(이하 생략)")
+    assert len(text) < 1400 and text.endswith("(이하 생략)")
+
+
+def test_format_outcome_cuts_at_sentence_boundary():
+    content = "첫 문장이에요. " * 200
+    hit = SearchHit("h", content, "drug", "usage", 0.1, 1, [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
+    text = format_outcome(SearchOutcome("ok", "r", hits=[hit]), "A").text
+    assert text.endswith("첫 문장이에요.…(이하 생략)")
+
+
+def _long_hit(section, distance, text="가나다라. ", count=200):
+    return SearchHit("h", text * count, "drug", section, distance, 1,
+                     [{"product_key": "k", "product_name": "A", "manufacturer": "M"}])
+
+
+def test_format_outcome_drops_low_ranked_hits_over_budget():
+    hits = [_long_hit(s, d) for s, d in [("usage", 0.1), ("effect", 0.2), ("storage", 0.3), ("benefits", 0.4), ("ingredients", 0.5), ("interactions", 0.6)]]
+    result = format_outcome(SearchOutcome("ok", "r", hits=hits), "A")
+    assert len(result.text) < 4100 and "분량 때문에 문단" in result.text and "일부만 안내했어요" in result.text
+    assert 1 <= len(result.evidence) < 6 and result.evidence[0].section_type == "usage"
+
+
+def test_format_outcome_keeps_critical_precautions_over_higher_similarity_ones():
+    ordinary = [_long_hit("precautions", 0.1 + i * 0.01, "일반적인 안내예요. ") for i in range(4)]
+    critical = _long_hit("precautions", 0.9, "임부에게는 투여하지 않아요. ")
+    result = format_outcome(SearchOutcome("ok", "r", hits=ordinary + [critical]), "A")
+    assert "임부에게는 투여하지 않아요" in result.text and "분량 때문에 문단" in result.text
+    first_critical = result.text.index("임부에게는")
+    assert first_critical > result.text.index("일반적인 안내예요")  # 출력은 원래 유사도 순서를 지킨다
+
+
+def test_format_outcome_does_not_reorder_when_everything_fits():
+    hits = [_long_hit("precautions", 0.1, "일반이에요. ", 3), _long_hit("precautions", 0.5, "금기예요. ", 3)]
+    text = format_outcome(SearchOutcome("ok", "r", hits=hits), "A").text
+    assert "분량 때문에" not in text and text.index("일반이에요") < text.index("금기예요")
 
 
 class FakeEmbedder:
@@ -264,3 +298,33 @@ def test_no_hit_message_mentions_filtered_count_only_when_any():
     plain = format_outcome(SearchOutcome("ok", "r", hits=[]), "A").text
     assert "제외된" not in plain
     assert "제외된 문단 3개" in format_outcome(SearchOutcome("ok", "r", hits=[], filtered=3), "A").text
+
+
+async def test_tool_adds_contraindication_chunks_for_precautions_and_contra_questions():
+    def db(sql, params):
+        if "AS distance" in sql and "LIKE :cp0" in sql:
+            return [{"content_hash": "k", "content": "임부에게는 투여하지 말 것.", "product_type": "drug", "section_type": "precautions", "distance": 0.9}]
+        return _db(sql, params)
+
+    for args in ({"section": "precautions", "question": "부작용"}, {"question": "먹으면 안 되는 사람은?"}):
+        tool, reader, _ = _tool(db)
+        result = await tool.run({"product_name": "타이레놀", **args})
+        assert "임부에게는 투여하지 말 것" in result.text, args  # 거리 0.9 여도 금기 문단은 싣는다
+    tool, reader, _ = _tool(db)
+    await tool.run({"product_name": "타이레놀", "question": "하루 몇 번", "section": "usage"})
+    assert not any("LIKE :cp0" in sql for sql, _ in reader.calls)  # 용법 질문에는 따로 찾지 않는다
+
+
+def test_contra_intent_pattern():
+    from app.llm.v2.tools import CONTRA_INTENT
+
+    for q in ("먹으면 안 되는 사람은?", "임신 중에 복용하면 안 되나요", "금기 대상", "어떤 사람은 못 먹어요?", "드시면 안 되는 경우"):
+        assert CONTRA_INTENT.search(q), q
+    for q in ("하루 몇 번 먹어요?", "부작용 알려줘", "보관 방법"):
+        assert not CONTRA_INTENT.search(q), q
+
+
+def test_not_found_result_is_terminal_and_names_product():
+    result = format_outcome(SearchOutcome("product_not_found", "run1"), "없는약정")
+    assert result.missing == ["없는약정"] and result.terminal
+    assert not format_outcome(SearchOutcome("ok", "run1", hits=[]), "A").terminal  # 제품은 찾았고 문단만 없다 → 모델이 다시 찾을 수 있다

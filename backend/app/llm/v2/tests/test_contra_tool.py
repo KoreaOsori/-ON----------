@@ -354,3 +354,24 @@ def test_prompt_has_short_answer_examples():
 
     for needle in ("답변 예시", "상담을 권하는 문장을 따로 붙이지 않습니다", "목록을 붙이지 않습니다", "주의사항은 다음과 같아요"):
         assert needle in SYSTEM_PROMPT
+
+
+
+async def test_all_unresolved_products_are_reported_together():
+    tool, _ = _tool([_row("100", "200")])
+    result = await tool.run({"products": ["없는약", "타이레놀", "없는약2"]})
+    assert "'없는약'" in result.text and "'없는약2'" in result.text and "[확인 필요]" in result.text
+    assert result.missing == ["없는약", "없는약2"] and {c["product_key"] for c in result.candidates} == {"drug:300", "drug:310"}
+    assert "병용금기는 확인하지 않았습니다" in result.text and result.terminal
+
+
+async def test_single_missing_product_is_terminal_and_named():
+    tool, _ = _tool([_row("100", "200")])
+    result = await tool.run({"products": ["와파린정", "없는약"]})
+    assert result.missing == ["없는약"] and result.terminal and result.text.startswith("[검색 결과 없음]")
+
+
+async def test_unit_spelling_resolves_gram_variant():
+    tool, _ = _tool([_row("100", "300")])
+    result = await tool.run({"products": ["와파린정", "타이레놀정500밀리그람"]})  # 카탈로그는 '밀리그램'
+    assert "병용금기 규칙 있음" in result.text and result.missing == []

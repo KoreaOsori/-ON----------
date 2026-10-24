@@ -1,0 +1,2 @@
+# 테스트 전용 (이미지에는 넣지 않음). 컨테이너에서: pip install --user -c constraints.txt -r requirements-dev.txt
+pytest==8.4.2

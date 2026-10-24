@@ -3,7 +3,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import quote_plus
 
-from pydantic import Field, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,7 +54,13 @@ class Settings(BaseSettings):
     bedrock_max_tokens: int = 16000
 
     # 처방전 OCR: textract 는 한국어 미지원 → 한국어 처방전은 claude(비전) 권장
-    ocr_provider: Literal["mock", "claude", "textract"] = "mock"
+    # worker = pill_model 워커(PaddleOCR + 개인정보 차단 + Haiku 구조화 + 허가목록 매칭)로 전달
+    ocr_provider: Literal["mock", "claude", "textract", "worker"] = "mock"
+
+    # pill_model 워커 (알약 /pill/*, 처방전 /rx/*). 주소는 워커 EC2 프라이빗 IP, 토큰은 워커 .env 의 WORKER_TOKEN 과 같은 값
+    pill_worker_url: str | None = None  # 예: http://<워커 프라이빗 IP>:8000
+    pill_worker_token: str | None = None
+    pill_worker_timeout_seconds: float = 90  # 처방전 최대 약 33초 + 대기 여유 (nginx 120초보다 짧게)
 
     # 의약품 데이터: gold = 데이터 파이프라인이 RDS 에 적재한 gold 스키마 / mock = 가상 데이터 (테스트·DB 없는 로컬) / public_api = 공공데이터 (data.go.kr) e약은요
     drug_data_source: Literal["mock", "public_api", "gold"] = "mock"
@@ -65,18 +71,6 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
-    demo_login_enabled: bool = False
-
-    kakao_client_id: str | None = None
-    kakao_client_secret: str | None = None
-    naver_client_id: str | None = None
-    naver_client_secret: str | None = None
-    google_client_id: str | None = None
-    google_client_secret: str | None = None
-    oauth_redirect_base_url: str = Field(
-        default="http://localhost:3000/auth/callback",
-        description="OAuth redirect_uri 기본 경로. 실제 값은 {base}/{provider}",
-    )
 
     # 서비스 정책
     guest_daily_question_limit: int = 8
@@ -106,6 +100,9 @@ class Settings(BaseSettings):
             self.db_password = secret["DB_PASSWORD"]
         if not self.public_data_service_key:
             self.public_data_service_key = secret.get("E_Drug_API")
+        # 로그인 토큰 서명 키. 기본값(change-me)으로 두면 누구나 토큰을 만들 수 있다
+        if "jwt_secret_key" not in self.model_fields_set and secret.get("JWT_SECRET_KEY"):
+            self.jwt_secret_key = secret["JWT_SECRET_KEY"]
         if "s3_upload_bucket" not in self.model_fields_set and secret.get("S3_UPLOAD_BUCKET"):
             self.s3_upload_bucket = secret["S3_UPLOAD_BUCKET"]
 

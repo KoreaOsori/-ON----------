@@ -1,0 +1,22 @@
+# EC2(Compose v2.29.7)와 PC(Docker Desktop)에서 모두 되는 기본 문법만 사용
+services:
+  worker:
+    build: .
+    image: pill-worker:latest
+    # SG 가 백엔드 SG 에서 오는 8000 만 허용하므로 0.0.0.0 으로 연다 (인터넷 인바운드 없음)
+    ports:
+      - "0.0.0.0:8000:8000"
+    env_file: .env
+    volumes:
+      # 모델·데이터 (S3 models/ 와 같은 구조), 읽기 전용
+      - ./deploy:/app/deploy:ro
+      # 공용 OCR 모델을 PaddleX 캐시 위치에 연결 → 인터넷 다운로드 없이 "Using cached files"
+      - ./deploy/ocr_models/${OCR_MODEL_SET:-paddleocr_v5_korean_2026-10-14}:/home/app/.paddlex/official_models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 모델 적재(OCR·CNN·silver 컬럼 읽기)에 시간이 걸림
+      start_period: 180s
+    restart: unless-stopped

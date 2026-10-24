@@ -8,7 +8,13 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
 from app.modules.medications.models import IntakeLog, Medication
-from app.modules.medications.schemas import IntakeLogRead, IntakeLogUpdate, MedicationCreate, MedicationRead
+from app.modules.medications.schemas import (
+    IntakeLogRead,
+    IntakeLogUpdate,
+    MedicationCreate,
+    MedicationRead,
+    MedicationUpdate,
+)
 from app.modules.users.models import User
 
 router = APIRouter(prefix="/medications", tags=["medications"])
@@ -32,6 +38,26 @@ async def list_medications(user: CurrentUser, db: DbSession):
 async def create_medication(payload: MedicationCreate, user: CurrentUser, db: DbSession):
     medication = Medication(user_id=user.id, **payload.model_dump())
     db.add(medication)
+    await db.commit()
+    await db.refresh(medication)
+    return medication
+
+
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT, summary="내 복용약·복약 기록 모두 삭제")
+async def delete_all_medications(user: CurrentUser, db: DbSession):
+    for medication in await db.scalars(select(Medication).where(Medication.user_id == user.id)):
+        await db.delete(medication)  # 복약 기록은 cascade 로 함께 삭제
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{medication_id}", response_model=MedicationRead, summary="복용 정보 수정")
+async def update_medication(
+    medication_id: uuid.UUID, payload: MedicationUpdate, user: CurrentUser, db: DbSession
+):
+    medication = await _get_owned(db, user, medication_id)
+    for field, value in payload.model_dump().items():
+        setattr(medication, field, value)
     await db.commit()
     await db.refresh(medication)
     return medication

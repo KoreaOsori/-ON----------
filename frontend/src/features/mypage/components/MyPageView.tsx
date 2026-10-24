@@ -1,115 +1,160 @@
 "use client"
 
-import { useState } from "react"
-import { ChevronLeft } from "lucide-react"
-import { emptyProfile } from "@/lib/constants"
+import { useRef, useState } from "react"
+import { ChevronLeft, LoaderCircle } from "lucide-react"
 import { useSession } from "@/providers/SessionProvider"
-import { toDateString, type MedicationDraft, type MyPageViewName, type OcrStep } from "../types"
+import type { HealthProfile } from "@/types/health"
+import { deleteAccount, getConsents, saveConsents } from "../api"
+import { today } from "../medications"
+import {
+  clearMedicationData,
+  loadMonth,
+  removeMedicationByName,
+  saveHealth,
+  toggleIntake,
+  upsertMedication,
+} from "../sync"
+import type { MedicationDraft, MyPageViewName, OcrStep } from "../types"
 import AccountSettings from "./AccountSettings"
 import ConsentForm from "./ConsentForm"
 import HealthSetup from "./HealthSetup"
 import LoginPanel from "./LoginPanel"
 import MedicationCalendar from "./MedicationCalendar"
+import MedicationManager from "./MedicationManager"
 import MedicineRegistration from "./MedicineRegistration"
 import MyPageHome from "./MyPageHome"
-import NotificationSettings from "./NotificationSettings"
 
-// 약 등록의 인식 결과 예시 (사진 인식은 체험용). 약 이름은 검색해서 고르고, 시작일은 오늘
-const newDraft = (): MedicationDraft => ({
-  name: "",
-  amount: "1",
-  times: "3",
-  days: "7",
-  start: toDateString(new Date()),
-  medicine: null,
-})
+const emptyDraft = (): MedicationDraft => ({ name: "", amount: "", times: "", days: "", start: today() })
 
 const viewTitles: Partial<Record<MyPageViewName, string>> = {
   calendar: "복약 캘린더",
-  notifications: "알림 설정",
   settings: "설정",
 }
 
+// 동의 화면·설정의 체크 순서
+const consentTypes = ["terms", "privacy", "health", "marketing"] as const
+
 export default function MyPageView() {
-  const {
-    logged,
-    setLogged,
-    memberProfile: profile,
-    setMemberProfile: setProfile,
-    medications,
-    setMedications,
-    intakeChecks: checked,
-    setIntakeChecks: setChecked,
-  } = useSession()
+  const { logged, setLogged, restoring, signIn, signOut, memberProfile: profile, setMemberProfile: setProfile } =
+    useSession()
   const [view, setView] = useState<MyPageViewName>("home")
-  const [email, setEmail] = useState("")
-  const [consents, setConsents] = useState<boolean[]>([false, false, false])
+  const [consents, setConsents] = useState<boolean[]>([false, false, false, false])
   const [ocr, setOcr] = useState<OcrStep>(0)
-  const [draft, setDraft] = useState<MedicationDraft>(newDraft)
+  const [draft, setDraft] = useState<MedicationDraft>(emptyDraft)
+  const [managing, setManaging] = useState(false)
+  const [error, setError] = useState("")
+  // 서버 저장이 끝나기 전에 또 누르면 오래된 화면 값으로 덮어쓰므로 한 번에 하나씩
+  const busy = useRef(false)
 
-  const toggleCheck = (key: string) =>
-    setChecked(checked.includes(key) ? checked.filter((item) => item !== key) : [...checked, key])
-
-  // 복용약(건강정보에서 고른 약·약 등록으로 넣은 약)과 복약 체크 기록만 지운다. 기본정보·지병은 남긴다
-  const deleteData = () => {
-    setProfile({ ...profile, medicines: [], medicineItems: [], medicineStatus: undefined })
-    setMedications([])
-    setChecked([])
-    setDraft(newDraft())
-    setConsents([false, false, false, false])
+  /** 서버에 저장하고 돌려받은 값으로 화면을 바꾼다. 실패하면 화면은 그대로 두고 안내 */
+  const save = async (action: () => Promise<HealthProfile>) => {
+    if (busy.current) return false
+    busy.current = true
+    setError("")
+    try {
+      setProfile(await action())
+      return true
+    } catch {
+      setError("저장하지 못했어요. 잠시 후 다시 시도해 주세요.")
+      return false
+    } finally {
+      busy.current = false
+    }
   }
 
+  const banner = error && (
+    <p role="alert" className="mx-auto mb-5 max-w-[1120px] rounded-xl bg-red-50 p-4 text-sm text-red-700">
+      {error}
+    </p>
+  )
+
+  // 약 등록은 매번 빈 칸에서 시작한다
+  const startRegistration = () => {
+    setDraft(emptyDraft())
+    setOcr(1)
+  }
+
+  const checked = profile.intakeChecks ?? []
+  const toggleCheck = (key: string) => save(() => toggleIntake(profile, key))
+
+  const openSettings = () => {
+    setView("settings")
+    getConsents()
+      .then((saved) => setConsents(consentTypes.map((type) => saved[type] ?? false)))
+      .catch(() => undefined) // 못 불러와도 필수 동의는 이미 한 상태
+  }
+
+  const goHome = () => {
+    setView("home")
+    setOcr(0)
+    setManaging(false)
+  }
+
+  if (restoring)
+    return (
+      <div role="status" className="flex min-h-80 items-center justify-center gap-3 text-slate-500">
+        <LoaderCircle className="animate-spin" />내 정보를 불러오는 중이에요
+      </div>
+    )
+
   if (!logged && view === "home")
-    return <LoginPanel email={email} setEmail={setEmail} onStart={() => setView("consent")} />
+    return (
+      <LoginPanel
+        onSubmit={async (email) => {
+          // 건강정보까지 입력한 계정이면 바로 마이페이지, 처음이면 동의 → 건강정보 입력
+          if (!(await signIn(email))) setView("consent")
+        }}
+      />
+    )
 
   if (view === "consent")
     return (
-      <ConsentForm
-        consents={consents}
-        setConsents={setConsents}
-        onContinue={() => setView("profile")}
-      />
+      <ConsentForm consents={consents} setConsents={setConsents} onContinue={() => setView("profile")} />
     )
 
   if (view === "profile")
     return (
-      <HealthSetup
-        profile={profile}
-        onCancel={() => setView(logged ? "home" : "consent")}
-        onSave={(value) => {
-          setProfile(value)
-          setLogged(true)
-          setView("home")
-        }}
-      />
+      <>
+        {banner}
+        <HealthSetup
+          profile={profile}
+          onCancel={() => setView(logged ? "home" : "consent")}
+          onSave={async (value) => {
+            // 처음 입력할 때만 동의를 함께 저장 (건강정보 저장에는 필수 동의가 필요)
+            const agreed = logged
+              ? undefined
+              : Object.fromEntries(consentTypes.map((type, index) => [type, consents[index] ?? false]))
+            if (await save(() => saveHealth(profile, value, agreed))) {
+              setLogged(true)
+              setView("home")
+            }
+          }}
+        />
+      </>
     )
 
   if (ocr)
     return (
-      <MedicineRegistration
-        step={ocr}
-        setStep={setOcr}
-        draft={draft}
-        setDraft={setDraft}
-        onSave={() => {
-          // crypto.randomUUID 는 HTTPS 에서만 있어 (운영 웹은 HTTP) 시각 + 난수로 만든다
-          setMedications([...medications, { ...draft, id: `${Date.now()}-${Math.random().toString(36).slice(2)}` }])
-          setOcr(4)
-        }}
-        onDone={() => {
-          setOcr(0)
-          setView("notifications")
-        }}
-      />
+      <>
+        {banner}
+        <MedicineRegistration
+          step={ocr}
+          setStep={setOcr}
+          draft={draft}
+          setDraft={setDraft}
+          onSave={async () => {
+            if (await save(() => upsertMedication(profile, draft))) setOcr(4)
+          }}
+          onDone={goHome}
+        />
+      </>
     )
 
   return (
     <div className="mx-auto max-w-[1120px]">
+      {banner}
       {view !== "home" && (
-        <button
-          onClick={() => setView("home")}
-          className="mb-5 flex min-h-11 items-center gap-2 text-sm text-slate-500"
-        >
+        <button onClick={goHome} className="mb-5 flex min-h-11 items-center gap-2 text-sm text-slate-500">
           <ChevronLeft size={18} />
           마이페이지
         </button>
@@ -120,37 +165,60 @@ export default function MyPageView() {
           profile={profile}
           checked={checked}
           toggleCheck={toggleCheck}
-          medications={medications}
-          onNavigate={setView}
-          onRegisterMedicine={() => {
-            setDraft(newDraft())
-            setOcr(1)
-          }}
+          onNavigate={(next) => (next === "settings" ? openSettings() : setView(next))}
+          onRegisterMedicine={startRegistration}
+          onManageMedicines={() => setManaging(true)}
         />
       ) : view === "calendar" ? (
-        <MedicationCalendar checked={checked} toggleCheck={toggleCheck} medications={medications} />
-      ) : view === "notifications" ? (
-        <NotificationSettings />
+        <MedicationCalendar
+          profile={profile}
+          checked={checked}
+          toggleCheck={toggleCheck}
+          onMonthChange={(month) =>
+            loadMonth(month, profile)
+              .then((checks) => {
+                if (checks)
+                  setProfile((previous) => ({
+                    ...previous,
+                    intakeChecks: [...new Set([...(previous.intakeChecks ?? []), ...checks])],
+                  }))
+              })
+              .catch(() => setError("복약 기록을 불러오지 못했어요."))
+          }
+        />
       ) : (
         <AccountSettings
           consents={consents}
-          setConsents={setConsents}
+          setConsents={(values) => {
+            setConsents(values)
+            saveConsents({ marketing: values[3] ?? false }).catch(() => setError("동의 설정을 저장하지 못했어요."))
+          }}
           onEditProfile={() => setView("profile")}
           onLogout={() => {
-            // 서버 계정이 없어 브라우저에 저장한 건강정보·복용약이 곧 계정 데이터다. 같은 브라우저의 다음 사람에게 보이지 않게 지운다
-            setLogged(false)
-            setProfile(emptyProfile)
-            setMedications([])
-            setChecked([])
-            setView("home")
+            signOut()
+            goHome()
           }}
-          onDeleteData={deleteData}
-          onWithdraw={() => {
-            deleteData()
-            setLogged(false)
-            setProfile(emptyProfile)
-            setView("home")
-            setEmail("")
+          onDeleteData={() => save(() => clearMedicationData(profile))}
+          onWithdraw={async () => {
+            try {
+              await deleteAccount() // 서버에서 회원·건강정보·복용약·복약 기록 모두 삭제
+              signOut()
+              goHome()
+            } catch {
+              setError("탈퇴하지 못했어요. 잠시 후 다시 시도해 주세요.")
+            }
+          }}
+        />
+      )}
+      {managing && (
+        <MedicationManager
+          profile={profile}
+          onSave={(item) => save(() => upsertMedication(profile, item))}
+          onRemove={(name) => save(() => removeMedicationByName(profile, name))}
+          onClose={() => setManaging(false)}
+          onRegisterByPhoto={() => {
+            setManaging(false)
+            startRegistration()
           }}
         />
       )}

@@ -15,19 +15,27 @@ export class ApiError extends Error {
 }
 
 let accessToken: string | null = null
+// 액세스 토큰이 만료(401)되면 한 번 재발급을 시도하는 함수 (SessionProvider 가 등록)
+let refreshAccessToken: (() => Promise<boolean>) | null = null
 
 export function setAccessToken(token: string | null) {
   accessToken = token
 }
 
+export function setTokenRefresher(refresher: (() => Promise<boolean>) | null) {
+  refreshAccessToken = refresher
+}
+
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown
   query?: Record<string, string | number | boolean | undefined>
+  /** 경로 앞부분. 기본 /api/v1. LLM(/api/llm/v3)처럼 다른 백엔드 앱을 부를 때 바꾼다 */
+  prefix?: string
 }
 
-export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { body, query, headers, ...init } = options
-  const url = new URL(`${API_BASE_URL}${API_PREFIX}${path}`, globalThis.location?.origin ?? "http://localhost")
+export async function apiFetch<T>(path: string, options: RequestOptions = {}, retried = false): Promise<T> {
+  const { body, query, headers, prefix = API_PREFIX, ...init } = options
+  const url = new URL(`${API_BASE_URL}${prefix}${path}`, globalThis.location?.origin ?? "http://localhost")
   Object.entries(query ?? {}).forEach(([key, value]) => {
     if (value !== undefined) url.searchParams.set(key, String(value))
   })
@@ -42,6 +50,9 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
+
+  if (response.status === 401 && accessToken && refreshAccessToken && !retried && (await refreshAccessToken()))
+    return apiFetch<T>(path, options, true)
 
   if (!response.ok) {
     const detail = await response.json().catch(() => undefined)
