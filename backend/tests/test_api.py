@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 
 from app.integrations import public_data
-from app.modules.pharmacies.service import KST, open_status
+from app.modules.pharmacies.service import KST, _hours_text, open_status
 
 
 async def test_health(client):
@@ -105,11 +105,28 @@ async def test_pharmacies_upstream_error(client, monkeypatch):
         (900, 2200, 8, (False, "영업 전 · 09:00 시작")),
         ("0900", 2200, 23, (False, "영업 종료")),
         ("2200", "0200", 1, (True, "영업 중 · 02:00까지")),
+        ("0900", "0000", 20, (True, "영업 중 · 24:00까지")),
+        ("0900", 2400, 20, (True, "영업 중 · 24:00까지")),
         (None, None, 12, (False, "영업시간 정보 없음")),
     ],
 )
 def test_pharmacy_open_status(start, end, hour, expected):
     assert open_status(start, end, datetime(2026, 10, 24, hour, 0, tzinfo=KST)) == expected
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        ("0900", "2200", "09:00~22:00"),
+        ("0900", "0000", "09:00~24:00"),
+        ("0900", 2400, "09:00~24:00"),
+        ("2200", "0200", "22:00~02:00"),
+        ("0000", 2400, "24시간"),
+        (None, "2200", None),
+    ],
+)
+def test_pharmacy_hours_text(start, end, expected):
+    assert _hours_text(start, end) == expected
 
 
 async def test_protected_route_requires_login(client):
