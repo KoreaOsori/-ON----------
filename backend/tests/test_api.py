@@ -1,3 +1,11 @@
+from datetime import datetime
+
+import pytest
+
+from app.integrations import public_data
+from app.modules.pharmacies.service import KST, open_status
+
+
 async def test_health(client):
     response = await client.get("/api/v1/health")
     assert response.status_code == 200
@@ -48,11 +56,60 @@ async def test_guest_chat_quota(client):
     assert third.status_code == 429
 
 
-async def test_pharmacies_open_only(client):
+async def test_pharmacies_open_only(client, monkeypatch):
+    async def fake_near(*, lat, lng, rows=30):
+        common = {"dutyAddr": "서울", "dutyTel1": "02-000-0000", "latitude": lat, "longitude": lng}
+        return [
+            {**common, "hpid": "C2", "dutyName": "닫은약국", "distance": 0.2},
+            {
+                **common,
+                "hpid": "C1",
+                "dutyName": "24시약국",
+                "distance": 0.05,
+                "startTime": "0000",
+                "endTime": 2400,
+            },
+        ]
+
+    monkeypatch.setattr(public_data, "fetch_pharmacies_near", fake_near)
+    response = await client.get("/api/v1/pharmacies", params={"lat": 37.56, "lng": 126.97})
+    assert [item["name"] for item in response.json()] == ["24시약국", "닫은약국"]
+    assert response.json()[0]["distanceMeters"] == 50
+    assert response.json()[0]["todayHours"] == "24시간"
+    assert response.json()[1]["statusText"] == "영업시간 정보 없음"
+
     response = await client.get(
         "/api/v1/pharmacies", params={"lat": 37.56, "lng": 126.97, "openOnly": "true"}
     )
-    assert [item["name"] for item in response.json()] == ["온마음약국"]
+    assert [item["name"] for item in response.json()] == ["24시약국"]
+
+
+async def test_pharmacies_require_coordinates(client):
+    response = await client.get("/api/v1/pharmacies")
+    assert response.status_code == 422
+
+
+async def test_pharmacies_upstream_error(client, monkeypatch):
+    async def broken(**_):
+        raise public_data.PublicDataError("down")
+
+    monkeypatch.setattr(public_data, "fetch_pharmacies_near", broken)
+    response = await client.get("/api/v1/pharmacies", params={"lat": 37.56, "lng": 126.97})
+    assert response.status_code == 502
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "hour", "expected"),
+    [
+        ("0900", 2200, 12, (True, "영업 중 · 22:00까지")),
+        (900, 2200, 8, (False, "영업 전 · 09:00 시작")),
+        ("0900", 2200, 23, (False, "영업 종료")),
+        ("2200", "0200", 1, (True, "영업 중 · 02:00까지")),
+        (None, None, 12, (False, "영업시간 정보 없음")),
+    ],
+)
+def test_pharmacy_open_status(start, end, hour, expected):
+    assert open_status(start, end, datetime(2026, 10, 24, hour, 0, tzinfo=KST)) == expected
 
 
 async def test_protected_route_requires_login(client):
