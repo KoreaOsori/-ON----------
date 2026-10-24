@@ -1,19 +1,14 @@
+"use client"
+
+import { useState } from "react"
 import { UserRound } from "lucide-react"
-import Notice from "@/components/ui/Notice"
 import { button, inputClass } from "@/components/ui/styles"
 
-const socialProviders = ["카카오", "네이버", "구글"]
-
-// 데모 로그인. 백엔드 /api/v1/auth/oauth/{provider}/authorize 연동 시 소셜 버튼을 OAuth 리다이렉트로 교체한다.
-export default function LoginPanel({
-  email,
-  setEmail,
-  onStart,
-}: {
-  email: string
-  setEmail: (value: string) => void
-  onStart: () => void
-}) {
+// 이메일(아이디)만 입력하는 간단 로그인. 처음 쓰는 이메일이면 계정을 만들고, 이미 있으면 그 계정의 정보를 불러온다
+export default function LoginPanel({ onSubmit }: { onSubmit: (email: string) => Promise<void> }) {
+  const [email, setEmail] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
   return (
     <div className="mx-auto max-w-md py-8">
       <div className="mb-7 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
@@ -29,44 +24,44 @@ export default function LoginPanel({
         <br />더 편리하게 관리할 수 있어요.
       </p>
       <form
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault()
-          onStart()
+          setBusy(true)
+          setError("")
+          try {
+            await onSubmit(email.trim())
+          } catch {
+            setError("로그인하지 못했어요. 이메일을 확인하고 다시 시도해 주세요.")
+          } finally {
+            setBusy(false)
+          }
         }}
       >
-        <label className="mb-2 block text-sm font-medium">이메일</label>
+        <label htmlFor="login-email" className="mb-2 block text-sm font-medium">
+          이메일
+        </label>
         <input
+          id="login-email"
           type="email"
           required
+          autoComplete="email"
           value={email}
           onChange={(event) => setEmail(event.target.value)}
           placeholder="이메일 주소를 입력해 주세요"
           className={inputClass}
         />
-        <button className={`${button} mt-4 w-full`}>이메일로 시작하기</button>
-      </form>
-      <div className="my-6 text-center text-sm text-slate-400">또는 소셜 계정으로 시작하기</div>
-      {socialProviders.map((social, index) => (
-        <button
-          key={social}
-          onClick={() => {
-            setEmail(`${social} 데모 계정`)
-            onStart()
-          }}
-          className={`mb-3 min-h-12 w-full rounded-xl border text-sm font-medium ${
-            index === 0
-              ? "border-yellow-200 bg-yellow-50"
-              : index === 1
-                ? "border-green-100 bg-green-50"
-                : "border-slate-200"
-          }`}
-        >
-          {social}로 시작하기 · 데모
+        {error && (
+          <p role="alert" className="mt-2 text-sm text-red-600">
+            {error}
+          </p>
+        )}
+        <button disabled={busy} className={`${button} mt-4 w-full`}>
+          {busy ? "확인하는 중…" : "이메일로 시작하기"}
         </button>
-      ))}
-      <Notice>
-        실제 가입 없이 로그인 상태를 체험할 수 있어요. 입력한 정보는 서버에 전송되지 않으며 새로고침하면 초기화돼요.
-      </Notice>
+      </form>
+      <p className="mt-4 text-xs leading-5 text-slate-500">
+        처음 입력한 이메일이면 새 계정을 만들고, 사용한 적 있는 이메일이면 저장된 정보를 불러와요.
+      </p>
     </div>
   )
 }

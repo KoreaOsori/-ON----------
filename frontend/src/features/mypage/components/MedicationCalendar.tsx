@@ -15,10 +15,13 @@ export default function MedicationCalendar({
   profile,
   checked,
   toggleCheck,
+  onMonthChange,
 }: {
   profile: HealthProfile
   checked: string[]
   toggleCheck: (key: string) => void
+  /** 다른 달로 넘기면 그 달의 복약 기록을 서버에서 불러온다 (YYYY-MM) */
+  onMonthChange: (month: string) => void
 }) {
   const now = today()
   const [month, setMonth] = useState(() => ({ year: Number(now.slice(0, 4)), month: Number(now.slice(5, 7)) - 1 }))
@@ -29,6 +32,7 @@ export default function MedicationCalendar({
   const move = (offset: number) => {
     const next = new Date(month.year, month.month + offset, 1)
     setMonth({ year: next.getFullYear(), month: next.getMonth() })
+    onMonthChange(`${next.getFullYear()}-${pad(next.getMonth() + 1)}`)
   }
 
   // 오늘까지의 날만 표시: 모두 먹었으면 초록, 하나라도 빠졌으면 주황 (오늘은 아직 남은 복용이 있을 수 있어 초록만)

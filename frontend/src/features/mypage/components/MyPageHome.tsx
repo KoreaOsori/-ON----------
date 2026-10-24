@@ -1,4 +1,4 @@
-import { Bell, CalendarDays, Camera, ChevronRight, Pill, Settings, UserRound } from "lucide-react"
+import { CalendarDays, Camera, ChevronRight, Pill, Settings, UserRound } from "lucide-react"
 import type { HealthProfile } from "@/types/health"
 import { dosageText, intakeItemsOn, isFinished, myMedicines, today } from "../medications"
 import type { MyPageViewName } from "../types"
@@ -25,7 +25,6 @@ export default function MyPageHome({
   const shortcuts = [
     { label: "약 등록", icon: Camera, action: onRegisterMedicine },
     { label: "복약 캘린더", icon: CalendarDays, action: () => onNavigate("calendar") },
-    { label: "알림 설정", icon: Bell, action: () => onNavigate("notifications") },
     { label: "설정", icon: Settings, action: () => onNavigate("settings") },
   ]
 
@@ -127,7 +126,7 @@ export default function MyPageHome({
         </p>
         <p className="mt-3 text-sm text-slate-500">입력한 내용 그대로 표시하며 진단을 제공하지 않습니다.</p>
       </section>
-      <div className="mt-7 grid grid-cols-4 gap-4">
+      <div className="mt-7 grid grid-cols-3 gap-4">
         {shortcuts.map((item) => (
           <button
             key={item.label}

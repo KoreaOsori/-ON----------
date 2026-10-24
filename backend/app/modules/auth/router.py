@@ -1,4 +1,3 @@
-import secrets
 import uuid
 
 import jwt
@@ -7,15 +6,11 @@ from fastapi import APIRouter, HTTPException, status
 from app.api.deps import DbSession
 from app.core.config import settings
 from app.core.security import create_token, decode_token
-from app.integrations.redis import get_redis
-from app.modules.auth import oauth
-from app.modules.auth.schemas import AuthorizeUrlResponse, OAuthTokenRequest, RefreshRequest, TokenResponse
+from app.modules.auth.schemas import EmailLoginRequest, RefreshRequest, TokenResponse
 from app.modules.users.models import User
-from app.modules.users.service import get_or_create_oauth_user
+from app.modules.users.service import get_or_create_email_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-STATE_TTL_SECONDS = 600
 
 
 def _issue_tokens(user_id: uuid.UUID) -> TokenResponse:
@@ -26,32 +21,16 @@ def _issue_tokens(user_id: uuid.UUID) -> TokenResponse:
     )
 
 
-@router.get("/oauth/{provider}/authorize", response_model=AuthorizeUrlResponse, summary="소셜 로그인 URL")
-async def authorize(provider: oauth.Provider):
-    state = secrets.token_urlsafe(24)
-    await get_redis().set(f"oauth:state:{state}", provider, ex=STATE_TTL_SECONDS)  # CSRF 방지
-    try:
-        return AuthorizeUrlResponse(authorize_url=oauth.build_authorize_url(provider, state))
-    except oauth.OAuthError as error:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(error)) from error
-
-
-@router.post("/oauth/{provider}/token", response_model=TokenResponse, summary="소셜 로그인 완료 → JWT 발급")
-async def oauth_token(provider: oauth.Provider, payload: OAuthTokenRequest, db: DbSession):
-    saved_provider = await get_redis().getdel(f"oauth:state:{payload.state}")
-    if saved_provider != provider:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "유효하지 않은 로그인 요청입니다.")
-    try:
-        profile = await oauth.exchange_code(provider, payload.code, payload.state)
-    except oauth.OAuthError as error:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
-    user = await get_or_create_oauth_user(
-        db,
-        provider=provider,
-        provider_user_id=profile.provider_user_id,
-        email=profile.email,
-        nickname=profile.nickname,
-    )
+# 프로젝트 단계의 간단 로그인: 이메일(아이디)만으로 계정을 만들거나 찾는다. 비밀번호·메일 인증·소셜 로그인은 없다.
+# 같은 이메일을 입력하면 누구나 그 계정에 들어갈 수 있으므로, 실제 서비스 전에는 인증을 붙여야 한다.
+@router.post("/login", response_model=TokenResponse, summary="이메일(아이디) 로그인 — 없으면 가입")
+async def login(payload: EmailLoginRequest, db: DbSession):
+    # 서명 키가 기본값이면 토큰을 누구나 만들 수 있으므로 로컬·테스트 밖에서는 로그인을 막는다
+    if settings.jwt_secret_key == "change-me" and settings.app_env not in {"local", "test"}:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "로그인을 준비 중입니다. (JWT_SECRET_KEY 미설정)"
+        )
+    user = await get_or_create_email_user(db, payload.email)
     return _issue_tokens(user.id)
 
 
@@ -64,13 +43,3 @@ async def refresh(payload: RefreshRequest, db: DbSession):
     if await db.get(User, uuid.UUID(user_id)) is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "다시 로그인해 주세요.")
     return _issue_tokens(uuid.UUID(user_id))
-
-
-@router.post("/demo-login", response_model=TokenResponse, summary="데모 로그인 (로컬 전용)")
-async def demo_login(db: DbSession):
-    if not settings.demo_login_enabled or settings.is_production:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-    user = await get_or_create_oauth_user(
-        db, provider="demo", provider_user_id="demo", email="demo@yakon.local", nickname="데모"
-    )
-    return _issue_tokens(user.id)

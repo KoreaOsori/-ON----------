@@ -144,9 +144,6 @@ export default function ChatComposer({
           <Info size={13} className="mt-1 shrink-0" />
           {disclaimer}
         </p>
-        <p className="mt-1 text-center text-[10px] text-slate-400">
-          가상 데이터로 구성된 데모 · 실제 의료 정보가 아닙니다
-        </p>
       </div>
     </div>
   )

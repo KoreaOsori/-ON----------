@@ -69,13 +69,13 @@ export default function AccountSettings({
                   {label}
                 </label>
               ))}
-              <Notice>필수 동의 철회는 회원 탈퇴를 통해 체험할 수 있어요.</Notice>
+              <Notice>필수 동의를 철회하려면 회원 탈퇴를 해 주세요. 탈퇴하면 저장된 정보가 모두 삭제돼요.</Notice>
             </div>
           ) : (
             <>
               <p className="mb-6 leading-7">
                 {action === "회원 탈퇴"
-                  ? "데모 계정을 종료하고 입력한 정보를 초기화할까요?"
+                  ? "계정과 저장된 건강정보·복용약·복약 기록을 모두 삭제할까요? 되돌릴 수 없어요."
                   : "등록한 복용약과 복약 체크 기록을 삭제할까요? 기본정보와 지병 정보는 남아요."}
               </p>
               <button

@@ -481,9 +481,8 @@ export default function HealthSetup({
             <Info size={24} className="mb-4 text-blue-600" />
             <h2 className="mb-3 text-lg font-bold">입력 전 확인해 주세요</h2>
             <p className="leading-7 text-slate-600">
-              입력한 건강정보와 복용약은 지금 쓰는 브라우저에만 저장돼요.
-              서버에 전송하지 않으며, 로그아웃하거나 브라우저 데이터를 지우면
-              사라져요.
+              입력한 건강정보와 복용약은 내 계정(이메일)에 저장돼서 다른 기기에서도
+              같은 이메일로 불러올 수 있어요. 회원 탈퇴하면 모두 삭제돼요.
             </p>
           </section>
           <section className="rounded-2xl border border-slate-200 p-6">

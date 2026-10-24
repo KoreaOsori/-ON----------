@@ -92,8 +92,8 @@ export function removeMedication(profile: HealthProfile, name: string): HealthPr
     medicineItems: (profile.medicineItems ?? []).filter((item) => item.name !== name),
     registeredMedications: (profile.registeredMedications ?? []).filter((item) => item.name !== name),
   }
-  // 마지막 약까지 지우면 "약을 선택할게요" 상태가 남지 않게 비운다
-  return myMedicines(next).length ? next : { ...next, medicineStatus: undefined }
+  // 마지막 약까지 지우면 "약을 선택할게요" 대신 "복용 중인 약 없음"으로
+  return myMedicines(next).length ? next : { ...next, medicineStatus: "복용 중인 약 없음" }
 }
 
 const slotsByTimes: Record<number, string[]> = {
