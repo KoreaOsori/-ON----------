@@ -29,6 +29,8 @@ export type MedicineDetail = MedicineSummary & {
   interactionSummary: string
   source: string
   durCautions: DurCaution[]
+  /** 허가 문서 "다음 환자에는 투여하지 말 것" 항목 줄 (지병 주의용) */
+  contraindicatedPatients: string[]
 }
 
 export type ContraindicationDetail = {

@@ -61,8 +61,8 @@ export default function InteractionResult({ selected }: { selected: MedicineSumm
   const sortedCautionGroups = [...cautionGroups].sort(
     ([, a], [, b]) => Number(b.some((line) => line.mine)) - Number(a.some((line) => line.mine)),
   )
-  // 지병 주의: 입력한 지병을 허가 문서 "투여하지 말 것" 항목과 맞춘다 (conditionMatch.ts, 브라우저에서만)
-  const conditionCautions = [...matchConditions(profile.conditions, medicineCautions)]
+  // 지병 주의: 회원이 입력한 지병을 허가 문서 "투여하지 말 것" 항목과 맞춘다 (conditionMatch.ts, 맞춤은 화면에서). 비회원은 제공하지 않음
+  const conditionCautions = [...matchConditions(logged ? profile.conditions : undefined, medicineCautions)]
   // 허가 문서에서 그 항목을 찾지 못한 약은 지병을 확인하지 못한 것이다 (없음 ≠ 안전)
   const unchecked = medicineCautions
     .filter((medicine) => medicine.contraindicatedPatients.length === 0)
