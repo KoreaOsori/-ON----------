@@ -1,17 +1,7 @@
 import { Bell, CalendarDays, Camera, ChevronRight, Pill, Settings, UserRound } from "lucide-react"
-import type { HealthProfile, RegisteredMedication } from "@/types/health"
-import { intakeSlots, type MyPageViewName } from "../types"
-
-/** 복용 정보 한 줄: 1일 3회 · 1회 1정 · 7일분 (모르는 값은 빼고 표시) */
-const dosageText = (item: RegisteredMedication) =>
-  [
-    item.times && `1일 ${item.times}회`,
-    item.amount && `1회 ${item.amount}정`,
-    item.days && `${item.days}일분`,
-    item.start && `${item.start} 시작`,
-  ]
-    .filter(Boolean)
-    .join(" · ")
+import type { HealthProfile } from "@/types/health"
+import { dosageText, intakeSlotsOf, isFinished, myMedicines, slotOrder, today } from "../medications"
+import type { MyPageViewName } from "../types"
 
 export default function MyPageHome({
   profile,
@@ -19,23 +9,24 @@ export default function MyPageHome({
   toggleCheck,
   onNavigate,
   onRegisterMedicine,
+  onManageMedicines,
 }: {
   profile: HealthProfile
   checked: string[]
   toggleCheck: (key: string) => void
   onNavigate: (view: MyPageViewName) => void
   onRegisterMedicine: () => void
+  onManageMedicines: () => void
 }) {
-  // 건강정보에서 고른 약 + 약 등록(처방전 인식)으로 저장한 약. 같은 이름이면 하나로 합치고 복용 정보를 붙인다
-  const registered = profile.registeredMedications ?? []
-  const byName = new Map(registered.map((item) => [item.name, item]))
-  const profileMedicines = profile.medicines || []
-  const medicines = [
-    ...profileMedicines.map((name) => ({ name, info: byName.get(name), source: "건강정보에서 등록" })),
-    ...registered
-      .filter((item) => !profileMedicines.includes(item.name))
-      .map((item) => ({ name: item.name, info: item, source: "약 등록(처방전 인식)" })),
-  ]
+  const medicines = myMedicines(profile)
+  // 오늘 먹을 약: 복용 기간이 끝난 약은 빼고, 하루 횟수에 맞춰 시간대별로 나눈다
+  const date = today()
+  const checklist = medicines
+    .filter((drug) => !isFinished(drug.info, date))
+    .flatMap((drug) =>
+      intakeSlotsOf(drug.info).map((slot) => ({ slot, name: drug.name, key: `${date}|${drug.name}|${slot}` })),
+    )
+    .sort((a, b) => slotOrder.indexOf(a.slot) - slotOrder.indexOf(b.slot))
   const shortcuts = [
     { label: "약 등록", icon: Camera, action: onRegisterMedicine },
     { label: "복약 캘린더", icon: CalendarDays, action: () => onNavigate("calendar") },
@@ -73,37 +64,59 @@ export default function MyPageHome({
       <div className="grid grid-cols-2 gap-7">
         <section className="rounded-2xl border p-5">
           <h2 className="mb-4 text-lg font-bold">오늘의 복약 체크리스트</h2>
-          {intakeSlots.map((time) => (
-            <label key={time} className="flex min-h-16 items-center gap-3 border-b border-slate-100">
+          {!checklist.length && (
+            <p className="py-4 leading-7 text-slate-500">
+              {medicines.length
+                ? "오늘 먹을 약이 없어요. 복용 기간이 끝난 약은 내 복용약에서 정리할 수 있어요."
+                : "내 복용약을 등록하면 오늘 먹을 약이 여기에 표시돼요."}
+            </p>
+          )}
+          {checklist.map((item) => (
+            <label key={item.key} className="flex min-h-16 items-center gap-3 border-b border-slate-100">
               <input
                 type="checkbox"
-                className="h-5 w-5 accent-emerald-600"
-                checked={checked.includes(`7-${time}`)}
-                onChange={() => toggleCheck(`7-${time}`)}
+                className="h-5 w-5 shrink-0 accent-emerald-600"
+                checked={checked.includes(item.key)}
+                onChange={() => toggleCheck(item.key)}
               />
-              <span className="flex-1">{time}</span>
-              <span className="text-sm text-slate-500">가나다정</span>
+              <span className="w-20 shrink-0">{item.slot}</span>
+              <span className="ml-auto truncate text-right text-sm text-slate-500">{item.name}</span>
             </label>
           ))}
         </section>
         <section className="rounded-2xl border p-5">
-          <h2 className="mb-4 text-lg font-bold">내 복용약</h2>
+          <button
+            onClick={onManageMedicines}
+            className="mb-2 flex min-h-11 w-full items-center justify-between text-left"
+            aria-label="내 복용약 관리 열기"
+          >
+            <h2 className="text-lg font-bold">내 복용약</h2>
+            <span className="flex items-center gap-1 text-sm text-slate-500">
+              {medicines.length ? `${medicines.length}개 · 관리` : "추가하기"}
+              <ChevronRight size={20} />
+            </span>
+          </button>
           {!medicines.length && (
-            <p className="py-4 leading-7 text-slate-500">
-              {profile.medicineStatus || "아직 등록한 약이 없어요."}
-            </p>
+            <p className="py-4 leading-7 text-slate-500">아직 등록한 약이 없어요.</p>
           )}
           {medicines.map((drug) => (
-            <div key={drug.name} className="flex min-h-20 items-center gap-3">
+            <button
+              key={drug.name}
+              onClick={onManageMedicines}
+              className="flex min-h-20 w-full items-center gap-3 rounded-xl px-1 text-left hover:bg-slate-50"
+            >
               <Pill className="shrink-0 text-blue-600" size={22} />
-              <div>
-                <b className="font-medium">{drug.name}</b>
+              <div className="min-w-0">
+                <b className="break-words font-medium">{drug.name}</b>
                 <p className="mt-1 text-sm text-slate-600">
-                  {drug.info ? dosageText(drug.info) : "복용 정보 없음 · 약 등록에서 입력할 수 있어요"}
+                  {drug.info && dosageText(drug.info) ? dosageText(drug.info) : "복용 정보 없음 · 눌러서 입력할 수 있어요"}
                 </p>
-                <p className="text-xs text-slate-400">{drug.source}</p>
+                <p className="text-xs text-slate-400">
+                  {drug.source}
+                  {isFinished(drug.info, date) && <span className="ml-2 text-amber-700">복용 기간 끝남</span>}
+                </p>
               </div>
-            </div>
+            </button>
           ))}
         </section>
       </div>
