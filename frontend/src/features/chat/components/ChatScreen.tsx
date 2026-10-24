@@ -10,7 +10,6 @@ import {
   uploadPhoto,
   type PhotoPurpose,
   type PillStep,
-  type RxResult,
 } from "@/features/photo/api"
 import { useSession } from "@/providers/SessionProvider"
 import type { LlmCandidate } from "../api"
@@ -23,13 +22,12 @@ import PhotoThumbs from "./PhotoThumbs"
 import GuestProfileModal from "./GuestProfileModal"
 import PhotoSourceModal from "./PhotoSourceModal"
 import PillDialog from "./PillDialog"
-import RxCandidates from "./RxCandidates"
+import { prescriptionProducts } from "../prescriptionProducts"
 
-/** 사진 인식 진행 상태: 업로드 → 인식 → 결과(알약 대화 / 처방전 약 목록) */
+/** 사진 인식 진행 상태. 처방전은 인식 직후 v3 질문으로 이어진다. */
 type PhotoState =
   | { phase: "working"; text: string }
   | { phase: "pill"; step: PillStep }
-  | { phase: "rx"; result: RxResult }
   | { phase: "error"; message: string }
 
 /** 보내기 전 첨부한 사진 (미리보기 주소는 브라우저 안에서만 쓰임) */
@@ -72,12 +70,15 @@ function ChatView() {
   const [prevSession, setPrevSession] = useState<string | undefined>()
   const [attached, setAttached] = useState<Attachment | null>(null)
   const [photoTurn, setPhotoTurn] = useState<PhotoTurn | null>(null)
-  // 사진 결과를 확인하는 동안에는 일반 질문을 막는다 (오류 화면은 제외)
+  // 사진 인식·알약 확인 중에는 일반 질문을 막는다 (오류 화면은 제외)
   const candidates = photo !== null && photo.phase !== "error"
   // 사진(알약·처방전)에서 확인한 제품명. 질문할 때 v3 의 products 로 함께 보낸다
   const [products, setProducts] = useState<string[]>([])
   const upload = useRef<HTMLInputElement>(null)
   const bottom = useRef<HTMLDivElement>(null)
+  const photoGeneration = useRef(0)
+
+  useEffect(() => () => { photoGeneration.current += 1 }, [])
 
   const { messages, status, setStatus, errorMessage, remaining, send, retry, reset } = useChat({
     logged,
@@ -118,7 +119,8 @@ function ChatView() {
   const login = () => router.push("/mypage")
 
   // 사진 선택 → 업로드(presign) → 사진 종류에 따라 알약(OCR+CNN) / 처방전(OCR+LLM) 인식
-  const recognize = async (files: File[], kind: PhotoPurpose) => {
+  const recognize = async (files: File[], kind: PhotoPurpose, turn: PhotoTurn) => {
+    const generation = ++photoGeneration.current
     setStatus("idle")
     try {
       setPhoto({ phase: "working", text: "사진을 올리고 있어요" })
@@ -126,16 +128,27 @@ function ChatView() {
         const [frontKey, backKey] = await Promise.all(files.slice(0, 2).map((file) => uploadPhoto(file, "pill")))
         setPhoto({ phase: "working", text: "알약을 확인하고 있어요 (최대 1분)" })
         const step = await analyzePill({ frontKey, backKey, saveCrops, prevSessionId: prevSession })
+        if (generation !== photoGeneration.current) return
         setPhoto({ phase: "pill", step })
       } else {
         const key = await uploadPhoto(files[0], "prescription")
         setPhoto({ phase: "working", text: "처방전을 읽고 있어요 (최대 1분)" })
-        setPhoto({ phase: "rx", result: await recognizePrescription(key) })
+        const result = await recognizePrescription(key)
+        if (generation !== photoGeneration.current) return
+        const names = prescriptionProducts(result)
+        if (!names.length) throw new Error("처방전에서 약 이름을 찾지 못했어요. 약 이름이 선명하게 보이는 사진을 다시 첨부해 주세요.")
+        // 일부 약만 조용히 제외하면 병용 답변의 대상이 달라지므로 제한 초과 시 전송하지 않는다.
+        if (names.length > MAX_CHAT_PRODUCTS) throw new Error(`한 번에 ${MAX_CHAT_PRODUCTS}개까지 확인할 수 있어요. 약 목록을 나누어 첨부해 주세요.`)
+        setProducts(names)
+        setPhoto(null)
+        setPhotoTurn({ ...turn, sentAt: messages.length })
+        send(turn.text || "이 약들 같이 먹어도 돼?", { confirmed: true, products: names, images: turn.urls })
       }
     } catch (error) {
+      if (generation !== photoGeneration.current) return
       setPhoto({ phase: "error", message: photoErrorMessage(error) })
     } finally {
-      setPrevSession(undefined)
+      if (generation === photoGeneration.current) setPrevSession(undefined)
     }
   }
   // 사진에서 사용자가 확인한 약 → products 에 더하고 질문 시작 (사진과 함께 쓴 글이 있으면 그 글로)
@@ -160,10 +173,11 @@ function ChatView() {
   // 보내기: 사진이 있으면 사진+글을 말풍선으로 올리고 인식 시작, 없으면 일반 질문
   const submit = () => {
     if (!attached) return ask(text)
-    setPhotoTurn({ urls: attached.urls, text: text.trim(), sentAt: null })
+    const turn = { urls: attached.urls, text: text.trim(), sentAt: null }
+    setPhotoTurn(turn)
     setText("")
     setAttached(null)
-    recognize(attached.files, attached.purpose)
+    recognize(attached.files, attached.purpose, turn)
   }
   const reopen = (prev?: string) => {
     setPhoto(null)
@@ -191,6 +205,7 @@ function ChatView() {
                 className="min-h-11 px-3"
                 onClick={() => {
                   reset()
+                  photoGeneration.current += 1
                   setPhoto(null)
                   setPhotoTurn(null)
                   setProducts([])
@@ -233,9 +248,6 @@ function ChatView() {
             )}
             {photo?.phase === "pill" && (
               <PillDialog initial={photo.step} onConfirm={askAbout} onRetake={(sid) => reopen(sid)} />
-            )}
-            {photo?.phase === "rx" && (
-              <RxCandidates result={photo.result} onAsk={askAbout} onRetry={() => reopen()} />
             )}
             <ChatStatusNotice status={status} errorMessage={errorMessage} onRetry={retry} onLogin={login} />
             <div ref={bottom} />
