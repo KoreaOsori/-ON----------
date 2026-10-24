@@ -15,6 +15,7 @@ import {
   type RxField,
   type RxResult,
 } from "@/features/photo/api"
+import { today } from "../medications"
 import type { MedicationDraft, OcrStep } from "../types"
 
 const titles: Record<Exclude<OcrStep, 0>, string> = {
@@ -59,8 +60,8 @@ export default function MedicineRegistration({
       amount: numberText(drug.fields.dose),
       times: numberText(drug.fields.times),
       days: numberText(drug.fields.days),
-      // 예시 데이터의 날짜가 아니라 오늘부터
-      start: new Date().toISOString().slice(0, 10),
+      // 처방전 날짜가 아니라 오늘부터 (브라우저 시간대 기준)
+      start: today(),
     })
 
   const scan = async (photo: File) => {
@@ -79,11 +80,11 @@ export default function MedicineRegistration({
       setStep(1)
     }
   }
-  // 예시 결과 (사진 없이 화면 체험)
-  const demo = () => {
+  // 사진 없이 직접 입력 (빈 칸에서 시작)
+  const manual = () => {
     setResult(null)
-    setStep(2)
-    setTimeout(() => setStep(3), 1100)
+    setError("")
+    setStep(3)
   }
   // 이름 후보를 고르면 그 품목 기준으로 권장 용법 상한 검증(over·reason)이 반영된다
   const chooseName = async (itemSeq: string) => {
@@ -112,9 +113,9 @@ export default function MedicineRegistration({
     { key: "days", label: "복용 일수", type: "number" },
     { key: "start", label: "시작일", type: "date" },
   ]
-  // 강조할 칸: 실제 인식이면 ui 가 "미리 채움"이 아닌 칸 + 이름 미확정, 예시면 기존처럼 복용량 칸
-  const warn = (key: keyof MedicationDraft, index: number) => {
-    if (!result) return index === 1
+  // 강조할 칸: 인식 결과에서 ui 가 "미리 채움"이 아닌 칸 + 이름 미확정 (직접 입력은 강조 없음)
+  const warn = (key: keyof MedicationDraft) => {
+    if (!result) return false
     if (key === "name") return !!current && !current.auto && !current.confirmed
     return needsCheck(fieldOf[key])
   }
@@ -138,7 +139,7 @@ export default function MedicineRegistration({
           />
         ))}
       </div>
-      <h1 className="text-2xl font-bold">{titles[step]}</h1>
+      <h1 className="text-2xl font-bold">{step === 3 && !result ? "약 정보를 입력해 주세요" : titles[step]}</h1>
       {step === 1 ? (
         <>
           <p className="my-4 leading-7 text-slate-500">약 이름과 복용 방법이 잘 보이도록 담아주세요.</p>
@@ -160,8 +161,8 @@ export default function MedicineRegistration({
           <button onClick={() => file.current?.click()} className={`${button} mt-5 w-full`}>
             촬영 / 앨범에서 선택
           </button>
-          <button onClick={demo} className="mt-3 min-h-11 w-full text-blue-600">
-            예시 처방전으로 체험하기
+          <button onClick={manual} className="mt-3 min-h-11 w-full text-blue-600">
+            사진 없이 직접 입력하기
           </button>
           <p className="mt-3 text-xs text-slate-500">처방전·약봉투 사진과 읽은 글자는 저장되지 않습니다.</p>
         </>
@@ -173,7 +174,7 @@ export default function MedicineRegistration({
       ) : step === 3 ? (
         <div className="mt-6 space-y-4">
           <Notice>
-            {result ? result.notice : "실제 사진 인식이 아닌 예시 결과입니다. 내용을 직접 확인하고 저장해 주세요."}
+            {result ? result.notice : "약봉투나 처방전에 적힌 대로 약 이름과 복용 정보를 입력해 주세요."}
           </Notice>
           {result && result.drugs.length === 0 && (
             <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
@@ -214,8 +215,8 @@ export default function MedicineRegistration({
               </div>
             </div>
           )}
-          {fields.map((field, index) => {
-            const flagged = warn(field.key, index)
+          {fields.map((field) => {
+            const flagged = warn(field.key)
             const info = fieldOf[field.key]
             return (
               <label key={field.key} className="block text-sm">

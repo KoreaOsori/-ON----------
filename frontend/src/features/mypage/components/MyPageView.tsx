@@ -4,6 +4,7 @@ import { useState } from "react"
 import { ChevronLeft } from "lucide-react"
 import { emptyProfile } from "@/lib/constants"
 import { useSession } from "@/providers/SessionProvider"
+import { today } from "../medications"
 import type { MedicationDraft, MyPageViewName, OcrStep } from "../types"
 import AccountSettings from "./AccountSettings"
 import ConsentForm from "./ConsentForm"
@@ -15,13 +16,10 @@ import MedicineRegistration from "./MedicineRegistration"
 import MyPageHome from "./MyPageHome"
 import NotificationSettings from "./NotificationSettings"
 
-const initialDraft: MedicationDraft = {
-  name: "가나다정",
-  amount: "1",
-  times: "3",
-  days: "7",
-  start: "2026-10-07",
-}
+const emptyDraft = (): MedicationDraft => ({ name: "", amount: "", times: "", days: "", start: today() })
+
+/** 로그인할 때 입력한 이메일의 앞부분을 인사말 이름으로 쓴다 (이메일 형식이 아니면 이름 없이) */
+const nameFromEmail = (email: string) => (email.includes("@") ? email.split("@")[0].slice(0, 30) : undefined)
 
 const viewTitles: Partial<Record<MyPageViewName, string>> = {
   calendar: "복약 캘린더",
@@ -34,15 +32,23 @@ export default function MyPageView() {
   const [view, setView] = useState<MyPageViewName>("home")
   const [email, setEmail] = useState("")
   const [consents, setConsents] = useState<boolean[]>([false, false, false])
-  const [checked, setChecked] = useState<string[]>([])
   const [ocr, setOcr] = useState<OcrStep>(0)
-  const [draft, setDraft] = useState<MedicationDraft>(initialDraft)
+  const [draft, setDraft] = useState<MedicationDraft>(emptyDraft)
   const [managing, setManaging] = useState(false)
 
+  // 약 등록은 매번 빈 칸에서 시작한다
+  const startRegistration = () => {
+    setDraft(emptyDraft())
+    setOcr(1)
+  }
+
+  // 복약 체크 기록은 복용약과 함께 이 브라우저에 저장한다 (홈 체크리스트·캘린더 공용)
+  const checked = profile.intakeChecks ?? []
   const toggleCheck = (key: string) =>
-    setChecked((previous) =>
-      previous.includes(key) ? previous.filter((item) => item !== key) : [...previous, key],
-    )
+    setProfile({
+      ...profile,
+      intakeChecks: checked.includes(key) ? checked.filter((item) => item !== key) : [...checked, key],
+    })
 
   // 복용약(건강정보에서 고른 약·약 등록으로 넣은 약)과 복약 체크 기록만 지운다. 기본정보·지병은 남긴다
   const deleteData = () => {
@@ -53,9 +59,9 @@ export default function MyPageView() {
       medicineItems: [],
       medicineStatus: undefined,
       registeredMedications: [],
+      intakeChecks: [],
     })
-    setChecked([])
-    setDraft(initialDraft)
+    setDraft(emptyDraft())
     setConsents([false, false, false, false])
   }
 
@@ -77,7 +83,7 @@ export default function MyPageView() {
         profile={profile}
         onCancel={() => setView(logged ? "home" : "consent")}
         onSave={(value) => {
-          setProfile(value)
+          setProfile({ ...value, displayName: value.displayName ?? nameFromEmail(email) })
           setLogged(true)
           setView("home")
         }}
@@ -125,11 +131,11 @@ export default function MyPageView() {
           checked={checked}
           toggleCheck={toggleCheck}
           onNavigate={setView}
-          onRegisterMedicine={() => setOcr(1)}
+          onRegisterMedicine={startRegistration}
           onManageMedicines={() => setManaging(true)}
         />
       ) : view === "calendar" ? (
-        <MedicationCalendar checked={checked} toggleCheck={toggleCheck} />
+        <MedicationCalendar profile={profile} checked={checked} toggleCheck={toggleCheck} />
       ) : view === "notifications" ? (
         <NotificationSettings />
       ) : (
@@ -160,7 +166,7 @@ export default function MyPageView() {
           onClose={() => setManaging(false)}
           onRegisterByPhoto={() => {
             setManaging(false)
-            setOcr(1)
+            startRegistration()
           }}
         />
       )}

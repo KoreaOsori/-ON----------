@@ -14,6 +14,10 @@ export type HealthProfile = {
   /** 약 등록(처방전·약봉투 인식 → 확인)으로 저장한 복용약과 복용 정보 */
   registeredMedications?: RegisteredMedication[]
   conditions?: string
+  /** 마이페이지 인사말에 쓰는 이름 (로그인할 때 입력한 이메일의 앞부분) */
+  displayName?: string
+  /** 복약 체크 기록. "YYYY-MM-DD|약 이름|시간대" */
+  intakeChecks?: string[]
 }
 
 export type RegisteredMedication = {

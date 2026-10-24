@@ -1,6 +1,6 @@
 import { Bell, CalendarDays, Camera, ChevronRight, Pill, Settings, UserRound } from "lucide-react"
 import type { HealthProfile } from "@/types/health"
-import { dosageText, intakeSlotsOf, isFinished, myMedicines, slotOrder, today } from "../medications"
+import { dosageText, intakeItemsOn, isFinished, myMedicines, today } from "../medications"
 import type { MyPageViewName } from "../types"
 
 export default function MyPageHome({
@@ -19,14 +19,9 @@ export default function MyPageHome({
   onManageMedicines: () => void
 }) {
   const medicines = myMedicines(profile)
-  // 오늘 먹을 약: 복용 기간이 끝난 약은 빼고, 하루 횟수에 맞춰 시간대별로 나눈다
+  // 오늘 먹을 약: 복용 기간 안의 약을 하루 횟수에 맞춰 시간대별로 나눈다
   const date = today()
-  const checklist = medicines
-    .filter((drug) => !isFinished(drug.info, date))
-    .flatMap((drug) =>
-      intakeSlotsOf(drug.info).map((slot) => ({ slot, name: drug.name, key: `${date}|${drug.name}|${slot}` })),
-    )
-    .sort((a, b) => slotOrder.indexOf(a.slot) - slotOrder.indexOf(b.slot))
+  const checklist = intakeItemsOn(profile, date)
   const shortcuts = [
     { label: "약 등록", icon: Camera, action: onRegisterMedicine },
     { label: "복약 캘린더", icon: CalendarDays, action: () => onNavigate("calendar") },
@@ -41,7 +36,7 @@ export default function MyPageHome({
           <UserRound size={26} />
         </div>
         <div>
-          <h2 className="text-xl font-bold">안녕하세요, 데모님</h2>
+          <h2 className="text-xl font-bold">안녕하세요{profile.displayName ? `, ${profile.displayName}님` : ""}</h2>
           <p className="mt-1 text-sm text-slate-500">
             {[
               profile.gender,

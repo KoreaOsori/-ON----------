@@ -46,12 +46,35 @@ export const dosageText = (item: RegisteredMedication) =>
     .filter(Boolean)
     .join(" · ")
 
+/** YYYY-MM-DD 에 일수를 더한다 (UTC 로 계산해 시간대와 무관) */
+export function addDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00Z`)
+  value.setUTCDate(value.getUTCDate() + days)
+  return value.toISOString().slice(0, 10)
+}
+
 /** 시작일 + 일수가 지났으면 true (정보가 없으면 계속 복용 중으로 본다) */
 export function isFinished(item: RegisteredMedication | undefined, on = today()) {
   if (!item?.start || !Number(item.days)) return false
-  const end = new Date(item.start)
-  end.setDate(end.getDate() + Number(item.days))
-  return on >= end.toISOString().slice(0, 10)
+  return on >= addDays(item.start, Number(item.days))
+}
+
+/** 그날 먹는 약인지: 시작일 전·복용 기간 뒤는 제외. 시작일을 모르면 오늘부터 먹는 것으로 본다 */
+export function isActiveOn(item: RegisteredMedication | undefined, date: string) {
+  if (date < (item?.start || today())) return false
+  return !isFinished(item, date)
+}
+
+export type IntakeItem = { slot: string; name: string; key: string }
+
+/** 그날의 복약 체크 항목 (아침 → 저녁 순). key 는 체크 기록(profile.intakeChecks)에 쓴다 */
+export function intakeItemsOn(profile: HealthProfile, date: string): IntakeItem[] {
+  return myMedicines(profile)
+    .filter((drug) => isActiveOn(drug.info, date))
+    .flatMap((drug) =>
+      intakeSlotsOf(drug.info).map((slot) => ({ slot, name: drug.name, key: `${date}|${drug.name}|${slot}` })),
+    )
+    .sort((a, b) => slotOrder.indexOf(a.slot) - slotOrder.indexOf(b.slot))
 }
 
 /** 같은 이름의 복용 정보를 바꾸거나 새로 추가한다 */
