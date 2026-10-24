@@ -1,5 +1,10 @@
 output "service_url" {
-  description = "웹사이트 주소 (HTTP)"
+  description = "웹사이트 주소 (HTTPS, CloudFront)"
+  value       = "https://${module.cdn.domain_name}"
+}
+
+output "service_url_http" {
+  description = "EC2 직접 주소 (HTTP). 위치 권한 등 https 전용 기능은 동작하지 않음"
   value       = "http://${module.ec2.public_ip}"
 }
 

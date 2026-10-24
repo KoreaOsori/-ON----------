@@ -1,5 +1,5 @@
 # 구성: VPC + EC2 1대(웹·백엔드·파이프라인) + RDS PostgreSQL 1대(gold / rag 스키마) + S3 데이터·업로드 버킷 + Secrets Manager
-#       + 파이프라인 정기 실행 스케줄 (매월 20일 02:00 KST)
+#       + 파이프라인 정기 실행 스케줄 (매월 20일 02:00 KST) + CloudFront(https)
 locals {
   name = "${var.project}-${var.environment}"
 }
@@ -26,7 +26,12 @@ module "uploads_bucket" {
   source      = "../../modules/uploads"
   bucket_name = "${var.project}-uploads-${data.aws_caller_identity.current.account_id}"
   # IP 주소와 EC2 도메인 이름 둘 다 같은 웹 서비스 주소 (브라우저는 둘을 다른 출처로 취급) — 2026-10-23 CORS 오류로 추가
-  allowed_origins = ["http://${module.ec2.public_ip}", "http://${module.ec2.public_dns}"]
+  # + CloudFront https 주소 (2026-10-24)
+  allowed_origins = [
+    "http://${module.ec2.public_ip}",
+    "http://${module.ec2.public_dns}",
+    "https://${module.cdn.domain_name}",
+  ]
 }
 
 module "secrets" {
@@ -60,4 +65,11 @@ module "scheduler" {
   source      = "../../modules/scheduler"
   name        = local.name
   instance_id = module.ec2.instance_id
+}
+
+# https 웹 주소 (브라우저 위치 권한은 https 에서만 동작)
+module "cdn" {
+  source        = "../../modules/cdn"
+  name          = local.name
+  origin_domain = module.ec2.public_dns
 }
