@@ -31,6 +31,8 @@ services:
       target: runner
       args:
         NEXT_PUBLIC_API_BASE_URL: ""  # 같은 주소(nginx)로 /api 호출
+        # 카카오 지도 JavaScript 키. 이 폴더의 .env 에 NEXT_PUBLIC_MAP_CLIENT_KEY= 로 넣는다 (없으면 지도 없이 목록만)
+        NEXT_PUBLIC_MAP_CLIENT_KEY: ${NEXT_PUBLIC_MAP_CLIENT_KEY:-}
     environment:
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
