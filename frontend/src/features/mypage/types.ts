@@ -10,5 +10,3 @@ export type MedicationDraft = {
   days: string
   start: string
 }
-
-export const intakeSlots = ["아침 식후", "점심 식후", "저녁 식후"]
