@@ -10,6 +10,7 @@ import ConsentForm from "./ConsentForm"
 import HealthSetup from "./HealthSetup"
 import LoginPanel from "./LoginPanel"
 import MedicationCalendar from "./MedicationCalendar"
+import MedicationManager from "./MedicationManager"
 import MedicineRegistration from "./MedicineRegistration"
 import MyPageHome from "./MyPageHome"
 import NotificationSettings from "./NotificationSettings"
@@ -36,6 +37,7 @@ export default function MyPageView() {
   const [checked, setChecked] = useState<string[]>([])
   const [ocr, setOcr] = useState<OcrStep>(0)
   const [draft, setDraft] = useState<MedicationDraft>(initialDraft)
+  const [managing, setManaging] = useState(false)
 
   const toggleCheck = (key: string) =>
     setChecked((previous) =>
@@ -124,6 +126,7 @@ export default function MyPageView() {
           toggleCheck={toggleCheck}
           onNavigate={setView}
           onRegisterMedicine={() => setOcr(1)}
+          onManageMedicines={() => setManaging(true)}
         />
       ) : view === "calendar" ? (
         <MedicationCalendar checked={checked} toggleCheck={toggleCheck} />
@@ -147,6 +150,17 @@ export default function MyPageView() {
             setProfile(emptyProfile)
             setView("home")
             setEmail("")
+          }}
+        />
+      )}
+      {managing && (
+        <MedicationManager
+          profile={profile}
+          onChange={setProfile}
+          onClose={() => setManaging(false)}
+          onRegisterByPhoto={() => {
+            setManaging(false)
+            setOcr(1)
           }}
         />
       )}
