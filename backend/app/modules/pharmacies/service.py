@@ -30,13 +30,20 @@ def _clock(minutes: int) -> str:
     return f"{hours:02d}:{rest:02d}"
 
 
+def _closing_clock(minutes: int) -> str:
+    """마감 시각은 자정을 00:00 이 아니라 24:00 으로 표시"""
+    return "24:00" if minutes % (24 * 60) == 0 else _clock(minutes)
+
+
 def _hours_text(start: Any, end: Any) -> str | None:
     opens, closes = _minutes(start), _minutes(end)
     if opens is None or closes is None:
         return None
+    if closes <= opens:  # 자정을 넘겨 영업
+        closes += 24 * 60
     if closes - opens >= 24 * 60:
         return "24시간"
-    return f"{_clock(opens)}~{_clock(closes)}"
+    return f"{_clock(opens)}~{_closing_clock(closes)}"
 
 
 def open_status(start: Any, end: Any, now: datetime) -> tuple[bool, str]:
@@ -47,7 +54,7 @@ def open_status(start: Any, end: Any, now: datetime) -> tuple[bool, str]:
         closes += 24 * 60
     current = now.hour * 60 + now.minute
     if opens <= current < closes or current + 24 * 60 < closes:
-        return True, f"영업 중 · {_clock(closes)}까지"
+        return True, f"영업 중 · {_closing_clock(closes)}까지"
     if current < opens:
         return False, f"영업 전 · {_clock(opens)} 시작"
     return False, "영업 종료"
