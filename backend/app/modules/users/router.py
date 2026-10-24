@@ -20,6 +20,11 @@ async def delete_me(user: CurrentUser, db: DbSession):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/me/consents", response_model=dict[str, bool], summary="동의 현황")
+async def read_consents(user: CurrentUser, db: DbSession):
+    return await service.read_consents(db, user)
+
+
 @router.put("/me/consents", status_code=status.HTTP_204_NO_CONTENT, summary="약관·개인정보·건강정보 동의")
 async def update_consents(payload: ConsentUpdate, user: CurrentUser, db: DbSession):
     await service.update_consents(db, user, dict(payload.consents))
@@ -29,7 +34,11 @@ async def update_consents(payload: ConsentUpdate, user: CurrentUser, db: DbSessi
 @router.get("/me/health-profile", response_model=HealthProfilePayload | None, summary="건강정보 조회")
 async def read_health_profile(user: CurrentUser, db: DbSession):
     profile = await db.get(HealthProfile, user.id)
-    return HealthProfilePayload.model_validate(profile) if profile else None
+    if profile is None:
+        return None
+    if profile.medicine_items is None:  # 컬럼 추가 전에 저장한 건강정보
+        profile.medicine_items = []
+    return HealthProfilePayload.model_validate(profile)
 
 
 @router.put("/me/health-profile", response_model=HealthProfilePayload, summary="건강정보 저장")

@@ -82,7 +82,7 @@ export default function GuestProfileModal({
             onChange={(event) => setConsent(event.target.checked)}
             className="mt-1 h-5 w-5 shrink-0 accent-blue-600"
           />
-          입력한 건강정보를 이 데모의 답변 참고용으로 사용하는 데 동의합니다.
+          입력한 건강정보를 챗봇 답변 참고용으로 사용하는 데 동의합니다.
         </label>
         <button disabled={!consent} className={`${button} w-full`}>
           적용하기

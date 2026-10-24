@@ -265,7 +265,7 @@ export default function MedicineRegistration({
             </button>
           )}
           <button className={`${button} w-full`} onClick={onDone}>
-            복약 알림 설정하기
+            마이페이지로 돌아가기
           </button>
         </div>
       )}

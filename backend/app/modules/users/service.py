@@ -24,18 +24,20 @@ def summarize_health_profile(profile: HealthProfile) -> str:
     return ", ".join(str(part) for part in parts if part)
 
 
-async def get_or_create_oauth_user(
-    db: AsyncSession, *, provider: str, provider_user_id: str, email: str | None, nickname: str | None
-) -> User:
-    user = await db.scalar(
-        select(User).where(User.provider == provider, User.provider_user_id == provider_user_id)
-    )
+async def get_or_create_email_user(db: AsyncSession, email: str) -> User:
+    """이메일(아이디)로 계정을 찾고, 없으면 만든다. 인사말 이름은 이메일 앞부분"""
+    user = await db.scalar(select(User).where(User.provider == "email", User.provider_user_id == email))
     if user is None:
-        user = User(provider=provider, provider_user_id=provider_user_id, email=email, nickname=nickname)
+        user = User(provider="email", provider_user_id=email, email=email, nickname=email.split("@")[0][:100])
         db.add(user)
         await db.commit()
         await db.refresh(user)
     return user
+
+
+async def read_consents(db: AsyncSession, user: User) -> dict[str, bool]:
+    consents = await db.scalars(select(UserConsent).where(UserConsent.user_id == user.id))
+    return {consent.consent_type: consent.agreed for consent in consents}
 
 
 async def update_consents(db: AsyncSession, user: User, consents: dict[str, bool]) -> None:
@@ -66,7 +68,7 @@ async def has_required_consents(db: AsyncSession, user: User, required: set[str]
 async def upsert_health_profile(db: AsyncSession, user: User, payload: HealthProfilePayload) -> HealthProfile:
     profile = await db.get(HealthProfile, user.id) or HealthProfile(user_id=user.id)
     for field, value in payload.model_dump().items():
-        setattr(profile, field, value)
+        setattr(profile, field, value)  # medicine_items 는 dict 목록으로 JSON 에 저장
     db.add(profile)
     await db.commit()
     await db.refresh(profile)

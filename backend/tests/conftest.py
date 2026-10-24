@@ -42,3 +42,26 @@ async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
         yield http
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def db_client(client):
+    """회원·복용약 API 용: SQLite 메모리 DB 로 get_db 를 바꾼다 (운영은 PostgreSQL)"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from app.db.base import Base
+    from app.db.session import get_db
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def override():
+        async with sessions() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override
+    yield client
+    await engine.dispose()

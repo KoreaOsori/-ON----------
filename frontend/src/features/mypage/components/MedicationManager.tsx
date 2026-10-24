@@ -5,14 +5,7 @@ import { Camera, Pencil, Pill, Plus, Trash2 } from "lucide-react"
 import Modal from "@/components/ui/Modal"
 import { button, inputClass } from "@/components/ui/styles"
 import type { HealthProfile, RegisteredMedication } from "@/types/health"
-import {
-  dosageText,
-  emptyMedication,
-  isFinished,
-  myMedicines,
-  removeMedication,
-  saveMedication,
-} from "../medications"
+import { dosageText, emptyMedication, isFinished, myMedicines } from "../medications"
 
 const fields: { key: keyof RegisteredMedication; label: string; type: string; unit?: string }[] = [
   { key: "amount", label: "1회 복용량", type: "number", unit: "정" },
@@ -91,12 +84,15 @@ function MedicationForm({
 
 export default function MedicationManager({
   profile,
-  onChange,
+  onSave,
+  onRemove,
   onClose,
   onRegisterByPhoto,
 }: {
   profile: HealthProfile
-  onChange: (profile: HealthProfile) => void
+  /** 서버에 저장. 성공하면 true */
+  onSave: (item: RegisteredMedication) => Promise<boolean>
+  onRemove: (name: string) => Promise<boolean>
   onClose: () => void
   onRegisterByPhoto: () => void
 }) {
@@ -104,9 +100,8 @@ export default function MedicationManager({
   const [editing, setEditing] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const medicines = myMedicines(profile)
-  const save = (item: RegisteredMedication) => {
-    onChange(saveMedication(profile, item))
-    setEditing(null)
+  const save = async (item: RegisteredMedication) => {
+    if (await onSave(item)) setEditing(null)
   }
 
   return (
@@ -161,9 +156,8 @@ export default function MedicationManager({
                   취소
                 </button>
                 <button
-                  onClick={() => {
-                    onChange(removeMedication(profile, drug.name))
-                    setConfirmDelete(null)
+                  onClick={async () => {
+                    if (await onRemove(drug.name)) setConfirmDelete(null)
                   }}
                   className="min-h-11 rounded-lg bg-red-600 px-3 text-white"
                 >
@@ -218,7 +212,7 @@ export default function MedicationManager({
         )}
       </div>
       <p className="mt-4 text-xs leading-5 text-slate-500">
-        복용약은 이 브라우저에만 저장돼요. 약을 바꾸거나 끊기 전에는 의사·약사와 상담하세요.
+        복용약은 내 계정에 저장돼요. 약을 바꾸거나 끊기 전에는 의사·약사와 상담하세요.
       </p>
     </Modal>
   )

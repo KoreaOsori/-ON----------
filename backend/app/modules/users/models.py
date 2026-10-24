@@ -25,7 +25,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     email: Mapped[str | None] = mapped_column(String(320))
     nickname: Mapped[str | None] = mapped_column(String(100))
-    provider: Mapped[str] = mapped_column(String(20))  # email | kakao | naver | google | demo
+    provider: Mapped[str] = mapped_column(String(20))  # email (이메일 아이디 로그인)
     provider_user_id: Mapped[str] = mapped_column(String(255))
 
     health_profile: Mapped["HealthProfile | None"] = relationship(
@@ -62,6 +62,7 @@ class HealthProfile(TimestampMixin, Base):
     pregnant: Mapped[str | None] = mapped_column(String(20))
     medicine_status: Mapped[str | None] = mapped_column(String(30))
     medicines: Mapped[list[str]] = mapped_column(JSON, default=list)
+    medicine_items: Mapped[list[dict] | None] = mapped_column(JSON, default=list)
     conditions: Mapped[str | None] = mapped_column(Text)
 
     user: Mapped[User] = relationship(back_populates="health_profile")

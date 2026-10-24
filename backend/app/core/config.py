@@ -3,7 +3,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import quote_plus
 
-from pydantic import Field, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,18 +71,6 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
-    demo_login_enabled: bool = False
-
-    kakao_client_id: str | None = None
-    kakao_client_secret: str | None = None
-    naver_client_id: str | None = None
-    naver_client_secret: str | None = None
-    google_client_id: str | None = None
-    google_client_secret: str | None = None
-    oauth_redirect_base_url: str = Field(
-        default="http://localhost:3000/auth/callback",
-        description="OAuth redirect_uri 기본 경로. 실제 값은 {base}/{provider}",
-    )
 
     # 서비스 정책
     guest_daily_question_limit: int = 8
@@ -112,6 +100,9 @@ class Settings(BaseSettings):
             self.db_password = secret["DB_PASSWORD"]
         if not self.public_data_service_key:
             self.public_data_service_key = secret.get("E_Drug_API")
+        # 로그인 토큰 서명 키. 기본값(change-me)으로 두면 누구나 토큰을 만들 수 있다
+        if "jwt_secret_key" not in self.model_fields_set and secret.get("JWT_SECRET_KEY"):
+            self.jwt_secret_key = secret["JWT_SECRET_KEY"]
         if "s3_upload_bucket" not in self.model_fields_set and secret.get("S3_UPLOAD_BUCKET"):
             self.s3_upload_bucket = secret["S3_UPLOAD_BUCKET"]
 

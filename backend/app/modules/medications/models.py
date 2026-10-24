@@ -8,16 +8,16 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class Medication(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """사용자가 등록한 복용약 (처방전 OCR 또는 직접 입력)"""
+    """사용자가 등록한 복용약 (건강정보에서 고른 약·처방전 OCR·직접 입력). 복용 정보는 모르면 비워 둔다"""
 
     __tablename__ = "medications"
 
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(200))
-    amount: Mapped[int] = mapped_column(Integer)  # 1회 복용량(정)
-    times_per_day: Mapped[int] = mapped_column(Integer)
-    days: Mapped[int] = mapped_column(Integer)
-    start_date: Mapped[date] = mapped_column(Date)
+    amount: Mapped[int | None] = mapped_column(Integer)  # 1회 복용량(정)
+    times_per_day: Mapped[int | None] = mapped_column(Integer)
+    days: Mapped[int | None] = mapped_column(Integer)
+    start_date: Mapped[date | None] = mapped_column(Date)
 
     logs: Mapped[list["IntakeLog"]] = relationship(back_populates="medication", cascade="all, delete-orphan")
 

@@ -16,9 +16,8 @@ Next.js 16 (App Router) + React 19 + Tailwind CSS v4 + TypeScript. 패키지 매
 - `src/features/<기능>/` — 기능 단위 코드. `components/`, `hooks/`, `api.ts`(백엔드 호출), `types.ts`
 - `src/components/ui/` — 기능에 종속되지 않는 공용 UI (Modal, Notice, DrugArt, 공용 클래스 `styles.ts`)
 - `src/components/layout/` — Header 등 전역 레이아웃
-- `src/providers/SessionProvider.tsx` — 로그인 상태·건강정보(데모) 전역 상태
+- `src/providers/SessionProvider.tsx` — 로그인 토큰·회원 정보(서버에서 불러옴) 전역 상태
 - `src/lib/` — 상수, API 클라이언트(`lib/api/client.ts`)
-- `src/mocks/` — 화면용 가상 데이터. 백엔드 연동 시 각 기능의 `api.ts` 호출로 교체한다.
 - `src/types/` — 여러 기능이 공유하는 타입
 
 ## 규칙
@@ -27,3 +26,13 @@ Next.js 16 (App Router) + React 19 + Tailwind CSS v4 + TypeScript. 패키지 매
 - 컴포넌트는 default export.
 - 스타일은 Tailwind 유틸리티 클래스. 전역 CSS/테마는 `src/app/globals.css`, `src/styles/`.
 - 작은따옴표 문자열에 아포스트로피를 넣지 말 것 (큰따옴표 사용).
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+## This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

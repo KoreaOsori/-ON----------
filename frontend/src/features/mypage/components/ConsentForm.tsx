@@ -10,6 +10,16 @@ const requiredConsents = [
   "건강정보(민감정보) 수집·이용 별도 동의 (필수)",
 ]
 
+// 약관 요약 (실제로 저장하는 항목·보관 방식 기준)
+const consentDetails: Record<string, string> = {
+  [requiredConsents[0]]:
+    "약온은 약 정보 검색, 병용 확인, 주변 약국 찾기, 복용약 관리 기능을 제공합니다. 제공하는 정보는 참고용이며 진단이나 처방을 대신하지 않습니다. 복용 전에는 약사·의사와 상담하세요.",
+  [requiredConsents[1]]:
+    "수집 항목: 이메일(아이디). 목적: 계정 식별과 내 정보 불러오기. 보유 기간: 회원 탈퇴 시 즉시 삭제. 동의하지 않으면 회원 기능을 쓸 수 없지만, 비회원으로 챗봇·약 정보는 이용할 수 있습니다.",
+  [requiredConsents[2]]:
+    "수집 항목: 생년월일, 성별, 키, 몸무게, 임신 여부, 복용약, 지병, 복약 체크 기록. 목적: 맞춤 약 정보 안내와 복용약 관리. 보유 기간: 회원 탈퇴 시 즉시 삭제 (설정 > 데이터 삭제로 복용약·복약 기록만 지울 수도 있음). 동의하지 않으면 건강정보를 저장할 수 없습니다.",
+}
+
 export default function ConsentForm({
   consents,
   setConsents,
@@ -67,9 +77,7 @@ export default function ConsentForm({
       </button>
       {terms && (
         <Modal title={terms} close={() => setTerms(null)}>
-          <p className="leading-8">
-            이 화면은 동의 흐름을 보여주는 데모입니다. 실제 서비스에서는 수집 항목, 목적, 보유 기간, 동의 거부 권리 등이 명시된 약관을 제공해야 합니다.
-          </p>
+          <p className="leading-8">{consentDetails[terms]}</p>
         </Modal>
       )}
     </div>
