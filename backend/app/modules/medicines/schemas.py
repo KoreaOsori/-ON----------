@@ -30,6 +30,8 @@ class MedicineDetail(MedicineSummary):
     interaction_summary: str
     source: str
     dur_cautions: list[DurCaution] = []  # 비어 있으면 "등록된 DUR 주의 없음" (안전하다는 뜻이 아님)
+    # 허가 문서 "다음 환자에는 투여하지 말 것" 항목의 줄들 (지병 주의용, 화면에서 사용자 지병과 맞춘다)
+    contraindicated_patients: list[str] = []
 
 
 class ContraindicationRow(CamelModel):

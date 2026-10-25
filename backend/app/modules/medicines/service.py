@@ -1,5 +1,7 @@
 """의약품 조회 서비스. DRUG_DATA_SOURCE 설정으로 목업 / 공공데이터 API / gold(RDS) 를 전환한다."""
 
+import html
+import re
 from typing import Annotated, Protocol
 
 from fastapi import Depends
@@ -20,6 +22,82 @@ from app.modules.medicines.schemas import (
 )
 
 SEARCH_LIMIT = 50
+# 허가 문서 큰 항목 제목 (띄어쓰기는 지우고 본다: "2.다음환자에는투여하지말것." 같은 문서가 있다).
+# "3. 다음 환자에는 신중히 투여할 것.", "○ 다음 …" ("2.5 mg" 같은 숫자는 제외). 일반의약품 문서 일부는
+# "(3) 이 약을 복용하는 동안 다음의 약을 … 말 것", "3) 다음과 같은 사람은 … 상의할 것.", "(9) 저장상의 주의사항" 처럼
+# 항목 번호 꼴로 쓴다. "1) … 환자에는 투여하지 말 것." 같은 항목과 구분하려고 번호 꼴은 "다음 … 할 것/말 것"
+# 이나 "… 사항" 으로 끝날 때만 제목으로 본다 (원본 XML 대조로 확인). 끝에 괄호가 붙은 제목
+# ("(3) 다음 환자에는 신중히 투여할 것(복용전 의사 또는 약사와 상의할 것)")과 "2) 일반적인 주의", "(4) 부작용" 도 제목
+# 두 줄로 나뉜 제목 "(2) 다음과 같은 사람은 이 약을 사용하기 전에 의사," 도 앞부분으로 본다
+_SECTION_TITLE = re.compile(
+    r"^(?:\d+\.(?!\d)|○|(?:\(?\d+\))?(?:.*다음.*(?:할것|말것)(?:\(.*\))?|.*사항)\.?$"
+    r"|\(?\d+\)(?:.{0,12}주의|부작용|이상반응)\.?$"
+    r"|\(?\d+\)다음과같은(?:사람|경우)(?:\((?:사람|경우)\))?[은는])"
+)
+# 번호에 점이 없는 문서("1 경고", "2 다음 환자에는 투여하지 말 것")의 큰 항목 제목. 시작 제목이 이 꼴일 때만 쓴다
+# ("3개월 이상 …" 같은 항목과 헷갈리지 않게)
+_BARE_NUMBER_TITLE = re.compile(r"^\d+(?=[가-힣])")
+# 시작 제목: "다음 … 투여하지/복용하지/사용하지 말 것" 으로 끝나는 짧은 줄. 본문 속 "… 투여하지 말 것 항을 참조한다" 는 제외.
+# "다음과 같은 사람은 이 약을 복용(사용)하지 말 것", 드물게 "1. 환자에는 투여하지 말 것" 도 있다.
+# "이 약을 복용하는 동안 다음의 약을 복용하지 말 것" 은 약 목록이라 제외 (줄 맨 앞이 "다음"이어야 함)
+_CONTRAINDICATION_TITLE = re.compile(
+    r"^(?:\d+\.?|○|\(?\d+\))?(?:다음.{0,30}|환자에는)(?:투여|복용|사용)(?:\((?:투여|복용|사용)\))?하지말것\.?$"
+)
+
+
+# 항목 안의 하위 제목: "3) 급성심근경색증에 투여하는 경우 추가 금기 사항"
+_SUB_CONTRAINDICATION_TITLE = re.compile(r"금기사항\.?$")
+# 태그와 주석("<!--[endif]-->")만 지운다 (silver 와 같은 기준). "<벤질알코올 함유제제에 한함>", "알부민 <25 g/L" 같은
+# 본문은 남긴다
+_TAG = re.compile(r"</?[A-Za-z][^>]*>|<!--.*?(?:-->|$)")
+
+
+def _compact(line: str) -> str:
+    # 원문에 "1.&nbsp;다음 …" 처럼 남은 공백 문자, "</strong>1. 다음 …" 처럼 남은 태그도 있다
+    return re.sub(r"\s|&nbsp;", "", _TAG.sub("", line))
+
+
+def _clean(line: str) -> str:
+    """화면에 보여줄 줄: 남은 태그는 지우고 "&lt;30mL/min" 같은 문자 참조는 글자로"""
+    return re.sub(r"\s+", " ", html.unescape(_TAG.sub("", line))).strip()
+
+
+def _is_contraindication_title(line: str) -> bool:
+    return bool(_CONTRAINDICATION_TITLE.match(line))
+
+
+def contraindicated_patients(precautions: str | None) -> list[str]:
+    """허가 문서 사용상의 주의사항 중 "다음 환자에는 투여하지 말 것"(전문의약품) 또는
+    "다음과 같은 사람은 이 약을 복용하지 말 것"(일반의약품) 항목의 줄들 (예: "6) 심한 고혈압 환자").
+    지병과 맞추는 일은 화면(브라우저)에서 한다 — 건강정보를 서버로 보내지 않기 위해"""
+    lines = (precautions or "").split("\n")
+    # "다음 투여경로로 투여하지 말 것"(투여 경로 목록)은 환자 항목이 아니므로 시작으로 보지 않는다
+    start = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if _is_contraindication_title(_compact(line)) and "경로" not in line
+        ),
+        None,
+    )
+    if start is None:
+        return []
+    bare_number = bool(_BARE_NUMBER_TITLE.match(_compact(lines[start])))
+    section = []
+    for line in lines[start + 1 :]:
+        compact = _compact(line)
+        # 하위 제목 "1) 다음 환자에는 (정맥내) 투여하지 말 것", "2) 다음 투여경로로 투여하지 말 것",
+        # "3) … 추가 금기 사항" 은 이 항목의 일부
+        subheading = _is_contraindication_title(compact) or _SUB_CONTRAINDICATION_TITLE.search(compact)
+        if not subheading and (
+            _SECTION_TITLE.match(compact) or (bare_number and _BARE_NUMBER_TITLE.match(compact))
+        ):
+            break
+        if cleaned := _clean(line):
+            section.append(cleaned)
+    return section
+
+
 # 약 상세에 보여주는 DUR 주의 (이 순서로)
 DUR_CAUTION_TYPES = ("임부금기", "특정연령대금기", "노인주의", "투여기간주의", "서방정분할주의")
 
@@ -218,6 +296,7 @@ class GoldMedicineRepository:
                 )
                 for c in cautions
             ],
+            contraindicated_patients=contraindicated_patients(row.doc_precautions),
         )
 
     async def find_in_text(self, text: str) -> MedicineDetail | None:

@@ -16,6 +16,7 @@ import {
   type RxResult,
 } from "@/features/photo/api"
 import { today } from "../medications"
+import MedicineNameInput from "./MedicineNameInput"
 import type { MedicationDraft, OcrStep } from "../types"
 
 const titles: Record<Exclude<OcrStep, 0>, string> = {
@@ -57,6 +58,7 @@ export default function MedicineRegistration({
     setDraft({
       ...draft,
       name: rxDrugName(drug),
+      itemSeq: undefined,
       amount: numberText(drug.fields.dose),
       times: numberText(drug.fields.times),
       days: numberText(drug.fields.days),
@@ -216,6 +218,16 @@ export default function MedicineRegistration({
             </div>
           )}
           {fields.map((field) => {
+            // 직접 입력은 약 검색에서 골라 품목기준코드까지 저장한다 (병용 확인에서 불러오기용)
+            if (field.key === "name" && !result)
+              return (
+                <MedicineNameInput
+                  key={field.key}
+                  name={draft.name}
+                  itemSeq={draft.itemSeq}
+                  onChange={(name, itemSeq) => setDraft({ ...draft, name, itemSeq })}
+                />
+              )
             const flagged = warn(field.key)
             const info = fieldOf[field.key]
             return (

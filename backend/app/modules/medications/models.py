@@ -14,6 +14,8 @@ class Medication(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(200))
+    # 약 검색에서 고른 약의 품목기준코드 (병용 확인 "내 복용약 불러오기"용). 이름만 입력한 약은 없음
+    item_seq: Mapped[str | None] = mapped_column(String(20))
     amount: Mapped[int | None] = mapped_column(Integer)  # 1회 복용량(정)
     times_per_day: Mapped[int | None] = mapped_column(Integer)
     days: Mapped[int | None] = mapped_column(Integer)

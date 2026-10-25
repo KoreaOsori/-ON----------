@@ -36,6 +36,7 @@ const numberOrNull = (value: string) => (Number(value) >= 1 ? Math.floor(Number(
 export const toRegistered = (medication: Medication): RegisteredMedication => ({
   id: medication.id,
   name: medication.name,
+  itemSeq: medication.itemSeq ?? undefined,
   amount: text(medication.amount),
   times: text(medication.timesPerDay),
   days: text(medication.days),
@@ -44,6 +45,7 @@ export const toRegistered = (medication: Medication): RegisteredMedication => ({
 
 const toInput = (item: RegisteredMedication): MedicationInput => ({
   name: item.name.trim(),
+  itemSeq: item.itemSeq ?? null,
   amount: numberOrNull(item.amount),
   timesPerDay: numberOrNull(item.times),
   days: numberOrNull(item.days),
@@ -134,7 +136,14 @@ export async function saveHealth(
     medications = medications.filter((item) => item.name !== name)
   }
   for (const name of picked.filter((item) => !medications.some((saved) => saved.name === item))) {
-    const created = await createMedication({ name, amount: null, timesPerDay: null, days: null, startDate: null })
+    const created = await createMedication({
+      name,
+      itemSeq: null,
+      amount: null,
+      timesPerDay: null,
+      days: null,
+      startDate: null,
+    })
     medications = [...medications, toRegistered(created)]
   }
   return { ...next, age: next.birth ? ageOf(next.birth) : next.age, registeredMedications: medications }
@@ -144,9 +153,12 @@ export async function saveHealth(
 export async function upsertMedication(profile: HealthProfile, item: RegisteredMedication): Promise<HealthProfile> {
   const name = item.name.trim()
   const saved = (profile.registeredMedications ?? []).find((medication) => medication.name === name)
-  const { amount, timesPerDay, days, startDate } = toInput({ ...item, name })
+  const { itemSeq, amount, timesPerDay, days, startDate } = toInput({ ...item, name })
   const dosage = { amount, timesPerDay, days, startDate }
-  const result = saved?.id ? await updateMedication(saved.id, dosage) : await createMedication({ name, ...dosage })
+  // 품목기준코드는 이름처럼 처음 등록할 때만 저장한다
+  const result = saved?.id
+    ? await updateMedication(saved.id, dosage)
+    : await createMedication({ name, itemSeq, ...dosage })
   return saveMedication(profile, toRegistered(result))
 }
 

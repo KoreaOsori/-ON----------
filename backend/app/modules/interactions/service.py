@@ -17,16 +17,25 @@ from app.modules.interactions.schemas import (
     InteractionPair,
     MedicineCautions,
 )
+from app.modules.medicines.schemas import MedicineDetail
 from app.modules.medicines.service import MedicineRepository
 
 LEVEL_BY_BASIS = {"품목 DUR": "금기", "성분 규칙": "성분 기준 주의"}
 
 
-async def check_pairs(repository: MedicineRepository, medicine_ids: list[str]) -> list[InteractionPair]:
-    medicine_ids = list(dict.fromkeys(medicine_ids))
+async def load_medicines(
+    repository: MedicineRepository, medicine_ids: list[str]
+) -> dict[str, MedicineDetail | None]:
+    """고른 약의 상세를 한 번씩만 읽는다 (상세에는 허가 문서 원문이 있어 크다: 평균 1만 자, 최대 28만 자)"""
+    return {medicine_id: await repository.get(medicine_id) for medicine_id in dict.fromkeys(medicine_ids)}
+
+
+async def check_pairs(
+    repository: MedicineRepository, medicines: dict[str, MedicineDetail | None]
+) -> list[InteractionPair]:
+    medicine_ids = list(medicines)
     names, discontinued = {}, set()
-    for medicine_id in medicine_ids:
-        medicine = await repository.get(medicine_id)
+    for medicine_id, medicine in medicines.items():
         names[medicine_id] = medicine.name if medicine else medicine_id
         if medicine and medicine.sale_status == "판매중지":
             discontinued.add(medicine_id)
@@ -62,23 +71,31 @@ async def check_pairs(repository: MedicineRepository, medicine_ids: list[str]) -
     return pairs
 
 
-async def collect_cautions(repository: MedicineRepository, medicine_ids: list[str]) -> list[MedicineCautions]:
-    """고른 약마다 DUR 주의 (약 상세와 같은 것). 프로필이 없어도 보여주고, 해당 여부는 사용자가 판단한다"""
+def collect_cautions(medicines: dict[str, MedicineDetail | None]) -> list[MedicineCautions]:
+    """고른 약마다 DUR 주의 (약 상세와 같은 것)와 허가 문서의 "투여하지 말 것" 환자 항목.
+    프로필이 없어도 DUR 주의는 보여주고, 지병과 맞추는 일은 화면에서 한다.
+    주의가 없는 약도 넣는다: 화면이 "투여하지 말 것 항목을 찾지 못한 약"을 따로 알려야 해서 (없음 ≠ 안전)"""
     result = []
-    for medicine_id in dict.fromkeys(medicine_ids):
-        medicine = await repository.get(medicine_id)
-        if medicine and medicine.dur_cautions:
-            result.append(MedicineCautions(name=medicine.name, cautions=medicine.dur_cautions))
+    for medicine in medicines.values():
+        if medicine:
+            result.append(
+                MedicineCautions(
+                    name=medicine.name,
+                    cautions=medicine.dur_cautions,
+                    contraindicated_patients=medicine.contraindicated_patients,
+                )
+            )
     return result
 
 
-async def check_duplicates(repository: MedicineRepository, medicine_ids: list[str]) -> list[DuplicateCaution]:
+async def check_duplicates(
+    repository: MedicineRepository, medicines: dict[str, MedicineDetail | None]
+) -> list[DuplicateCaution]:
     """같은 성분 또는 같은 효능군 계열이 2개 이상의 약에 있으면 주의로 알린다 (병용금기 아님)"""
-    medicine_ids = list(dict.fromkeys(medicine_ids))
-    names = {}
-    for medicine_id in medicine_ids:
-        medicine = await repository.get(medicine_id)
-        names[medicine_id] = medicine.name if medicine else medicine_id
+    medicine_ids = list(medicines)
+    names = {
+        medicine_id: medicine.name if medicine else medicine_id for medicine_id, medicine in medicines.items()
+    }
     rows = await repository.ingredients(medicine_ids)
     daily_max = {row.ingr_key: row.daily_max for row in rows}
     ingredient_name = {row.ingr_key: row.ingr_name for row in rows}
