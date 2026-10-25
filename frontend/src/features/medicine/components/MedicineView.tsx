@@ -69,8 +69,18 @@ export default function MedicineView() {
     }
   }
 
-  // 마이페이지 건강정보에 등록한 복용약 (로그인했을 때만). 이미 담은 약은 빼고 5개까지
-  const mine = logged ? (memberProfile.medicineItems ?? []) : []
+  // 마이페이지 복용약 (로그인했을 때만): 건강정보에서 고른 약 + 복용약 추가에서 약 검색으로 고른 약(품목기준코드가 있는 약).
+  // 병용 확인은 id(품목기준코드)·이름만 쓴다. 이미 담은 약은 빼고 5개까지
+  const mine = logged
+    ? [
+        ...(memberProfile.medicineItems ?? []),
+        ...(memberProfile.registeredMedications ?? []).flatMap((medication): MedicineSummary[] =>
+          medication.itemSeq
+            ? [{ id: medication.itemSeq, name: medication.name, maker: "", category: "", type: "", saleStatus: "" }]
+            : [],
+        ),
+      ].filter((drug, index, all) => all.findIndex((item) => item.id === drug.id) === index)
+    : []
   const loadMine = () => {
     const added = mine.filter((drug) => !isSelected(drug))
     setSelected([...selected, ...added].slice(0, MAX_INTERACTION_DRUGS))

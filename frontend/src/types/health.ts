@@ -24,6 +24,8 @@ export type RegisteredMedication = {
   /** 서버 복용약 id (저장 전에는 없음) */
   id?: string
   name: string
+  /** 약 검색에서 고른 약의 품목기준코드 (병용 확인에서 불러올 수 있음). 이름만 입력한 약은 없음 */
+  itemSeq?: string
   /** 1회 복용량 (정) */
   amount: string
   /** 하루 횟수 */

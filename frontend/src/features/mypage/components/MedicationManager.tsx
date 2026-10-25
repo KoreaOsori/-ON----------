@@ -6,6 +6,7 @@ import Modal from "@/components/ui/Modal"
 import { button, inputClass } from "@/components/ui/styles"
 import type { HealthProfile, RegisteredMedication } from "@/types/health"
 import { dosageText, emptyMedication, isFinished, myMedicines } from "../medications"
+import MedicineNameInput from "./MedicineNameInput"
 
 const fields: { key: keyof RegisteredMedication; label: string; type: string; unit?: string }[] = [
   { key: "amount", label: "1회 복용량", type: "number", unit: "정" },
@@ -41,18 +42,12 @@ function MedicationForm({
       className="space-y-3 rounded-xl bg-slate-50 p-4"
     >
       {editName && (
-        <label className="block text-sm">
-          약 이름
-          <input
-            autoFocus
-            required
-            maxLength={100}
-            className={`${inputClass} mt-1`}
-            value={draft.name}
-            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-            placeholder="예: 타이레놀정500밀리그람"
-          />
-        </label>
+        <MedicineNameInput
+          autoFocus
+          name={draft.name}
+          itemSeq={draft.itemSeq}
+          onChange={(name, itemSeq) => setDraft({ ...draft, name, itemSeq })}
+        />
       )}
       <div className="grid grid-cols-2 gap-3">
         {fields.map(({ key, label, type, unit }) => (

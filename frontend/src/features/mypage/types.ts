@@ -5,6 +5,8 @@ export type OcrStep = 0 | 1 | 2 | 3 | 4
 
 export type MedicationDraft = {
   name: string
+  /** 약 검색에서 고른 약의 품목기준코드 */
+  itemSeq?: string
   amount: string
   times: string
   days: string

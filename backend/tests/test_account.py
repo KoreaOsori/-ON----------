@@ -59,7 +59,16 @@ async def test_medication_crud_and_logs(db_client):
     # 복용 정보 없이도 등록 (건강정보에서 이름만 고른 약)
     created = await db_client.post("/api/v1/medications", json={"name": "타이레놀정"}, headers=headers)
     assert created.status_code == 201 and created.json()["timesPerDay"] is None
+    assert created.json()["itemSeq"] is None
     medication_id = created.json()["id"]
+    # 약 검색에서 고른 약은 품목기준코드를 함께 저장한다
+    picked = {"name": "타이레놀정500밀리그람", "itemSeq": "200000001"}
+    created = await db_client.post("/api/v1/medications", json=picked, headers=headers)
+    assert created.status_code == 201 and created.json()["itemSeq"] == "200000001"
+    listed = (await db_client.get("/api/v1/medications", headers=headers)).json()
+    assert [item["itemSeq"] for item in listed] == [None, "200000001"]
+    bad = {"name": "타이레놀정", "itemSeq": "abc"}
+    assert (await db_client.post("/api/v1/medications", json=bad, headers=headers)).status_code == 422
     patch = {"amount": 1, "timesPerDay": 2, "days": 5, "startDate": "2026-10-24"}
     updated = await db_client.patch(f"/api/v1/medications/{medication_id}", json=patch, headers=headers)
     assert updated.json()["timesPerDay"] == 2

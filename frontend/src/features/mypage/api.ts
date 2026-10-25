@@ -27,6 +27,8 @@ export type HealthProfilePayload = {
 export type Medication = {
   id: string
   name: string
+  /** 약 검색에서 고른 약의 품목기준코드 (이름만 입력한 약은 null) */
+  itemSeq: string | null
   amount: number | null
   timesPerDay: number | null
   days: number | null
@@ -66,7 +68,7 @@ export const listMedications = () => apiFetch<Medication[]>("/medications")
 export const createMedication = (payload: MedicationInput) =>
   apiFetch<Medication>("/medications", { method: "POST", body: payload })
 
-export const updateMedication = (id: string, payload: Omit<MedicationInput, "name">) =>
+export const updateMedication = (id: string, payload: Omit<MedicationInput, "name" | "itemSeq">) =>
   apiFetch<Medication>(`/medications/${id}`, { method: "PATCH", body: payload })
 
 export const deleteMedication = (id: string) => apiFetch<void>(`/medications/${id}`, { method: "DELETE" })

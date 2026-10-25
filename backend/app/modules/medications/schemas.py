@@ -8,6 +8,7 @@ from app.core.schemas import CamelModel
 
 class MedicationCreate(CamelModel):
     name: str = Field(min_length=1, max_length=200)
+    item_seq: str | None = Field(default=None, pattern=r"^\d{1,20}$")
     amount: int | None = Field(default=None, ge=1, le=100)
     times_per_day: int | None = Field(default=None, ge=1, le=12)
     days: int | None = Field(default=None, ge=1, le=365)
