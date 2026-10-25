@@ -4,6 +4,9 @@ import { useEffect, useState } from "react"
 import { inputClass } from "@/components/ui/styles"
 import { searchMedicines, type MedicineSummary } from "@/features/medicine/api"
 
+// 백엔드 약 검색이 한 번에 주는 최대 개수 (medicines/service.py SEARCH_LIMIT). 꽉 차면 더 있을 수 있다
+const SEARCH_LIMIT = 50
+
 /**
  * 복용약 이름 입력. 약정보 검색과 같은 API 로 후보를 보여주고, 고르면 품목기준코드(itemSeq)를 함께 넘긴다.
  * 고르지 않고 직접 쓴 이름도 저장은 되지만 병용 확인에서는 불러올 수 없다 (병용 판정은 품목기준코드 기준)
@@ -27,7 +30,7 @@ export default function MedicineNameInput({
     if (!keyword || itemSeq) return
     const timer = setTimeout(() => {
       searchMedicines(keyword)
-        .then((items) => setFound(items.slice(0, 5)))
+        .then(setFound)
         .catch(() => setFound([]))
     }, 300)
     return () => clearTimeout(timer)
@@ -51,7 +54,7 @@ export default function MedicineNameInput({
         />
       </label>
       {suggestions.length > 0 && (
-        <div className="mt-2 rounded-xl border border-slate-200 bg-white">
+        <div className="mt-2 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white">
           {suggestions.map((medicine) => (
             <button
               key={medicine.id}
@@ -64,6 +67,9 @@ export default function MedicineNameInput({
             </button>
           ))}
         </div>
+      )}
+      {suggestions.length >= SEARCH_LIMIT && (
+        <p className="mt-1 text-xs text-amber-700">이름을 더 자세히 입력해 주세요.</p>
       )}
       {name.trim() && !itemSeq && (
         <p className="mt-1 text-xs text-slate-500">목록에서 고르면 병용 확인에서 내 복용약으로 불러올 수 있어요.</p>

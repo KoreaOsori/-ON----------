@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react"
 import { searchMedicines, type MedicineSummary } from "@/features/medicine/api"
+import { MAX_INTERACTION_DRUGS } from "@/lib/constants"
 import type { HealthProfile } from "@/types/health"
 
 const action =
@@ -491,7 +492,7 @@ export default function HealthSetup({
             </h2>
             <p className="leading-7 text-slate-600">
               건강정보에는 복용약 목록을 등록할 수 있어요. 별도 병용 확인은 한
-              번에 최대 5개 약을 대상으로 하며, 모든 상호작용을 확인할 수는
+              번에 최대 {MAX_INTERACTION_DRUGS}개 약을 대상으로 하며, 모든 상호작용을 확인할 수는
               없습니다.
             </p>
           </section>

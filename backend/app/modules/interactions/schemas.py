@@ -5,7 +5,7 @@ from app.modules.medicines.schemas import DurCaution
 
 
 class InteractionCheckRequest(CamelModel):
-    medicine_ids: list[str] = Field(min_length=2, max_length=5)
+    medicine_ids: list[str] = Field(min_length=2, max_length=10)
 
 
 class ContraindicationDetail(CamelModel):
