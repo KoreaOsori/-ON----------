@@ -7,7 +7,7 @@ export const emptyProfile: HealthProfile = { gender: "", age: "", pregnant: "" }
 
 export const GUEST_DAILY_QUESTION_LIMIT = 8
 
-export const MAX_INTERACTION_DRUGS = 5
+export const MAX_INTERACTION_DRUGS = 10
 
 /** 성별 · 나이 · 임신 여부를 "여성 · 35세 · 임신 아님" 형태로 요약 */
 export function summarizeProfile(profile: HealthProfile) {

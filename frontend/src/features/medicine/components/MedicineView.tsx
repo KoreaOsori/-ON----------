@@ -70,7 +70,7 @@ export default function MedicineView() {
   }
 
   // 마이페이지 복용약 (로그인했을 때만): 건강정보에서 고른 약 + 복용약 추가에서 약 검색으로 고른 약(품목기준코드가 있는 약).
-  // 병용 확인은 id(품목기준코드)·이름만 쓴다. 이미 담은 약은 빼고 5개까지
+  // 병용 확인은 id(품목기준코드)·이름만 쓴다. 이미 담은 약은 빼고 최대 개수(MAX_INTERACTION_DRUGS)까지
   const mine = logged
     ? [
         ...(memberProfile.medicineItems ?? []),

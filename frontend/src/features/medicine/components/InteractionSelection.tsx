@@ -3,7 +3,7 @@ import Notice from "@/components/ui/Notice"
 import { disclaimer, MAX_INTERACTION_DRUGS } from "@/lib/constants"
 import type { MedicineSummary } from "../api"
 
-export const slotLabels = "ABCDE"
+export const slotLabels = "ABCDEFGHIJ"
 
 export default function InteractionSelection({
   selected,
@@ -18,7 +18,7 @@ export default function InteractionSelection({
   return (
     <>
       <p className="mb-3 leading-7">
-        궁금한 약을 최대 5개까지 담으면 서로 함께 먹어도 되는지 확인해드려요.
+        궁금한 약을 최대 {MAX_INTERACTION_DRUGS}개까지 담으면 서로 함께 먹어도 되는지 확인해드려요.
       </p>
       <div className="mb-5">
         <Notice>
@@ -51,7 +51,7 @@ export default function InteractionSelection({
         ))}
       </div>
       {selected.length === MAX_INTERACTION_DRUGS && (
-        <p className="mb-4 text-sm text-amber-700">최대 5개까지 선택할 수 있어요</p>
+        <p className="mb-4 text-sm text-amber-700">최대 {MAX_INTERACTION_DRUGS}개까지 선택할 수 있어요</p>
       )}
     </>
   )

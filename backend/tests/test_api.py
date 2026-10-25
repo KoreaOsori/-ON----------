@@ -42,6 +42,13 @@ async def test_interaction_check_requires_two_medicines(client):
     assert response.status_code == 422
 
 
+async def test_interaction_check_allows_up_to_ten_medicines(client):
+    ten = [f"mock-{index}" for index in range(10)]
+    assert (await client.post("/api/v1/interactions/check", json={"medicineIds": ten})).status_code == 200
+    eleven = [*ten, "mock-10"]
+    assert (await client.post("/api/v1/interactions/check", json={"medicineIds": eleven})).status_code == 422
+
+
 async def test_guest_chat_quota(client):
     first = await client.post("/api/v1/chat", json={"question": "가나다정에 대해 알려주세요"})
     assert first.status_code == 200
