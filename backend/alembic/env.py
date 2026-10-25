@@ -18,8 +18,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# DB 접속 정보는 alembic.ini 가 아닌 앱 설정(DATABASE_URL)을 사용한다
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# DB 접속 정보는 alembic.ini 가 아닌 앱 설정(DATABASE_URL)을 사용한다.
+# alembic 설정은 % 를 보간 기호로 읽으므로, 비밀번호 인코딩(%29 등)의 % 는 %% 로 넘긴다
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
